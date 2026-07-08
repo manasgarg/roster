@@ -57,6 +57,7 @@ impl Ca {
     }
 
     /// The public CA cert (PEM) — the only part the box is given, as a trust anchor.
+    #[allow(dead_code)] // used by tests; the proxy path uses mint_leaf_der
     pub fn cert_pem(&self) -> &str {
         &self.cert_pem
     }
@@ -68,6 +69,7 @@ impl Ca {
 
     /// Mint a leaf cert for `host` (SAN=host), signed by the CA. Returns
     /// `(leaf_key_pem, chain_pem)` where the chain is leaf + CA.
+    #[allow(dead_code)] // used by tests; the proxy path uses mint_leaf_der
     pub fn mint_leaf(&self, host: &str) -> Result<(String, String), Box<dyn Error>> {
         let issuer = self.issuer()?;
         let leaf_key = KeyPair::generate()?;

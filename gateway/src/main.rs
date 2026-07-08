@@ -1,6 +1,7 @@
 //! Roster gateway (Rust) — the trusted core. Port in progress (docs/rust-port.md).
 //! P1: TLS-terminating forward proxy. Judge/vault/metering land in P2–P4.
 
+mod budget;
 mod ca;
 mod judge;
 mod providers;

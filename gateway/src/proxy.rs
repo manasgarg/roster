@@ -65,7 +65,13 @@ fn next_id() -> String {
     format!("{nanos:x}-{n:x}")
 }
 
-fn record(gr: &GovernedRequest, verdict: Verdict, rule: Option<&str>, injected: Option<&[String]>) {
+fn record(
+    gr: &GovernedRequest,
+    verdict: Verdict,
+    rule: Option<&str>,
+    injected: Option<&[String]>,
+    spend: &std::collections::HashMap<String, f64>,
+) {
     let headers: serde_json::Map<String, Value> = gr
         .headers
         .iter()
@@ -95,6 +101,7 @@ fn record(gr: &GovernedRequest, verdict: Verdict, rule: Option<&str>, injected: 
             "bodySize": gr.body_size,
             "mcp": mcp,
         },
+        "spend": spend,
     });
     if let Some(inj) = injected {
         dec["injected"] = json!(inj);
@@ -218,7 +225,7 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
         };
         let (verdict, rule) = judge(&pre, &load_policy());
         if verdict == Verdict::Tunnel {
-            record(&pre, Verdict::Tunnel, rule.as_deref(), None);
+            record(&pre, Verdict::Tunnel, rule.as_deref(), None, &HashMap::new());
             tokio::spawn(async move {
                 let upgraded = match hyper::upgrade::on(req).await {
                     Ok(u) => u,
@@ -300,11 +307,11 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, client: Up
             if let Some(inj) = policy.rule(rule_name).and_then(|r| r.inject.as_ref()) {
                 match vault::get_fresh_credential(&inj.credential).await {
                     Err(_) => {
-                        record(&gr, Verdict::Deny, rule.as_deref(), None);
+                        record(&gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new());
                         return Ok(deny_response(Verdict::Deny, rule.as_deref()));
                     }
                     Ok(None) => {
-                        record(&gr, Verdict::Deny, rule.as_deref(), None);
+                        record(&gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new());
                         return Ok(deny_response(Verdict::Deny, rule.as_deref()));
                     }
                     Ok(Some(cred)) => {
@@ -316,7 +323,13 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, client: Up
         }
     }
 
-    record(&gr, verdict, rule.as_deref(), injected_names.as_deref());
+    // Meter the spend this call draws (B1: computed, recorded; enforcement is B2).
+    let spend = if verdict == Verdict::Allow {
+        crate::budget::compute_spend(&gr, verdict.as_str(), rule.as_deref(), &json!({}), &crate::budget::load_budget())
+    } else {
+        HashMap::new()
+    };
+    record(&gr, verdict, rule.as_deref(), injected_names.as_deref(), &spend);
     if verdict != Verdict::Allow {
         return Ok(deny_response(verdict, rule.as_deref()));
     }

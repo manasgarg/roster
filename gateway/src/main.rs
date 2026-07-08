@@ -3,9 +3,12 @@
 
 mod ca;
 mod judge;
+mod providers;
 mod proxy;
 mod schema;
 mod tls;
+mod util;
+mod vault;
 
 use ca::Ca;
 use std::sync::Arc;

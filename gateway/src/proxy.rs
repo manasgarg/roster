@@ -7,6 +7,8 @@
 use crate::ca::Ca;
 use crate::judge::judge;
 use crate::schema::{GovernedRequest, Mcp, Policy, Verdict};
+use crate::util::{now_rfc3339, root};
+use crate::vault;
 use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
 use hyper::body::Incoming;
@@ -21,11 +23,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use time::format_description::well_known::Rfc3339;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 
@@ -43,12 +43,6 @@ const SENSITIVE: [&str; 5] = [
 
 // ── paths & config ──────────────────────────────────────────────────────────
 
-fn root() -> PathBuf {
-    std::env::var("ROSTER_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-}
-
 /// Read the policy fresh each decision so owner edits are live. Fail closed: an
 /// unparseable policy denies everything (empty rule list).
 fn load_policy() -> Policy {
@@ -63,10 +57,6 @@ fn load_policy() -> Policy {
 }
 
 // ── decision log ────────────────────────────────────────────────────────────
-
-fn now_rfc3339() -> String {
-    time::OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_default()
-}
 
 fn next_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -297,13 +287,42 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, client: Up
         mcp,
     };
 
-    let (verdict, rule) = judge(&gr, &load_policy());
-    record(&gr, verdict, rule.as_deref(), None);
+    let policy = load_policy();
+    let (verdict, rule) = judge(&gr, &policy);
+
+    // Injection: if the deciding rule injects a credential, resolve it now
+    // (refreshing if expired) so we fail closed — deny rather than forward the
+    // box's sentinel — when the vault lacks it or a refresh fails.
+    let mut inject: Vec<(String, String)> = Vec::new();
+    let mut injected_names: Option<Vec<String>> = None;
+    if verdict == Verdict::Allow {
+        if let Some(rule_name) = &rule {
+            if let Some(inj) = policy.rule(rule_name).and_then(|r| r.inject.as_ref()) {
+                match vault::get_fresh_credential(&inj.credential).await {
+                    Err(_) => {
+                        record(&gr, Verdict::Deny, rule.as_deref(), None);
+                        return Ok(deny_response(Verdict::Deny, rule.as_deref()));
+                    }
+                    Ok(None) => {
+                        record(&gr, Verdict::Deny, rule.as_deref(), None);
+                        return Ok(deny_response(Verdict::Deny, rule.as_deref()));
+                    }
+                    Ok(Some(cred)) => {
+                        inject = vault::render_injection(&cred);
+                        injected_names = Some(inject.iter().map(|(k, _)| k.clone()).collect());
+                    }
+                }
+            }
+        }
+    }
+
+    record(&gr, verdict, rule.as_deref(), injected_names.as_deref());
     if verdict != Verdict::Allow {
         return Ok(deny_response(verdict, rule.as_deref()));
     }
 
-    // Forward with the buffered body.
+    // Forward with the buffered body, swapping the sentinel for the real
+    // credential (injected headers overwrite the box's).
     let target: hyper::Uri = if had_scheme {
         parts.uri.clone()
     } else if query.is_empty() {
@@ -311,11 +330,16 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, client: Up
     } else {
         format!("https://{host}{path}?{query}").parse()?
     };
+    let inject_keys: std::collections::HashSet<&str> = inject.iter().map(|(k, _)| k.as_str()).collect();
     let mut builder = Request::builder().method(parts.method.clone()).uri(target);
     for (k, v) in parts.headers.iter() {
-        if k != hyper::header::PROXY_AUTHORIZATION {
-            builder = builder.header(k, v);
+        if k == hyper::header::PROXY_AUTHORIZATION || inject_keys.contains(k.as_str()) {
+            continue; // drop hop-by-hop; drop headers we're about to inject
         }
+        builder = builder.header(k, v);
+    }
+    for (k, v) in &inject {
+        builder = builder.header(k, v);
     }
     let out = builder.body(Full::new(body_bytes).map_err(|never| match never {}).boxed())?;
     match client.request(out).await {

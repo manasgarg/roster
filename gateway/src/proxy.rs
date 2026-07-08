@@ -71,6 +71,7 @@ fn record(
     rule: Option<&str>,
     injected: Option<&[String]>,
     spend: &std::collections::HashMap<String, f64>,
+    note: Option<&str>,
 ) {
     let headers: serde_json::Map<String, Value> = gr
         .headers
@@ -105,6 +106,9 @@ fn record(
     });
     if let Some(inj) = injected {
         dec["injected"] = json!(inj);
+    }
+    if let Some(n) = note {
+        dec["note"] = json!(n);
     }
 
     let path = root().join("runs").join("decisions.jsonl");
@@ -225,7 +229,7 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
         };
         let (verdict, rule) = judge(&pre, &load_policy());
         if verdict == Verdict::Tunnel {
-            record(&pre, Verdict::Tunnel, rule.as_deref(), None, &HashMap::new());
+            record(&pre, Verdict::Tunnel, rule.as_deref(), None, &HashMap::new(), None);
             tokio::spawn(async move {
                 let upgraded = match hyper::upgrade::on(req).await {
                     Ok(u) => u,
@@ -307,11 +311,11 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, client: Up
             if let Some(inj) = policy.rule(rule_name).and_then(|r| r.inject.as_ref()) {
                 match vault::get_fresh_credential(&inj.credential).await {
                     Err(_) => {
-                        record(&gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new());
+                        record(&gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), None);
                         return Ok(deny_response(Verdict::Deny, rule.as_deref()));
                     }
                     Ok(None) => {
-                        record(&gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new());
+                        record(&gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), None);
                         return Ok(deny_response(Verdict::Deny, rule.as_deref()));
                     }
                     Ok(Some(cred)) => {
@@ -323,16 +327,33 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, client: Up
         }
     }
 
-    // Meter the spend this call draws (B1: computed, recorded; enforcement is B2).
+    // Meter the spend this call draws, then enforce the budget (B2). Org-global
+    // subject until worker identity lands (B4).
+    const SUBJECT: &str = "org";
+    let budget = crate::budget::load_budget();
+    let now = crate::util::now_ms();
     let spend = if verdict == Verdict::Allow {
-        crate::budget::compute_spend(&gr, verdict.as_str(), rule.as_deref(), &json!({}), &crate::budget::load_budget())
+        crate::budget::compute_spend(&gr, verdict.as_str(), rule.as_deref(), &json!({}), &budget)
     } else {
         HashMap::new()
     };
-    record(&gr, verdict, rule.as_deref(), injected_names.as_deref(), &spend);
+
+    // Over a limit ⇒ deny before forwarding (the hard stop). Count currencies
+    // are known now; token currencies debit post-response in B3.
+    if verdict == Verdict::Allow {
+        if let Some(reason) = crate::ledger::check(SUBJECT, &spend, &budget.limits, now) {
+            record(&gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), Some(&reason));
+            let mut resp = Response::new(full(&format!("{{\"error\":\"budget exceeded\",\"detail\":\"{reason}\"}}")));
+            *resp.status_mut() = StatusCode::PAYMENT_REQUIRED;
+            return Ok(resp);
+        }
+    }
+
+    record(&gr, verdict, rule.as_deref(), injected_names.as_deref(), &spend, None);
     if verdict != Verdict::Allow {
         return Ok(deny_response(verdict, rule.as_deref()));
     }
+    crate::ledger::debit(SUBJECT, &spend, &budget.limits, now);
 
     // Forward with the buffered body, swapping the sentinel for the real
     // credential (injected headers overwrite the box's).

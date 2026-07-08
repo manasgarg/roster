@@ -12,13 +12,17 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct BudgetPolicy {
     #[serde(default)]
+    #[allow(dead_code)] // scope: used when worker identity lands (B4)
     pub scope: String,
     #[serde(default)]
+    #[allow(dead_code)] // currencies: a declaration; meters/limits reference these
     pub currencies: Vec<String>,
     #[serde(default)]
     pub vars: Value,
     #[serde(default)]
     pub meters: Vec<Meter>,
+    #[serde(default)]
+    pub limits: Vec<Limit>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -27,6 +31,49 @@ pub struct Meter {
     pub match_expr: String,
     #[serde(default)]
     pub spend: HashMap<String, String>,
+}
+
+/// A cap on cumulative draw of one currency, at a namespace scope, per window.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Limit {
+    pub scope: String,
+    pub currency: String,
+    pub window: Window,
+    pub max: f64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum Window {
+    Minute,
+    Hour,
+    Day,
+    Month,
+}
+
+impl Window {
+    /// Window length in ms. `month` is approximated as 30 days for now (true
+    /// calendar months are a later refinement).
+    pub fn ms(self) -> i64 {
+        match self {
+            Window::Minute => 60_000,
+            Window::Hour => 3_600_000,
+            Window::Day => 86_400_000,
+            Window::Month => 30 * 86_400_000,
+        }
+    }
+    /// Start of the current window (calendar-aligned via epoch modulo).
+    pub fn start(self, now: i64) -> i64 {
+        now - now.rem_euclid(self.ms())
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Window::Minute => "minute",
+            Window::Hour => "hour",
+            Window::Day => "day",
+            Window::Month => "month",
+        }
+    }
 }
 
 /// Read `policies/budget.json` fresh each call (owner edits are live). Absent or

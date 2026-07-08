@@ -1,6 +1,14 @@
 # Metering & budgets (spec)
 
-**Status: spec.** Built on the Rust gateway, with CEL (D18). Realizes the
+**Status: B1–B2 implemented (2026-07-08); B3–B4 pending.** B1 = CEL currency
+metering, logged; B2 = the ledger + limits + enforcement (the hard stop) on
+count currencies, org-global, with boot-rehydration. Verified live: a
+`model_calls` cap denies the over-cap call with `402` (the call that crosses
+completes, the next is refused), and the counter survives a gateway restart.
+Next: B3 token metering (response tap + adversarial defenses), B4 namespaced
+identity.
+
+**Design.** Built on the Rust gateway, with CEL (D18). Realizes the
 owner's mental model: a **call log** as the substrate, **namespaced identity**,
 **arbitrary currencies** with CEL mappings from request/response to spend, and
 **limits on currency drawdown**. Grounded in the research (LiteLLM's budget

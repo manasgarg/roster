@@ -5,5 +5,8 @@
   "meters": [
     { "match": "decision.rule == 'model-api'", "spend": { "model_calls": "1" } },
     { "match": "decision.rule == 'web-search'", "spend": { "searches": "1", "usd": "vars.price.search" } }
+  ],
+  "limits": [
+    { "scope": "org", "currency": "searches", "window": "day", "max": 1000 }
   ]
 }

@@ -4,6 +4,7 @@
 mod budget;
 mod ca;
 mod judge;
+mod ledger;
 mod providers;
 mod proxy;
 mod schema;
@@ -25,8 +26,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tls = tls::acceptor(ca.clone());
     let client = proxy::build_client();
 
+    // Rebuild budget counters from the current window's usage so a restart
+    // doesn't reset budgets.
+    ledger::rehydrate(&budget::load_budget().limits);
+
     let listener = TcpListener::bind(ADDR).await?;
-    eprintln!("roster-gateway listening on {ADDR} (P1: TLS-terminating forward proxy)");
+    eprintln!("roster-gateway listening on {ADDR} (governed egress: judge + inject + budget)");
 
     loop {
         let (stream, _peer) = listener.accept().await?;

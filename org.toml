@@ -1,0 +1,30 @@
+# Org base — OWNER-ONLY. Shared grants + fleet-aggregate caps + metering.
+# Applies to every worker (scope "org"). Per-worker specs in workers/<name>/
+# overlay their own grants and caps at scope "org/<name>".
+# `deploy` compiles this + the worker specs into the runtime config.
+
+# Egress grants shared by all workers.
+[[grant]]
+name = "model-api"
+match = { host = ["chatgpt.com", "api.anthropic.com"], port = 443 }
+verdict = "allow"
+inject = { credential = "openai-codex" }
+
+[budget]
+currencies = ["model_calls", "searches", "usd"]
+vars = { price = { search = 0.005 } }
+
+# How calls map to currency spend (shared).
+[[budget.meter]]
+match = "decision.rule == 'model-api'"
+spend = { model_calls = "1" }
+
+[[budget.meter]]
+match = "decision.rule == 'web-search'"
+spend = { searches = "1", usd = "vars.price.search" }
+
+# Fleet-aggregate cap (scope "org" — all workers roll up into it).
+[[budget.limit]]
+currency = "searches"
+window = "day"
+max = 1000

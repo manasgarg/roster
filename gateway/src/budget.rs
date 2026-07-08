@@ -79,7 +79,7 @@ impl Window {
 /// Read `policies/budget.json` fresh each call (owner edits are live). Absent or
 /// unparseable ⇒ no meters (no spend recorded; the judge still governs).
 pub fn load_budget() -> BudgetPolicy {
-    let path = root().join("policies").join("budget.json");
+    let path = root().join("runs").join("compiled").join("budget.json");
     std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str::<BudgetPolicy>(&s).ok())

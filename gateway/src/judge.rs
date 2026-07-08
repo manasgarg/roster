@@ -5,8 +5,9 @@
 use crate::schema::{GovernedRequest, Match, Policy, Verdict};
 
 pub fn judge(req: &GovernedRequest, policy: &Policy) -> (Verdict, Option<String>) {
+    let subject = req.worker.as_deref().unwrap_or("org");
     for rule in &policy.rules {
-        if matches(&rule.r#match, req) {
+        if crate::scope::applies(&rule.scope, subject) && matches(&rule.r#match, req) {
             return (rule.verdict, Some(rule.name.clone()));
         }
     }
@@ -172,6 +173,20 @@ mod tests {
         assert_eq!(judge(&r, &p).0, Verdict::Deny);
         r.mcp = None;
         assert_eq!(judge(&r, &p).0, Verdict::Deny);
+    }
+
+    #[test]
+    fn rule_scope_is_ancestor_filtered() {
+        // A rule scoped to org/w1 must not govern a request from org/w2.
+        let p = policy(r#"{"rules":[{"name":"w1-only","match":{"host":"chatgpt.com"},"verdict":"allow","scope":"org/w1"}]}"#);
+        let mut r = req();
+        r.worker = Some("org/w1".into());
+        assert_eq!(judge(&r, &p).0, Verdict::Allow);
+        r.worker = Some("org/w2".into());
+        assert_eq!(judge(&r, &p).0, Verdict::Deny); // out of scope → no rule → default deny
+        // An org-scoped rule governs any worker.
+        let org = policy(r#"{"rules":[{"name":"all","match":{"host":"chatgpt.com"},"verdict":"allow","scope":"org"}]}"#);
+        assert_eq!(judge(&r, &org).0, Verdict::Allow);
     }
 
     #[test]

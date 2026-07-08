@@ -25,13 +25,9 @@ fn key(scope: &str, currency: &str, window: Window) -> String {
     format!("{scope}|{currency}|{}", window.label())
 }
 
-/// A limit at `scope` governs `subject` if the subject is that scope or nests
-/// under it — so a limit at "org" is the fleet aggregate, "org/yuko" is one
-/// worker. Counters are keyed by the *limit's* scope, so all subjects under a
-/// scope roll up into its counter automatically.
-fn scope_applies(limit_scope: &str, subject: &str) -> bool {
-    subject == limit_scope || subject.starts_with(&format!("{limit_scope}/"))
-}
+// Ancestor scope matching, shared with the judge. Counters are keyed by the
+// *limit's* scope, so all subjects under a scope roll up into its counter.
+use crate::scope::applies as scope_applies;
 
 fn usage_path() -> std::path::PathBuf {
     root().join("runs").join("usage.jsonl")

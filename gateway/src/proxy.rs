@@ -46,11 +46,11 @@ const SENSITIVE: [&str; 5] = [
 /// Read the policy fresh each decision so owner edits are live. Fail closed: an
 /// unparseable policy denies everything (empty rule list).
 fn load_policy() -> Policy {
-    let path = root().join("policies").join("gateway.json");
+    let path = root().join("runs").join("compiled").join("policy.json");
     match std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<Policy>(&s).ok()) {
         Some(p) => p,
         None => {
-            eprintln!("gateway: policy unreadable at {} — denying all", path.display());
+            eprintln!("gateway: no compiled policy at {} — denying all (run: node src/cli.ts deploy)", path.display());
             Policy::empty()
         }
     }

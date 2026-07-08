@@ -1,23 +1,25 @@
 // Roster CLI entry point.
 //
-// The lifecycle verbs come from the design (docs/roster-handoff.md, §3.11).
-// Each verb gets implemented in its own increment; until then the CLI only
-// knows what it will become.
+// Lifecycle verbs use infrastructure vocabulary (a worker is a deployed
+// configuration, not an employee). create + deploy are implemented; the rest
+// land in later increments.
 
 const VERBS: Record<string, string> = {
-  hire: "scaffold a new worker from a template",
-  deploy: "validate a worker spec and provision its surfaces",
-  steer: "send a running worker a steering message",
+  create: "scaffold a new worker spec (workers/<name>/worker.toml)",
+  deploy: "validate specs and compile the runtime config the gateway reads",
   suspend: "pause a worker",
-  audit: "inspect a worker's journals and decision records",
-  retire: "archive a worker (journals stay immutable forever)",
+  resume: "unpause a worker",
+  archive: "decommission a worker (journals stay immutable forever)",
 };
+
+const IMPLEMENTED = new Set(["create", "deploy"]);
 
 function printHelp(): void {
   console.log("roster — digital workers with owned governance");
-  console.log("\nusage: node src/cli.ts <verb>\n\nverbs (none implemented yet):");
+  console.log("\nusage: node src/cli.ts <verb>\n\nlifecycle verbs:");
   for (const [verb, summary] of Object.entries(VERBS)) {
-    console.log(`  ${verb.padEnd(8)} ${summary}`);
+    const tag = IMPLEMENTED.has(verb) ? "" : "  (not implemented yet)";
+    console.log(`  ${verb.padEnd(8)} ${summary}${tag}`);
   }
   console.log("\ndev verbs:");
   console.log('  box         run one pi session in the locked-down container:');
@@ -31,6 +33,31 @@ const verb = process.argv[2];
 
 if (verb === undefined || verb === "help" || verb === "--help") {
   printHelp();
+} else if (verb === "create") {
+  const name = process.argv[3];
+  if (!name) {
+    console.error("roster: create needs a worker name: node src/cli.ts create <name>");
+    process.exit(1);
+  }
+  const { create } = await import("./workerspec.ts");
+  try {
+    const path = create(name);
+    console.log(`created ${path}`);
+    console.log("edit it, then run: node src/cli.ts deploy");
+  } catch (err) {
+    console.error(`roster: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+} else if (verb === "deploy") {
+  const { deploy } = await import("./workerspec.ts");
+  try {
+    const r = deploy();
+    console.log(`deployed: ${r.workers.length} worker(s) [${r.workers.join(", ")}], ${r.rules} rule(s), ${r.limits} limit(s)`);
+    console.log("compiled → runs/compiled/{policy,budget}.json (the gateway reads these)");
+  } catch (err) {
+    console.error(`roster: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
 } else if (verb === "box") {
   const rest = process.argv.slice(3);
   let ceiling = 30;

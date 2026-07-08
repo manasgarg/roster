@@ -6,6 +6,7 @@ mod ca;
 mod judge;
 mod ledger;
 mod providers;
+mod scope;
 mod proxy;
 mod schema;
 mod tls;

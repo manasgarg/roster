@@ -33,12 +33,13 @@ Two languages, split by trust (see D17 in the handoff):
 ## Layout
 
 ```
-gateway/   the trusted core (Rust): TLS termination, judge, vault, refresh
-src/       orchestration (TypeScript): box runner, lockdown, CLI, vault-sync
-box/       Dockerfile for the locked-down container image (roster-box)
-policies/  the gateway rule list (owner-editable; the worker can't touch it)
-docs/      design docs, the implementation handoff, per-increment specs
-runs/      per-run outputs + the decision/credential logs (gitignored)
+gateway/          the trusted core (Rust): TLS termination, judge, vault, refresh
+src/              orchestration (TypeScript): box runner, lockdown, CLI, deploy
+box/              Dockerfile for the locked-down container image (roster-box)
+org.toml          OWNER-ONLY: shared grants + fleet-aggregate caps + metering
+workers/<name>/   OWNER-ONLY worker specs (worker.toml) overlaying org.toml
+docs/             design docs, the implementation handoff, per-increment specs
+runs/             per-run outputs, logs, and runs/compiled/ (all gitignored)
 ```
 
 ## Run
@@ -48,21 +49,25 @@ node src/cli.ts                 # help
 npm test                        # the gateway's Rust unit tests
 ```
 
-The box — one pi session in a locked-down container, governed by the gateway
-(see docs/box-spec.md for the cage, docs/judge-spec.md for the judge):
+Config is authored as TOML specs and compiled by `deploy`. The box is one pi
+session in a locked-down container, governed by the gateway (see
+docs/box-spec.md for the cage, docs/judge-spec.md for the judge):
 
 ```
 docker build -t roster-box box/                  # once
-(cd gateway && ROSTER_ROOT=.. cargo run) &       # the box's only door out
-node src/cli.ts box "write the word pong to answer.txt"
+node src/cli.ts create yuko                       # scaffold workers/yuko/worker.toml
+node src/cli.ts deploy                            # compile specs → runs/compiled/{policy,budget}.json
+(cd gateway && ROSTER_ROOT=.. cargo run) &        # the box's only door out
+node src/cli.ts box --worker yuko "write pong to answer.txt"
 ```
 
 The gateway terminates TLS (with a host-minted CA at `~/.roster/ca/`, whose
 private key never enters the box) so it sees the full request — method,
-path, headers, body, and any MCP tool call — and judges it against
-`policies/gateway.json`. Outputs land in `runs/<run-id>/workspace/`; every
-decision is a JSON line in `runs/decisions.jsonl` with sensitive header
-values redacted.
+path, headers, body, and any MCP tool call — and judges it against the
+compiled policy. Rules and budget limits carry a **scope** (`org` =
+fleet-wide, `org/<name>` = one worker), applied to the call's subject by
+ancestor match. Outputs land in `runs/<run-id>/workspace/`; every decision is
+a JSON line in `runs/decisions.jsonl` with sensitive header values redacted.
 
 The box holds **no real credential** — only a sentinel. The gateway keeps
 the real model key in a vault at `~/.roster/vault/` (off the box mount) and

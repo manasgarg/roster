@@ -73,6 +73,14 @@ pub struct Rule {
     pub verdict: Verdict,
     #[serde(default)]
     pub inject: Option<Inject>,
+    /// The scope this rule governs (ancestor of the subject). Defaults to "org"
+    /// (fleet-wide) for hand-authored/legacy rules.
+    #[serde(default = "org_scope")]
+    pub scope: String,
+}
+
+fn org_scope() -> String {
+    "org".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]

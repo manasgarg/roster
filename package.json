@@ -11,6 +11,7 @@
     "test": "cargo test --manifest-path gateway/Cargo.toml"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.3"
+    "@earendil-works/pi-coding-agent": "0.80.3",
+    "smol-toml": "1.7.0"
   }
 }

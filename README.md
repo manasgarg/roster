@@ -74,10 +74,14 @@ the real model key in a vault at `~/.roster/vault/` (off the box mount) and
 injects it in transit when a policy rule says so:
 
 ```
-node src/cli.ts vault-sync           # load host pi credentials into the vault
+node src/cli.ts connect openai-codex   # log in via the provider's own flow, write the vault
+node src/cli.ts vault-sync             # or: import an existing pi login
 ```
 
-So the model key is never inside the container; a rule with `"inject"`
+`connect` runs the provider's login (device-code, PKCE, or an API key) and
+writes the credential to the vault; the set of providers and how to inject
+each lives in `providers.json` (shared by `connect` and the gateway). So the
+model key is never inside the container; a rule with `"inject"`
 swaps the box's sentinel for the real token on the way to the model host,
 and a missing credential fails closed (deny). The gateway also **refreshes**
 expired OAuth tokens itself (owning the provider constants in

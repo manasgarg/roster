@@ -50,18 +50,37 @@ fn is_oauth(cred: &Credential) -> bool {
     cred.get("type").and_then(|v| v.as_str()) == Some("oauth")
 }
 
-/// The auth headers to inject for a credential (OAuth today).
-pub fn render_injection(cred: &Credential) -> Vec<(String, String)> {
+/// The auth headers to inject, per the provider's registry `inject` spec —
+/// each value is a template (e.g. "Bearer {access}") filled from the
+/// credential. Generalizes over OAuth and api-key providers. A header whose
+/// template references a missing field is skipped.
+pub fn render_injection(cred: &Credential, provider_name: &str) -> Vec<(String, String)> {
+    let Some(p) = crate::registry::provider(provider_name) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
-    if is_oauth(cred) {
-        if let Some(access) = cred.get("access").and_then(|v| v.as_str()) {
-            out.push(("authorization".to_string(), format!("Bearer {access}")));
-            if let Some(acct) = cred.get("accountId").and_then(|v| v.as_str()) {
-                out.push(("chatgpt-account-id".to_string(), acct.to_string()));
-            }
+    for h in &p.inject {
+        if let Some(value) = substitute(&h.value, cred) {
+            out.push((h.header.clone(), value));
         }
     }
     out
+}
+
+/// Fill `{field}` placeholders from the credential. Returns None if any
+/// referenced field is missing (so we never inject a half-built value).
+fn substitute(template: &str, cred: &Credential) -> Option<String> {
+    let mut result = String::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        result.push_str(&rest[..open]);
+        let close = rest[open..].find('}')? + open;
+        let field = &rest[open + 1..close];
+        result.push_str(cred.get(field).and_then(|v| v.as_str())?);
+        rest = &rest[close + 1..];
+    }
+    result.push_str(rest);
+    Some(result)
 }
 
 /// Atomic vault write: temp + rename, 0600. A half-written rotation would lock
@@ -162,12 +181,11 @@ mod tests {
     }
 
     #[test]
-    fn render_injection_oauth() {
-        let cred = serde_json::json!({"type":"oauth","access":"tok","accountId":"acc"}).as_object().unwrap().clone();
-        let h = render_injection(&cred);
-        assert_eq!(h, vec![
-            ("authorization".to_string(), "Bearer tok".to_string()),
-            ("chatgpt-account-id".to_string(), "acc".to_string()),
-        ]);
+    fn substitute_fills_fields_and_skips_missing() {
+        let cred = serde_json::json!({"access":"tok","accountId":"acc","key":"sk-1"}).as_object().unwrap().clone();
+        assert_eq!(substitute("Bearer {access}", &cred), Some("Bearer tok".to_string()));
+        assert_eq!(substitute("{accountId}", &cred), Some("acc".to_string()));
+        assert_eq!(substitute("{key}", &cred), Some("sk-1".to_string()));
+        assert_eq!(substitute("Bearer {missing}", &cred), None); // referenced field absent
     }
 }

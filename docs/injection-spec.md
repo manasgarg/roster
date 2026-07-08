@@ -162,14 +162,43 @@ truth**; `vault-sync` is a one-time bootstrap, *not* something to re-run
 (it would import a now-dead refresh token). If the vault chain ever breaks,
 re-login host-side via pi, then `vault-sync` once.
 
+## Credential creation — `connect` (implemented 2026-07-09)
+
+The gateway now creates credentials itself, not just refreshes them — the
+OneCLI-style "connect a service" step, done our own way (no OneCLI code).
+`node src/cli.ts connect <provider>` runs the provider's login flow and writes
+the vault; refresh then keeps it alive. `vault-sync` remains as the shortcut
+for "I already logged into pi."
+
+- **A generalized provider registry, `providers.json`** — the single source of
+  truth, read by *both* the CLI (`connect`) and the gateway (refresh + inject),
+  so nothing is inert config. Each provider declares its `auth` kind, refresh
+  constants, an `inject` spec (header templates like `Bearer {access}` filled
+  from the credential — generalizes OAuth *and* api-key), and a `login` block.
+- **Flows** (`src/connect.ts`, our own implementation): `device_code`
+  (openai-codex — device usercode → poll → exchange → decode the JWT for the
+  account id), `pkce` (anthropic — PKCE authorize URL + local callback server,
+  manual-paste fallback), and `api_key` (prompt + store). Adding a provider is
+  a registry entry, not code.
+- The Rust gateway's refresh (`providers.rs`) and injection
+  (`vault.rs:render_injection` via a `{field}` template substitution) now read
+  the same registry, so `providers.json` drives the whole credential path.
+
+**Verified**: both login flows initiate correctly against the real endpoints
+(a live device code; a well-formed PKCE authorize URL); injection through the
+registry still works end to end (box run). **Not** exercised: completing a real
+login (needs interactive browser consent) or the api-key path end to end (no
+api-key provider in the registry yet — the code path and inject template
+support it).
+
 ## What still grows from here
 
 - **Hard budget stop** (D8) attaches at this same pre-inject checkpoint: an
   empty ledger ⇒ the gateway declines to refresh/inject ⇒ the model call
   fails at the door, mid-run if need be.
-- **Own the initial OAuth** (device-code/PKCE login) if we ever need the
-  gateway to acquire credentials itself, rather than bootstrapping via a
-  host-side pi login + `vault-sync`.
 - **Real vault** (secrets manager / encrypted-at-rest, or an OS keychain)
   replacing the plain-JSON files — now more pressing, since after the first
   refresh the vault is the *only* live copy of the credential.
+- **Own the OAuth refresh-endpoint constants per provider** as the registry
+  grows (each new provider needs its login/refresh endpoints; lift them from
+  the provider's own client, or mine OneCLI's Apache-2.0 app defs as reference).

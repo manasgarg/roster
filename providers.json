@@ -1,0 +1,38 @@
+{
+  "openai-codex": {
+    "auth": "oauth",
+    "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+    "token_url": "https://auth.openai.com/oauth/token",
+    "token_encoding": "form",
+    "skew_ms": 0,
+    "account_id_claim": ["https://api.openai.com/auth", "chatgpt_account_id"],
+    "login": {
+      "flow": "device_code",
+      "device_authorization_url": "https://auth.openai.com/api/accounts/deviceauth/usercode",
+      "device_token_url": "https://auth.openai.com/api/accounts/deviceauth/token",
+      "verification_url": "https://auth.openai.com/codex/device",
+      "exchange_redirect_uri": "https://auth.openai.com/deviceauth/callback"
+    },
+    "inject": [
+      { "header": "authorization", "value": "Bearer {access}" },
+      { "header": "chatgpt-account-id", "value": "{accountId}" }
+    ]
+  },
+  "anthropic": {
+    "auth": "oauth",
+    "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+    "token_url": "https://platform.claude.com/v1/oauth/token",
+    "token_encoding": "json",
+    "skew_ms": 300000,
+    "login": {
+      "flow": "pkce",
+      "authorize_url": "https://claude.ai/oauth/authorize",
+      "redirect_uri": "http://localhost:53692/callback",
+      "callback_port": 53692,
+      "scope": "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+    },
+    "inject": [
+      { "header": "authorization", "value": "Bearer {access}" }
+    ]
+  }
+}

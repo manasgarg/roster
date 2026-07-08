@@ -355,7 +355,7 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: S
                         return Ok(deny_response(Verdict::Deny, rule.as_deref()));
                     }
                     Ok(Some(cred)) => {
-                        inject = vault::render_injection(&cred);
+                        inject = vault::render_injection(&cred, &inj.credential);
                         injected_names = Some(inject.iter().map(|(k, _)| k.clone()).collect());
                     }
                 }

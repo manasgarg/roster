@@ -26,7 +26,9 @@ function printHelp(): void {
   console.log('              node src/cli.ts box [--worker <name>] [--ceiling <minutes>] "<prompt>"');
   console.log("              (--worker sets the budget subject org/<name>, default adhoc;");
   console.log("               needs the gateway running: cd gateway && ROSTER_ROOT=.. cargo run)");
-  console.log("  vault-sync  load host pi credentials into the gateway's vault");
+  console.log("  connect     create a credential in the vault via the provider's login flow:");
+  console.log("              node src/cli.ts connect <provider>   (e.g. openai-codex, anthropic)");
+  console.log("  vault-sync  shortcut: import already-logged-in pi credentials into the vault");
 }
 
 const verb = process.argv[2];
@@ -91,6 +93,19 @@ if (verb === undefined || verb === "help" || verb === "--help") {
     console.log(`box ${result.runId} ended by ${result.endedBy} (exit code ${result.exitCode})`);
     console.log(`outputs: ${result.runDir}`);
     process.exit(result.endedBy === "ceiling" ? 2 : (result.exitCode ?? 1));
+  } catch (err) {
+    console.error(`roster: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+} else if (verb === "connect") {
+  const name = process.argv[3];
+  if (!name) {
+    console.error("roster: connect needs a provider: node src/cli.ts connect <provider>");
+    process.exit(1);
+  }
+  const { connect } = await import("./connect.ts");
+  try {
+    await connect(name);
   } catch (err) {
     console.error(`roster: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);

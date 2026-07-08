@@ -57,6 +57,14 @@ build.
 | D12 | Channels **relay, never act**; inbound email = content, never commands (spoofable); outbound email gated at T0 | 2026-07-08 | Security invariant |
 | D13 | Adopt-vs-build verdicts: NanoClaw **declined**, Letta **declined**, OpenClaw never a candidate. Borrow ideas only | 2026-07-06/08 | See vendor docs; revisit triggers recorded there |
 | D14 | Owner's 13-piece model is the build structure; six-block view is the work-division view | 2026-07-08 | Owner call |
+| D15 | **No invented action-class taxonomy.** Governed requests are matched on the standard HTTP vocabulary (protocol/method/host/port/path/headers/payload) + MCP's own terms (`tools/call`, tool name); deployment-specific meaning attaches to owner-named rule `name`s. Replaces the reference's fixed classes (`acquire-source`, …). Budgets/trust/gates will bind to rule names | 2026-07-08 | Owner call. Standard vocabulary ports across deployments; invented taxonomies don't. See `docs/judge-spec.md` |
+| D16 | **The gateway terminates TLS with a host-minted CA** (key at `~/.roster/ca/`, never on the box) to see full requests; `tunnel` verdict is the escape hatch for cert-pinning clients / interception-breaks-pi fallback | 2026-07-08 | Follows from D15 — matching all params requires seeing inside TLS. Verified: pi honors `NODE_EXTRA_CA_CERTS`, so `tunnel` is unused for pi |
+
+**Note (2026-07-08):** build is proceeding **from scratch** in the Roster
+repo in small increments (owner call), not porting Yuko as §6 suggests. D5's
+~80-line TS judge is now the live `src/judge.ts` (built fresh, not ported);
+its match language is D15's, not CEL. Shipped so far: CLI scaffold, the box
+(§3.3), the judge + inspecting gateway (§3.7/§3.9 seed).
 
 ---
 

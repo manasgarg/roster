@@ -1,7 +1,27 @@
 # The judge and the inspecting gateway (spec)
 
-**Status: spec.** The increment after the box. Turns the gateway from a
-hardcoded two-host allowlist into a policy-driven judge that can match on
+**Status: implemented and verified live, 2026-07-08.** All six acceptance
+tests below pass. Findings from building it:
+
+- **pi's model client honors `NODE_EXTRA_CA_CERTS` through full TLS
+  interception** — the load-bearing assumption held; the box happy path is
+  green with the gateway terminating TLS. The `tunnel` escape hatch was
+  built but is not needed for pi.
+- A real pi model call is now fully visible to the judge:
+  `POST chatgpt.com/backend-api/codex/responses`, ~6.5 KB JSON body,
+  `authorization` redacted in the record, allowed by rule `model-api`.
+- MCP governs at tool granularity live: same server + method,
+  `tools/call get_issue` allowed by `github-mcp-readonly`,
+  `tools/call create_pull_request` hits default-deny.
+- Method/path discrimination works: with only `POST` to `chatgpt.com`
+  allowed, a `GET` is denied and the record names the method that lost.
+- The CA private key is absent from the box (lives at `~/.roster/ca/`,
+  outside the mount); only `ca.crt` is mounted. A broken policy denies
+  everything (fail closed).
+
+**Status originally: spec.** The increment after the box. Turns the gateway
+from a hardcoded two-host allowlist into a policy-driven judge that matches
+on
 **every parameter of a request** — protocol, method, host, port, path,
 query, headers, payload — and on **MCP** tool calls carried inside those
 requests. Grounded in the box that already works (`docs/box-spec.md`) and in

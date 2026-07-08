@@ -57,6 +57,14 @@ No task queue or supervisor. No channels. One worker, one session, run by
 hand. The gateway here is a **seed**: hardcoded allowlist + a log — the real
 judge grows in its place later without moving the door.
 
+> **Superseded in part by `docs/judge-spec.md`.** The seed gateway described
+> below (CONNECT-tunnel an allowlist, host+port visibility only) was the
+> starting point. The gateway now **terminates TLS** and judges on the full
+> request; the hardcoded allowlist became `policies/gateway.json`, and
+> `runs/gateway.jsonl` became `runs/decisions.jsonl`. The lockdown network,
+> `.env` shadow, ceiling, and read-only mount below are unchanged and still
+> current.
+
 ## How the lockdown works — two independent layers
 
 **Layer 1: no route.** The container joins a Docker bridge network created

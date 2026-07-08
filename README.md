@@ -30,21 +30,23 @@ each increment runs live and is tested before the next one starts.
 ## Layout
 
 ```
-src/    all code (single flat package for now; split only when it hurts)
-box/    Dockerfile for the locked-down container image (roster-box)
-docs/   design docs, the implementation handoff, per-increment specs
-test/   tests (node:test)
-runs/   per-run outputs + gateway decision log (gitignored)
+src/       all code (single flat package for now; split only when it hurts)
+box/       Dockerfile for the locked-down container image (roster-box)
+policies/  the gateway rule list (owner-editable; the worker can't touch it)
+docs/      design docs, the implementation handoff, per-increment specs
+test/      tests (node:test) — run with `npm test`
+runs/      per-run outputs + the decision log (gitignored)
 ```
 
 ## Run
 
 ```
 node src/cli.ts                 # help
+npm test                        # the judge's unit tests
 ```
 
-The box — one pi session in a locked-down container
-(see docs/box-spec.md for what "locked down" means and how it's verified):
+The box — one pi session in a locked-down container, governed by the judge
+(see docs/box-spec.md for the cage, docs/judge-spec.md for the judge):
 
 ```
 docker build -t roster-box box/          # once
@@ -52,5 +54,9 @@ node src/gateway.ts &                    # the box's only door out
 node src/cli.ts box "write the word pong to answer.txt"
 ```
 
-Outputs land in `runs/<run-id>/workspace/`; every allowed/denied egress
-attempt is a JSON line in `runs/gateway.jsonl`.
+The gateway terminates TLS (with a host-minted CA at `~/.roster/ca/`, whose
+private key never enters the box) so it sees the full request — method,
+path, headers, body, and any MCP tool call — and judges it against
+`policies/gateway.json`. Outputs land in `runs/<run-id>/workspace/`; every
+decision is a JSON line in `runs/decisions.jsonl` with sensitive header
+values redacted.

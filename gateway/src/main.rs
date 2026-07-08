@@ -2,7 +2,9 @@
 //! P1: TLS-terminating forward proxy. Judge/vault/metering land in P2–P4.
 
 mod ca;
+mod judge;
 mod proxy;
+mod schema;
 mod tls;
 
 use ca::Ca;

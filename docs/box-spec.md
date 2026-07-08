@@ -1,7 +1,24 @@
 # The box — pi in a locked-down container (spec)
 
-**Status: spec.** Nothing in this document is built yet. This is the next
-increment after the CLI scaffold: run one pi session inside a Docker
+**Status: implemented and verified live, 2026-07-08.** All seven acceptance
+tests below pass (test 7's "docker unable to recreate the network" half was
+not exercised — that needs a deliberately broken Docker; the gateway-down
+half was). Findings from implementation, where reality amended the spec:
+
+- The host's default pi provider is **openai-codex**, whose model host is
+  `chatgpt.com` — the allowlist is `{api.anthropic.com, chatgpt.com}`, the
+  hosts for the two credentials present on this machine.
+- `settings.json` is **rebuilt, not copied** into the box: only
+  `defaultProvider/defaultModel/defaultThinkingLevel` carry over. The
+  host's settings had a `packages` list that made pi `npm install` at boot
+  inside the box — the gateway denied `registry.npmjs.org` (default-deny
+  earning its keep on day one) and pi died. What the box runs is the
+  runner's decision, not inherited host state.
+- pi's model calls do honor `HTTPS_PROXY`/`NODE_USE_ENV_PROXY=1` — the
+  happy path ran on the no-route network with exactly one
+  `CONNECT chatgpt.com allow` in the gateway log.
+
+This increment: run one pi session inside a Docker
 container that is locked down, from one command. Grounded in two working
 implementations — Yuko (`packages/driver/src/{container,lockdown}.ts`,
 `broker/src/broker.ts`, `runtime/Dockerfile`) and NanoClaw

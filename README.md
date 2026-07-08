@@ -31,12 +31,26 @@ each increment runs live and is tested before the next one starts.
 
 ```
 src/    all code (single flat package for now; split only when it hurts)
-docs/   design docs and the implementation handoff
+box/    Dockerfile for the locked-down container image (roster-box)
+docs/   design docs, the implementation handoff, per-increment specs
 test/   tests (node:test)
+runs/   per-run outputs + gateway decision log (gitignored)
 ```
 
 ## Run
 
 ```
-node src/cli.ts
+node src/cli.ts                 # help
 ```
+
+The box — one pi session in a locked-down container
+(see docs/box-spec.md for what "locked down" means and how it's verified):
+
+```
+docker build -t roster-box box/          # once
+node src/gateway.ts &                    # the box's only door out
+node src/cli.ts box "write the word pong to answer.txt"
+```
+
+Outputs land in `runs/<run-id>/workspace/`; every allowed/denied egress
+attempt is a JSON line in `runs/gateway.jsonl`.

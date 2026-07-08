@@ -14,8 +14,7 @@ import { connect as netConnect, type Socket } from "node:net";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-export const GATEWAY_PORT = 7300;
+import { GATEWAY_PORT } from "./lockdown.ts";
 
 // The hosts pi's model providers call, for the credentials present on this
 // machine (anthropic, openai-codex). Hardcoded until the judge exists.

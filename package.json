@@ -1,0 +1,13 @@
+{
+  "name": "roster",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Digital workers with owned governance: default-deny policy judge, budget ledgers, earned trust, human gates, permanent audit records.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  }
+}

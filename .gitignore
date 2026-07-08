@@ -1,0 +1,11 @@
+node_modules/
+
+# secrets — never commit
+.env
+.env.*
+
+# runtime state — never commit
+runs/
+mailbox/
+gates/
+reviews/

@@ -43,7 +43,7 @@ export async function ensureLockdown(): Promise<void> {
     if (!res.ok) throw new Error(`healthz answered ${res.status}`);
   } catch {
     throw new LockdownError(
-      `the gateway is not answering on :${GATEWAY_PORT} — start it with: node src/gateway.ts`,
+      `the gateway is not answering on :${GATEWAY_PORT} — start it with: (cd gateway && ROSTER_ROOT=.. cargo run)`,
     );
   }
 }

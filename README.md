@@ -19,38 +19,41 @@ each increment runs live and is tested before the next one starts.
 
 ## Toolchain
 
-- **Node 24+** — TypeScript runs directly via native type-stripping. No
-  build step, no `tsc`, no bundler. `node src/cli.ts` just works.
-  (Caveat: `node --check` does *not* strip types, so it can't syntax-check
-  `.ts` files — run the file or the tests instead.)
-- **Near-zero dependencies by policy** — prefer small hand-rolled pieces
-  over framework adoption.
-- Tests use the built-in `node:test` runner: `npm test`.
+Two languages, split by trust (see D17 in the handoff):
+
+- **The gateway is Rust** (`gateway/`) — the trusted core that terminates
+  TLS, parses hostile request/response bodies, judges, and injects/refreshes
+  credentials. `cargo build`, `cargo test`.
+- **Orchestration is TypeScript** (`src/`) — the box runner, docker
+  lockdown, and CLI. Node 24+, native type-stripping, no build step.
+  (Caveat: `node --check` can't syntax-check `.ts` — run the file instead.)
+- **Near-zero dependencies by policy** on both sides.
+- `npm test` runs the gateway's Rust tests.
 
 ## Layout
 
 ```
-src/       all code (single flat package for now; split only when it hurts)
+gateway/   the trusted core (Rust): TLS termination, judge, vault, refresh
+src/       orchestration (TypeScript): box runner, lockdown, CLI, vault-sync
 box/       Dockerfile for the locked-down container image (roster-box)
 policies/  the gateway rule list (owner-editable; the worker can't touch it)
 docs/      design docs, the implementation handoff, per-increment specs
-test/      tests (node:test) — run with `npm test`
-runs/      per-run outputs + the decision log (gitignored)
+runs/      per-run outputs + the decision/credential logs (gitignored)
 ```
 
 ## Run
 
 ```
 node src/cli.ts                 # help
-npm test                        # the judge's unit tests
+npm test                        # the gateway's Rust unit tests
 ```
 
-The box — one pi session in a locked-down container, governed by the judge
+The box — one pi session in a locked-down container, governed by the gateway
 (see docs/box-spec.md for the cage, docs/judge-spec.md for the judge):
 
 ```
-docker build -t roster-box box/          # once
-node src/gateway.ts &                    # the box's only door out
+docker build -t roster-box box/                  # once
+(cd gateway && ROSTER_ROOT=.. cargo run) &       # the box's only door out
 node src/cli.ts box "write the word pong to answer.txt"
 ```
 
@@ -73,6 +76,6 @@ So the model key is never inside the container; a rule with `"inject"`
 swaps the box's sentinel for the real token on the way to the model host,
 and a missing credential fails closed (deny). The gateway also **refreshes**
 expired OAuth tokens itself (owning the provider constants in
-`src/providers.ts` — no dependency on the engine's code), so injected
-credentials stay live; every refresh is logged to `runs/credentials.jsonl`.
-See docs/injection-spec.md.
+`gateway/src/providers.rs` — no dependency on the engine's code), so
+injected credentials stay live; every refresh is logged to
+`runs/credentials.jsonl`. See docs/injection-spec.md.

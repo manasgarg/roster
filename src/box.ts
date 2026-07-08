@@ -16,7 +16,10 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureLockdown, GATEWAY_PORT, LOCKDOWN_NETWORK } from "./lockdown.ts";
-import { ensureCA } from "./ca.ts";
+
+// The Rust gateway owns the CA (at ~/.roster/ca) and creates it on startup.
+// The box only mounts the public cert; it never sees the key.
+const HOST_CA_CERT = join(homedir(), ".roster", "ca", "ca.crt");
 
 // Where the CA's public cert is mounted inside the box (read-only) and the
 // env vars that make every client trust it — so the gateway can terminate
@@ -106,7 +109,10 @@ function preparePihome(pihome: string): { hasAuthFile: boolean } {
 
 export async function runBox(prompt: string, ceilingMinutes: number = 30): Promise<BoxResult> {
   await ensureLockdown(); // throws — never proceeds with open egress
-  const caCert = ensureCA(); // host-side CA cert path; the box trusts it, never sees the key
+  if (!existsSync(HOST_CA_CERT)) {
+    throw new Error(`the gateway CA is not present at ${HOST_CA_CERT} — start the gateway first (it creates the CA)`);
+  }
+  const caCert = HOST_CA_CERT; // the box trusts it, never sees the key
 
   const runId = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
   const runDir = join(repoRoot, "runs", runId);

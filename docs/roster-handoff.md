@@ -70,12 +70,21 @@ its match language is D15's, not CEL. Shipped so far: CLI scaffold, the box
 injection** — the model key now lives in a host-side vault
 (`~/.roster/vault/`) and is injected in transit; the box carries only a
 sentinel; and **gateway-owned OAuth refresh** (the gateway refreshes expired
-tokens itself via a provider table in `src/providers.ts` — no pi dependency
-in the credential path; single-flight, atomic vault write, fail-closed, audit
-to `runs/credentials.jsonl`). This is build-plan increment 3's injection +
+tokens itself via a provider table — no pi dependency in the credential path;
+single-flight, atomic vault write, fail-closed, audit to
+`runs/credentials.jsonl`). This is build-plan increment 3's injection +
 refresh. The hard-budget half (gateway declines to inject on an empty ledger)
 attaches at the same pre-inject checkpoint and is still pending — see
 `docs/injection-spec.md`.
+
+**Note (2026-07-08, later):** the gateway is now **Rust** (`gateway/`), per
+D17/D18 — TLS termination, CA/leaf minting (rcgen), judge, vault, injection,
+and OAuth refresh all ported to parity and verified live end to end (the box
+runs through it); the TS gateway modules are retired. Orchestration
+(`src/`: box runner, lockdown, CLI, `vault-sync`) stays TS. See
+`docs/rust-port.md`. Next: the metering/currency/budget model (call log →
+namespaced identity → CEL currency mapping → drawdown limits) built on the
+Rust base with CEL.
 
 ---
 

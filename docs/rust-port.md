@@ -1,5 +1,12 @@
 # Porting the gateway to Rust (plan)
 
+**Status: P0–P4 complete, 2026-07-08 — the Rust gateway fully replaces the TS
+one.** The box runs end to end through it (TLS termination + judge + injection
++ refresh), and `src/{gateway,judge,vault,providers,ca,schema}.ts` are retired
+(only the `vault-sync` bootstrap remains in TS). `npm test` runs the Rust
+tests (11 green). Next: the metering/currency/budget model with CEL on the
+Rust base.
+
 **Decision: D17 (Rust gateway) + D18 (CEL).** The trusted core becomes a Rust
 binary; orchestration stays TypeScript. **Port-first**: reach parity with the
 working TS gateway, then build metering/budgets on the Rust base.

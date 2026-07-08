@@ -11,7 +11,7 @@
 // increment (docs/roster-handoff.md §9, increment 3).
 
 import { spawn, execFileSync } from "node:child_process";
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,14 +42,52 @@ function resolvePiEntry(): string {
   return join(pkgDir, typeof pkg.bin === "string" ? pkg.bin : pkg.bin.pi);
 }
 
-/** Throwaway per-run HOME holding a copy of the model auth — pi can refresh
- * tokens in its copy without ever seeing host session state. */
+const SENTINEL = "roster-sentinel-no-real-credential-in-box";
+const FAR_FUTURE_MS = Date.now() + 100 * 365 * 24 * 3600 * 1000;
+
+/** A structurally-valid but useless JWT, so pi can decode it (it reads the
+ * account id and expiry out of the token) and send it — without it being a
+ * real credential. Far-future `exp` so pi never tries its own refresh. The
+ * gateway replaces the whole thing in transit anyway. */
+function sentinelJwt(): string {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const header = { alg: "none", typ: "JWT" };
+  const payload = {
+    iat: nowSec,
+    exp: nowSec + 100 * 365 * 24 * 3600,
+    "https://api.openai.com/auth": { chatgpt_account_id: "roster-sentinel-account" },
+  };
+  return `${b64(header)}.${b64(payload)}.${Buffer.from("roster-sentinel-signature").toString("base64url")}`;
+}
+
+/** Replace the secret fields of a real auth entry with sentinels. pi will
+ * form a request from these; the gateway swaps the sentinel for the real
+ * token in transit (src/gateway.ts). */
+function sentinelize(entry: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...entry };
+  // A JWT access token is decoded by pi (it extracts the account id + expiry),
+  // so a JWT-shaped one needs a well-formed fake; others just need a string.
+  if (typeof out.access === "string") out.access = out.access.split(".").length === 3 ? sentinelJwt() : SENTINEL;
+  if (typeof out.refresh === "string") out.refresh = SENTINEL;
+  if (typeof out.accountId === "string") out.accountId = "roster-sentinel-account";
+  if (typeof out.expires === "number") out.expires = FAR_FUTURE_MS;
+  return out;
+}
+
+/** Throwaway per-run HOME. The box gets a SENTINEL auth (real shape, secrets
+ * nulled) — never a real credential. The gateway holds the real key and
+ * injects it in transit. See docs/injection-spec.md. */
 function preparePihome(pihome: string): { hasAuthFile: boolean } {
   const agentDir = join(pihome, "agent");
   mkdirSync(agentDir, { recursive: true });
   const authSrc = join(homedir(), ".pi/agent/auth.json");
   const hasAuthFile = existsSync(authSrc);
-  if (hasAuthFile) copyFileSync(authSrc, join(agentDir, "auth.json"));
+  if (hasAuthFile) {
+    const real = JSON.parse(readFileSync(authSrc, "utf8")) as Record<string, Record<string, unknown>>;
+    const sentinel = Object.fromEntries(Object.entries(real).map(([prov, e]) => [prov, sentinelize(e)]));
+    writeFileSync(join(agentDir, "auth.json"), JSON.stringify(sentinel, null, 2) + "\n");
+  }
   // Settings are rebuilt, not copied: only the model selection carries over.
   // Anything else from the host (e.g. a "packages" list pi would npm-install
   // at boot — denied by the gateway, and not the box's to decide) stays out.

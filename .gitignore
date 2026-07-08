@@ -1,5 +1,9 @@
 node_modules/
 
+# rust build artifacts
+target/
+gateway/target/
+
 # secrets — never commit
 .env
 .env.*

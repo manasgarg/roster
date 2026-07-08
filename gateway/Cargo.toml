@@ -1,0 +1,19 @@
+[package]
+name = "roster-gateway"
+version = "0.0.1"
+edition = "2021"
+description = "Roster's trusted core: TLS-terminating governed egress gateway"
+
+[[bin]]
+name = "roster-gateway"
+path = "src/main.rs"
+
+[dependencies]
+rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
+
+[dev-dependencies]
+x509-parser = "0.18"
+
+[profile.dev]
+# Faster iterative builds during the port.
+debug = 1

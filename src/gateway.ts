@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { GATEWAY_PORT } from "./lockdown.ts";
 import { certPemForHost, contextForHost, ensureCA, leafKeyPem } from "./ca.ts";
 import { judge } from "./judge.ts";
-import { getCredential, type Credential } from "./vault.ts";
+import { getFreshCredential, type Credential } from "./vault.ts";
 import type { GovernedRequest, Policy } from "./schema.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -123,7 +123,7 @@ function handleDecrypted(protocol: "http" | "https", req: IncomingMessage, res: 
   }
   const headers = normalizeHeaders(req.headers);
 
-  collectBody(req, (body, tooBig) => {
+  collectBody(req, async (body, tooBig) => {
     const gr: GovernedRequest = {
       worker: null, protocol, method: req.method ?? "GET", host, port, path, query, headers,
       bodySize: body.length, mcp: liftMcp(headers, body),
@@ -145,11 +145,22 @@ function handleDecrypted(protocol: "http" | "https", req: IncomingMessage, res: 
     if (verdict === "allow" && rule) {
       const ruleObj = policy.rules.find((r) => r.name === rule);
       if (ruleObj?.inject) {
-        const cred = getCredential(ruleObj.inject.credential);
+        const credName = ruleObj.inject.credential;
+        let cred: Credential | null;
+        try {
+          // Refreshes the OAuth token first if it has expired; throws if the
+          // refresh fails — in which case we deny rather than inject a stale key.
+          cred = await getFreshCredential(credName);
+        } catch (err) {
+          record(gr, "deny", rule);
+          res.writeHead(403, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: `credential "${credName}" refresh failed`, detail: String(err instanceof Error ? err.message : err), rule }));
+          return;
+        }
         if (cred === null) {
           record(gr, "deny", rule);
           res.writeHead(403, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: `credential "${ruleObj.inject.credential}" not in vault`, rule }));
+          res.end(JSON.stringify({ error: `credential "${credName}" not in vault`, rule }));
           return;
         }
         inject = renderInjection(cred);

@@ -64,7 +64,13 @@ build.
 repo in small increments (owner call), not porting Yuko as §6 suggests. D5's
 ~80-line TS judge is now the live `src/judge.ts` (built fresh, not ported);
 its match language is D15's, not CEL. Shipped so far: CLI scaffold, the box
-(§3.3), the judge + inspecting gateway (§3.7/§3.9 seed).
+(§3.3), the judge + inspecting gateway (§3.7/§3.9 seed), and **credential
+injection** — the model key now lives in a host-side vault
+(`~/.roster/vault/`) and is injected in transit; the box carries only a
+sentinel (build-plan increment 3, injection half; §3.7 "keys… injects in
+transit"). The hard-budget half of increment 3 (gateway declines to inject
+on an empty ledger) and OAuth token refresh are still pending — see
+`docs/injection-spec.md`.
 
 ---
 

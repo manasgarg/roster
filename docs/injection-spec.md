@@ -1,8 +1,26 @@
 # Credential injection (spec)
 
-**Status: spec.** The increment after the judge. Fulfills handoff D8 and
-build-plan increment 3: **the box stops holding the model credential; the
-gateway injects it in transit.** Until now the box carried a throwaway copy
+**Status: implemented and verified live, 2026-07-08.** All four acceptance
+tests below pass. Findings:
+
+- **pi decodes the access token as a JWT** to extract the account id — a
+  plain-string sentinel fails with `Failed to extract accountId from token`
+  and pi never even makes a network call. The sentinel for a JWT-shaped
+  token must be a *well-formed* JWT (far-future `exp`, a sentinel
+  `chatgpt_account_id` claim). With that, pi sends it and the gateway swaps
+  it. `src/box.ts:sentinelJwt`.
+- Verified end to end: the box's `auth.json` holds only sentinels, the real
+  access token appears nowhere under the run dir, yet the model calls
+  succeed and the task completes — because the gateway injected
+  `authorization` + `chatgpt-account-id` in transit. Removing the vault
+  entry makes the same call **deny** at the gateway (fail closed); the box
+  can't see the vault.
+- Deferred as planned: OAuth **refresh**. The injected token is valid until
+  ~2026-07-15; past that, `vault-sync` must be re-run until refresh lands.
+
+**Status originally: spec.** The increment after the judge. Fulfills handoff
+D8 and build-plan increment 3: **the box stops holding the model credential;
+the gateway injects it in transit.** Until now the box carried a throwaway copy
 of the real model auth in `.pihome`. After this, the box holds only a
 **sentinel** (a deliberately-useless placeholder), and the gateway swaps it
 for the real token on the way to the model host. The real key never enters

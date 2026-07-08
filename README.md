@@ -60,3 +60,15 @@ path, headers, body, and any MCP tool call — and judges it against
 `policies/gateway.json`. Outputs land in `runs/<run-id>/workspace/`; every
 decision is a JSON line in `runs/decisions.jsonl` with sensitive header
 values redacted.
+
+The box holds **no real credential** — only a sentinel. The gateway keeps
+the real model key in a vault at `~/.roster/vault/` (off the box mount) and
+injects it in transit when a policy rule says so:
+
+```
+node src/cli.ts vault-sync           # load host pi credentials into the vault
+```
+
+So the model key is never inside the container; a rule with `"inject"`
+swaps the box's sentinel for the real token on the way to the model host,
+and a missing credential fails closed (deny). See docs/injection-spec.md.

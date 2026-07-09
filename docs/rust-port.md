@@ -1,5 +1,14 @@
 # Porting the gateway to Rust (plan)
 
+**Superseded by D20 (2026-07-09): the *entire* trusted host-side is now Rust.**
+The gateway port (P0–P4) below was the first half; D20 then folded the
+orchestration (box runner, lockdown, `create`/`deploy`/`connect`/`vault-sync`)
+into the same `roster` binary and retired all of `src/*.ts`. TypeScript now
+lives only inside the box (pi + extensions). One binary, one schema set — the
+D17 "Rust gateway / TS orchestration" split (referenced below) no longer holds.
+
+---
+
 **Status: P0–P4 complete, 2026-07-08 — the Rust gateway fully replaces the TS
 one.** The box runs end to end through it (TLS termination + judge + injection
 + refresh), and `src/{gateway,judge,vault,providers,ca,schema}.ts` are retired

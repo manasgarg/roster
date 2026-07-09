@@ -2,8 +2,7 @@
   "name": "roster",
   "version": "0.0.1",
   "private": true,
-  "type": "module",
-  "description": "Digital workers with owned governance: default-deny policy judge, budget ledgers, earned trust, human gates, permanent audit records.",
+  "description": "pi (the engine) is the only Node dependency — mounted read-only into the box. All host-side code is Rust (the `roster` binary). Run `npm install` once to provide pi to the box.",
   "engines": {
     "node": ">=24"
   },
@@ -11,7 +10,6 @@
     "test": "cargo test --manifest-path gateway/Cargo.toml"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.3",
-    "smol-toml": "1.7.0"
+    "@earendil-works/pi-coding-agent": "0.80.3"
   }
 }

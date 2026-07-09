@@ -1,11 +1,11 @@
 [package]
-name = "roster-gateway"
+name = "roster"
 version = "0.0.1"
 edition = "2021"
-description = "Roster's trusted core: TLS-terminating governed egress gateway"
+description = "Roster's trusted host-side control plane: gateway + orchestration"
 
 [[bin]]
-name = "roster-gateway"
+name = "roster"
 path = "src/main.rs"
 
 [dependencies]
@@ -24,6 +24,7 @@ time = { version = "0.3", features = ["formatting"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 cel-interpreter = "0.10.0"
 base64 = "0.22.1"
+toml = "0.8"
 
 [dev-dependencies]
 x509-parser = "0.18"

@@ -14,9 +14,15 @@ use std::time::{Duration, Instant};
 type BErr = Box<dyn std::error::Error>;
 
 pub async fn run(args: &[String]) -> Result<(), BErr> {
-    let name = args.first().ok_or("connect needs a provider: roster connect <provider>")?;
     let registry = read_registry()?;
-    let p = registry.get(name).ok_or_else(|| format!("unknown provider \"{name}\" (not in providers.json)"))?;
+    let mut available: Vec<String> = registry.keys().cloned().collect();
+    available.sort();
+    let name = args
+        .first()
+        .ok_or_else(|| format!("connect needs a provider: roster connect <provider>  (providers: {})", available.join(", ")))?;
+    let p = registry
+        .get(name)
+        .ok_or_else(|| format!("unknown provider \"{name}\" — try one of: {}", available.join(", ")))?;
 
     let cred = match p.get("auth").and_then(|v| v.as_str()) {
         Some("api_key") => connect_api_key()?,

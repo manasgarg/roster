@@ -7,7 +7,7 @@ use crate::util::{now_ms, root};
 use base64::Engine;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -126,34 +126,48 @@ async fn connect_pkce(p: &Value, login: &Value) -> Result<Value, BErr> {
     let redirect_uri = str_field(login, "redirect_uri")?;
     let verifier = b64url(&random_bytes(32));
     let challenge = b64url(&Sha256::digest(verifier.as_bytes()));
-    let state = b64url(&random_bytes(16));
+    // Some providers (Anthropic) use the verifier as the state; default random.
+    let sent_state = if login["state_source"].as_str() == Some("verifier") {
+        verifier.clone()
+    } else {
+        b64url(&random_bytes(16))
+    };
 
     let mut url = reqwest::Url::parse(str_field(login, "authorize_url")?)?;
-    url.query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", client_id)
-        .append_pair("redirect_uri", redirect_uri)
-        .append_pair("scope", login["scope"].as_str().unwrap_or(""))
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("state", &state);
-    println!("\n  open this URL in a browser and authorize:\n\n  {url}\n");
-
-    let (code, got_state) = match login["callback_port"].as_u64() {
-        Some(port) => capture_callback(port as u16).or_else(|_| prompt_callback())?,
-        None => prompt_callback()?,
-    };
-    if code.is_empty() {
-        return Err("no authorization code captured".into());
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("response_type", "code");
+        q.append_pair("client_id", client_id);
+        q.append_pair("redirect_uri", redirect_uri);
+        q.append_pair("scope", login["scope"].as_str().unwrap_or(""));
+        q.append_pair("code_challenge", &challenge);
+        q.append_pair("code_challenge_method", "S256");
+        q.append_pair("state", &sent_state);
+        // Provider-specific extras (e.g. Anthropic's `code=true`).
+        if let Some(extra) = login["extra_authorize_params"].as_object() {
+            for (k, v) in extra {
+                if let Some(s) = v.as_str() {
+                    q.append_pair(k, s);
+                }
+            }
+        }
     }
-    if !got_state.is_empty() && got_state != state {
+    println!("\n  1. open this URL and authorize:\n\n  {url}\n");
+    println!("  2. after authorizing, paste the code (or the full redirect URL) here:\n");
+
+    let (code, got_state) = parse_callback(&prompt("code / redirect URL: ")?);
+    if code.is_empty() {
+        return Err("no authorization code found in what you pasted".into());
+    }
+    if !got_state.is_empty() && got_state != sent_state {
         return Err("state mismatch — aborting".into());
     }
+    let exchange_state = if got_state.is_empty() { sent_state } else { got_state };
 
     let tok = post_json(
         str_field(p, "token_url")?,
         &json!({
-            "grant_type": "authorization_code", "client_id": client_id, "code": code, "state": state,
+            "grant_type": "authorization_code", "client_id": client_id, "code": code, "state": exchange_state,
             "redirect_uri": redirect_uri, "code_verifier": verifier,
         }),
     )
@@ -161,39 +175,28 @@ async fn connect_pkce(p: &Value, login: &Value) -> Result<Value, BErr> {
     oauth_cred(p, &tok)
 }
 
-/// Capture the OAuth redirect on a one-shot local server (raw TCP, no deps).
-fn capture_callback(port: u16) -> Result<(String, String), BErr> {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
-    let (mut stream, _) = listener.accept()?;
-    let mut line = String::new();
-    BufReader::new(&stream).read_line(&mut line)?;
-    let path = line.split_whitespace().nth(1).unwrap_or("/");
-    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<h3>Roster: you can close this tab.</h3>");
-    parse_callback(&format!("http://localhost{path}"))
-}
-
-fn prompt_callback() -> Result<(String, String), BErr> {
-    let pasted = prompt("paste the redirect URL (or the code) you land on: ")?;
-    if let Ok(cs) = parse_callback(&pasted) {
-        if !cs.0.is_empty() {
-            return Ok(cs);
+/// Extract (code, state) from what the user pastes: a full redirect URL, a
+/// `code#state` string, or a bare code.
+fn parse_callback(value: &str) -> (String, String) {
+    let value = value.trim();
+    if let Ok(url) = reqwest::Url::parse(value) {
+        let mut code = String::new();
+        let mut state = String::new();
+        for (k, v) in url.query_pairs() {
+            if k == "code" {
+                code = v.into_owned();
+            } else if k == "state" {
+                state = v.into_owned();
+            }
+        }
+        if !code.is_empty() {
+            return (code, state);
         }
     }
-    Ok((pasted, String::new())) // treat the paste as a bare code
-}
-
-fn parse_callback(value: &str) -> Result<(String, String), BErr> {
-    let url = reqwest::Url::parse(value)?;
-    let mut code = String::new();
-    let mut state = String::new();
-    for (k, v) in url.query_pairs() {
-        if k == "code" {
-            code = v.into_owned();
-        } else if k == "state" {
-            state = v.into_owned();
-        }
+    if let Some((code, state)) = value.split_once('#') {
+        return (code.to_string(), state.to_string());
     }
-    Ok((code, state))
+    (value.to_string(), String::new())
 }
 
 // ── shared ───────────────────────────────────────────────────────────────────

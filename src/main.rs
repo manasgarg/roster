@@ -75,6 +75,16 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn print_help() {
+    let names = registry::provider_names();
+    let providers = if names.is_empty() {
+        "  connect <provider>          create a credential via its login flow".to_string()
+    } else {
+        format!(
+            "  connect <provider>          create a credential via its login flow\n{}providers: {}",
+            " ".repeat(30),
+            names.join(", ")
+        )
+    };
     eprintln!(
         "roster — digital workers with owned governance\n\n\
          usage: roster <command>\n\n\
@@ -82,8 +92,8 @@ fn print_help() {
            serve                       run the governed-egress gateway\n  \
            create <name>               scaffold workers/<name>/worker.toml\n  \
            deploy                      compile org.toml + workers/* → runs/compiled/\n  \
-           box [--worker <n>] [--ceiling <m>] \"<prompt>\"   run one pi session in the box\n  \
-           connect <provider>          create a credential via its login flow\n  \
+           box [--worker <n>] [--ceiling <m>] \"<prompt>\"   run one pi session in the box\n\
+         {providers}\n  \
            vault-sync                  import an existing pi login into the vault"
     );
 }

@@ -37,3 +37,14 @@ pub fn provider(name: &str) -> Option<Provider> {
     let map: HashMap<String, Provider> = serde_json::from_str(&text).ok()?;
     map.get(name).cloned()
 }
+
+/// The names of all registered providers (for `connect` help), sorted.
+pub fn provider_names() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_to_string(root().join("providers.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&s).ok())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    names.sort();
+    names
+}

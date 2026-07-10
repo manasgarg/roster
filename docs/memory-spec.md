@@ -54,8 +54,8 @@ yuko: (remembers, in this channel) "owner prefers terse replies"
   current `channel_id` (as it does for `discord_send`). The trusted-side executor
   appends the note; journaled/audited like any action.
 - **`forget(channel_id, note_id)`** — a box tool → a `forget` action (auto).
-- **CLI**: `roster notes ls <channel_id> | rm <channel_id> <note_id>` for the owner
-  to review and prune a channel's memory.
+- **CLI**: `roster notes ls <channel_id>` (review), `rm <channel_id> <note_id>`
+  (prune), `add <channel_id> "<note>"` (owner-authored memory).
 
 ## Recall into runs
 
@@ -68,6 +68,30 @@ conversation → the new message(s)**.
   in v1 (a general/worker-wide bucket could be added later if needed).
 - **Bounded**: v1 includes all of a channel's notes (kept small by pruning); cap or
   rank later if one channel's memory grows large.
+
+## Tuning memory — the owner's levers
+
+Memory is meant to be **steered over time**, not set-and-forget. Five levers, from
+in-the-moment to structural:
+
+1. **Steer by talking** (primary) — in the channel: "remember I prefer terse
+   replies", "forget that", "actually it's X not Y". The worker uses its
+   `remember`/`forget` tools; most tuning happens in conversation, no CLI.
+2. **Inspect & prune** — `roster notes ls <channel>` / `rm <channel> <id>`, and
+   `/notes` in Discord, to review and clean up a channel's memory.
+3. **Author directly** — `roster notes add <channel> "<note>"`: put a fact in
+   yourself, same as one the worker wrote.
+4. **Shape *what* it remembers** (the tune-over-time lever) — what the worker jots
+   is guided by **identity** (its general disposition: "be judicious, don't hoard
+   chit-chat") and the channel's **purpose** ("in here, track deploy status"). You
+   steer its *judgement*, not each note.
+5. **Review mode** (later) — an optional per-channel setting where new memory is
+   *proposed* and the owner approves it (reusing the gate machinery), for channels
+   that want tight control.
+
+Plus **observability**: every `remember`/`forget` is journaled/audited, and a
+channel's memory appears verbatim in the run transcript — so you can see exactly
+what's recalled and when it changed.
 
 ## Identity stays sacred
 
@@ -92,11 +116,14 @@ worker has no tool to change it. The worker's `propose_identity_edit` tool is
 
 ## Build order (small increments)
 
-1. **Notes core** — `remember(channel_id, note)` action + `note` executor +
-   `channels/<id>/notes.jsonl` + `roster notes ls|rm` + recall into the session
-   system prompt. Remove the worker's `propose_identity_edit`.
-2. **`forget` + recall tuning** — the `forget` action; capping/ranking per channel
-   if memory grows; optional general/worker-wide bucket for non-channel tasks.
+1. **Notes core** — `remember`/`forget` actions + `note` executor +
+   `channels/<id>/notes.jsonl` + recall into the session system prompt +
+   `roster notes ls|rm|add`. Steering-by-talking (lever 1), inspect/prune/author
+   (levers 2–3), and shaping-via-identity/purpose (lever 4) all work from this.
+   Remove the worker's `propose_identity_edit`.
+2. **`/notes` slash command + review mode** — the Discord inspect/prune surface,
+   and the optional per-channel "propose memory for approval" mode (lever 5);
+   capping/ranking per channel if memory grows.
 
 ## Open decisions (recommended defaults)
 

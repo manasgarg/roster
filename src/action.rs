@@ -56,6 +56,10 @@ pub struct ActionGrant {
     /// Default trust level (T0 = "gate"); the trust ladder can override per payload.
     #[serde(default = "gate_default")]
     pub trust: String,
+    /// When true, resolving a gate for this action files a continuation task so
+    /// the worker can react to the outcome (§3.5). Default: just close the task.
+    #[serde(default)]
+    pub wake_on_resolve: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -87,9 +91,24 @@ fn reply(status: StatusCode, v: Value) -> Response<Body> {
     resp
 }
 
+/// Route a request to the action host. `worker` is resolved from the identity
+/// token. POST /submit proposes an action; GET /gates and /journal are the
+/// worker's read-only view of its own state (the box's cross-run awareness).
+pub async fn handle_action(worker: &str, method: &str, path: &str, body: &[u8]) -> Response<Body> {
+    match (method, path) {
+        ("POST", "/submit") => submit(worker, body).await,
+        ("GET", "/gates") => {
+            let gates: Vec<Value> = crate::gate::for_worker(worker).iter().map(|g| g.summary()).collect();
+            reply(StatusCode::OK, json!({ "gates": gates }))
+        }
+        ("GET", "/journal") => reply(StatusCode::OK, json!({ "events": journal::tail(worker, 30) })),
+        _ => reply(StatusCode::NOT_FOUND, json!({ "status": "error", "error": "unknown action endpoint" })),
+    }
+}
+
 /// Handle one action envelope: attribute, authorize, and either execute now or
-/// file a gate. `worker` is already resolved from the identity token.
-pub async fn handle_action(worker: &str, body: &[u8]) -> Response<Body> {
+/// file a gate.
+async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
     let env: Envelope = match serde_json::from_slice(body) {
         Ok(e) => e,
         Err(e) => return reply(StatusCode::BAD_REQUEST, json!({ "status": "error", "error": format!("bad envelope: {e}") })),
@@ -176,6 +195,7 @@ pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Res
             gate::save(&g).map_err(|e| e.to_string())?;
             journal::append(&g.worker, "executed", json!({ "gate_id": g.id, "intent": g.intent, "result": result }));
             audit(&g.worker, &g.intent, "executed", Some(&g.id), Some(&result));
+            resolve_followup(&g);
             Ok(g)
         }
         Err(e) => {
@@ -201,7 +221,42 @@ pub fn deny_gate(id: &str, decided_by: &str, note: Option<&str>) -> Result<Gate,
     gate::save(&g).map_err(|e| e.to_string())?;
     journal::append(&g.worker, "denied", json!({ "gate_id": g.id, "by": decided_by, "note": note }));
     audit(&g.worker, &g.intent, "denied", Some(&g.id), None);
+    resolve_followup(&g);
     Ok(g)
+}
+
+/// After a gate reaches a terminal state, close the loop for its originating
+/// task: if all the task's gates are resolved, mark it done, and — when the
+/// action opts in with `wake_on_resolve` — file a continuation task so a fresh
+/// box can react to the outcome (§3.5: ephemeral boxes + async gates meet here).
+fn resolve_followup(g: &Gate) {
+    if g.task_id.is_empty() {
+        return;
+    }
+    if let Some(mut task) = crate::queue::find(&g.task_id) {
+        if task.state == "needs-review" && gate::pending_for_task(&task.id).is_empty() {
+            let _ = crate::queue::set_state(&mut task, "done");
+        }
+    }
+
+    let policy = load_action_policy();
+    let wake = grant_for(&policy, &g.worker, &g.intent).map(|a| a.wake_on_resolve).unwrap_or(false);
+    if !wake {
+        return;
+    }
+    let short = g.worker.strip_prefix("org/").unwrap_or(&g.worker).to_string();
+    let outcome = if g.state == "executed" {
+        format!("was approved and executed. Result: {}", g.result.clone().unwrap_or(json!(null)))
+    } else {
+        format!("was denied{}", g.decision_note.as_deref().map(|n| format!(" ({n})")).unwrap_or_default())
+    };
+    let prompt = format!(
+        "A previous action you proposed — {} (gate {}) — {}. Decide whether any follow-up is needed; if not, you are done.",
+        g.intent, g.id, outcome
+    );
+    let context = json!({ "resolved_gate": { "id": g.id, "intent": g.intent, "state": g.state, "result": g.result, "decided_by": g.decided_by, "note": g.decision_note } });
+    let _ = crate::queue::create(&short, &prompt, "continuation", false, 15.0, context);
+    journal::append(&g.worker, "continuation-filed", json!({ "gate_id": g.id, "intent": g.intent }));
 }
 
 // ── executors (trusted-side; hold real credentials the box never sees) ───────

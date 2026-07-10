@@ -39,6 +39,7 @@ trust = "auto"
 name = "email-send"
 executor = "email"
 trust = "gate"
+wake_on_resolve = true  # after the owner decides, wake the worker to react
 
 # Trust ladder: promote a narrow slice of an action to auto. Here, email to
 # internal addresses runs without a gate; anything else (external recipient)

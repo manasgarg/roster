@@ -23,6 +23,7 @@ mod registry;
 mod scope;
 mod schema;
 mod tls;
+mod trigger;
 mod trust;
 mod util;
 mod vault;

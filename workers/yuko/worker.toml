@@ -6,3 +6,10 @@ name = "yuko"
 currency = "model_calls"
 window = "day"
 max = 5000
+
+# Proactive wake-up: on this schedule the supervisor files a task (it never does
+# work inline). Budget-gated at dispatch (D6).
+[[trigger]]
+schedule = "every 24h"
+prompt = "Do your daily triage: check for anything that needs attention and message the owner a one-line summary."
+ceiling_min = 10

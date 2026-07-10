@@ -78,6 +78,26 @@ export default function rosterActionTools(api: PiToolApi): void {
   });
 
   api.registerTool({
+    name: "check_gates",
+    label: "check_gates",
+    description:
+      "List the actions you've proposed and their current state (pending approval, executed, denied). " +
+      "Use it to avoid re-proposing something already awaiting approval, or to see how a past proposal resolved.",
+    promptSnippet: "check_gates(): your proposed actions and their state",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    async execute() {
+      try {
+        const res = await fetch("https://actions.roster.internal/gates", { signal: AbortSignal.timeout(15_000) });
+        const { gates } = (await res.json()) as { gates: unknown[] };
+        const text = !gates?.length ? "No proposed actions yet." : gates.map((g) => JSON.stringify(g)).join("\n");
+        return { content: [{ type: "text", text }] };
+      } catch (e) {
+        return { content: [{ type: "text", text: `Could not read gate state: ${e instanceof Error ? e.message : String(e)}` }] };
+      }
+    },
+  });
+
+  api.registerTool({
     name: "send_email",
     label: "send_email",
     description:

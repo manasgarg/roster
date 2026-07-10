@@ -59,6 +59,26 @@ pub fn check(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now:
     None
 }
 
+/// Is the subject already at/over any limit that applies to it (any currency)?
+/// The supervisor uses this for D6's soft stop: proactive work is skipped when
+/// the worker is tapped out; owner/chat work is never checked here.
+pub fn over_any_limit(subject: &str, limits: &[Limit], now: i64) -> Option<String> {
+    let c = counters().lock().unwrap();
+    for limit in limits {
+        if !scope_applies(&limit.scope, subject) {
+            continue;
+        }
+        let used = match c.get(&key(&limit.scope, &limit.currency, limit.window)) {
+            Some(ct) if ct.window_start == limit.window.start(now) => ct.used,
+            _ => 0.0,
+        };
+        if used >= limit.max {
+            return Some(format!("{} over {} cap ({:.4}/{:.4})", limit.currency, limit.window.label(), used, limit.max));
+        }
+    }
+    None
+}
+
 /// Record spend: bump the in-memory counters (per window that limits the
 /// currency) and append every drawn currency to usage.jsonl (audit + rehydrate
 /// source, incl. unlimited currencies).

@@ -110,6 +110,10 @@ pub fn list_all() -> Vec<Task> {
     out
 }
 
+pub fn find(task_id: &str) -> Option<Task> {
+    list_all().into_iter().find(|t| t.id == task_id)
+}
+
 /// The oldest waiting task, atomically claimed by flipping it to `running` so a
 /// concurrent poll won't pick it twice.
 pub fn claim_next() -> Option<Task> {

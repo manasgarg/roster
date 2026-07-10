@@ -373,9 +373,11 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: S
     // The action host is served internally: parse the envelope and let the
     // action layer attribute, authorize, and execute-or-gate it. Never forwarded.
     if host == crate::action::ACTION_HOST {
-        let (_parts, incoming) = req.into_parts();
+        let (parts, incoming) = req.into_parts();
+        let method = parts.method.as_str().to_string();
+        let path = parts.uri.path().to_string();
         let body = incoming.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
-        return Ok(crate::action::handle_action(&subject, &body).await);
+        return Ok(crate::action::handle_action(&subject, &method, &path, &body).await);
     }
 
     let headers = lower_headers(req.headers());

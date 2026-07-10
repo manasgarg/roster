@@ -19,6 +19,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut limits: Vec<Value> = Vec::new();
     let mut actions: Vec<Value> = Vec::new();
     let mut trust: Vec<Value> = Vec::new();
+    let mut triggers: Vec<Value> = Vec::new();
 
     for g in array(&org, "grant") {
         rules.push(with_scope(g, "org"));
@@ -63,6 +64,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             for t in array(&w, "trust") {
                 trust.push(with_scope(t, &scope));
             }
+            for tr in array(&w, "trigger") {
+                // Triggers name their worker so the supervisor can dispatch them.
+                let mut j = to_json(tr);
+                if let Some(obj) = j.as_object_mut() {
+                    obj.insert("worker".to_string(), json!(name));
+                }
+                triggers.push(j);
+            }
             if let Some(b) = w.get("budget") {
                 for l in array(b, "limit") {
                     limits.push(with_scope(l, &scope));
@@ -91,13 +100,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(out.join("policy.json"), format!("{}\n", serde_json::to_string_pretty(&policy)?))?;
     fs::write(out.join("budget.json"), format!("{}\n", serde_json::to_string_pretty(&budget)?))?;
     fs::write(out.join("actions.json"), format!("{}\n", serde_json::to_string_pretty(&action_policy)?))?;
+    fs::write(out.join("triggers.json"), format!("{}\n", serde_json::to_string_pretty(&json!({ "triggers": triggers }))?))?;
 
     println!(
-        "deployed: {} worker(s) [{}], {} rule(s), {} action(s), {} limit(s)",
+        "deployed: {} worker(s) [{}], {} rule(s), {} action(s), {} trigger(s), {} limit(s)",
         workers.len(),
         workers.join(", "),
         rules.len(),
         actions.len(),
+        triggers.len(),
         limits.len()
     );
     println!("compiled → runs/compiled/{{policy,budget}}.json (the gateway reads these)");

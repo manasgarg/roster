@@ -206,7 +206,7 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, ru
     for ext in box_extensions(&repo) {
         args.extend(["-e".into(), ext]);
     }
-    args.extend(["--session-dir".into(), session.display().to_string(), prompt.into()]);
+    args.extend(["--session-dir".into(), session.display().to_string(), with_charter(worker, prompt)]);
 
     let mut child = tokio::process::Command::new("docker")
         .args(&args)
@@ -370,6 +370,24 @@ fn box_extensions(repo: &Path) -> Vec<String> {
         .collect();
     paths.sort();
     paths
+}
+
+/// The worker's charter (workers/<name>/charter.md), read live. The box gets it
+/// read-only via the repo mount and cannot rewrite it; we prepend it here so it
+/// leads every run — the ad-hoc `roster box` path and supervised runs alike.
+pub fn charter_path(worker: &str) -> PathBuf {
+    root().join("workers").join(worker).join("charter.md")
+}
+
+fn with_charter(worker: &str, prompt: &str) -> String {
+    match std::fs::read_to_string(charter_path(worker)) {
+        Ok(c) if !c.trim().is_empty() => format!(
+            "[Charter — your standing role and rules. You cannot change these during this run; \
+             to change them, use propose_charter_edit, which the owner must approve.]\n{}\n\n{prompt}",
+            c.trim()
+        ),
+        _ => prompt.to_string(),
+    }
 }
 
 fn home_dir() -> PathBuf {

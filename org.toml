@@ -66,6 +66,14 @@ name = "code-change"
 executor = "git-pr"
 trust = "gate"
 
+# The worker may PROPOSE a change to its own charter; the owner must approve it.
+# The "charter" executor is hard-gated in code (D10) — the trust ladder never
+# promotes a charter edit to auto, no matter what trust rules say.
+[[action]]
+name = "charter-edit"
+executor = "charter"
+trust = "gate"
+
 [budget]
 currencies = ["model_calls", "searches", "fetches", "usd"]
 vars = { price = { search = 0.005 } }

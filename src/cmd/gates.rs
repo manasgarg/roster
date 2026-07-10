@@ -52,14 +52,24 @@ fn show(id: &str) -> Result<(), BErr> {
     if !g.rationale.is_empty() {
         println!("rationale {}", g.rationale);
     }
-    println!("\npayload — the exact action that will run:\n{}", serde_json::to_string_pretty(&g.payload)?);
-    // For a code gate, render the actual diff the box produced (live, from the
-    // run's worktree) so the human reviews the change, not just the metadata.
-    if g.executor == "git-pr" {
-        match action::worktree_diff(&g.run_id) {
-            Some(d) if !d.is_empty() => println!("\ndiff — what would be committed:\n{d}"),
-            _ => println!("\ndiff — (no changes found in the worktree)"),
+    // Render the change per executor: a charter gate shows a current-vs-proposed
+    // diff; a code gate shows the worktree diff; everything else shows its payload.
+    match g.executor.as_str() {
+        "charter" => {
+            let proposed = g.payload.get("charter").and_then(|v| v.as_str()).unwrap_or("");
+            match action::charter_diff(&g.worker, proposed) {
+                Some(d) => println!("\ncharter change — current vs proposed:\n{d}"),
+                None => println!("\n(the proposed charter is identical to the current one)"),
+            }
         }
+        "git-pr" => {
+            println!("\npayload:\n{}", serde_json::to_string_pretty(&g.payload)?);
+            match action::worktree_diff(&g.run_id) {
+                Some(d) if !d.is_empty() => println!("\ndiff — what would be committed:\n{d}"),
+                _ => println!("\ndiff — (no changes found in the worktree)"),
+            }
+        }
+        _ => println!("\npayload — the exact action that will run:\n{}", serde_json::to_string_pretty(&g.payload)?),
     }
     Ok(())
 }

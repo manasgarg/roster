@@ -103,6 +103,30 @@ export default function rosterActionTools(api: PiToolApi): void {
   });
 
   api.registerTool({
+    name: "propose_charter_edit",
+    label: "propose_charter_edit",
+    description:
+      "Propose a change to your OWN charter (your standing role and rules). This does NOT change it — it " +
+      "submits the proposed charter for the owner's approval, and charter changes ALWAYS require approval. " +
+      "Provide the COMPLETE new charter text (not a diff), and a rationale for the change.",
+    promptSnippet: "propose_charter_edit(charter, rationale): suggest a change to your charter (owner-approved)",
+    parameters: {
+      type: "object",
+      properties: {
+        charter: { type: "string", description: "The complete proposed charter, in full (replaces the current one on approval)." },
+        rationale: { type: "string", description: "Why you're proposing this change — shown to the owner." },
+      },
+      required: ["charter", "rationale"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const { charter, rationale } = params as { charter: string; rationale: string };
+      const s = await submit("charter-edit", { charter }, rationale);
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
     name: "check_gates",
     label: "check_gates",
     description:

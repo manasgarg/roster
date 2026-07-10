@@ -124,7 +124,13 @@ async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
     journal::append(worker, &env.run_id, "action-proposed", json!({ "intent": env.intent, "rationale": env.rationale, "run_id": env.run_id }));
 
     let (executed, denied) = gate::history(worker, &env.intent);
-    let level = trust::evaluate(worker, &env.intent, &env.payload, &grant.trust, &policy.trust, executed, denied);
+    // D10: charter edits ALWAYS gate — the trust ladder never applies to the
+    // action that rewrites the worker's own standing rules.
+    let level = if grant.executor == "charter" {
+        "gate".to_string()
+    } else {
+        trust::evaluate(worker, &env.intent, &env.payload, &grant.trust, &policy.trust, executed, denied)
+    };
     if level == "auto" {
         match run_executor(&grant.executor, worker, &env.intent, &env.payload, &env.run_id).await {
             Ok(result) => {
@@ -270,6 +276,7 @@ pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &
         "message-user" => exec_message_user(worker, payload),
         "email" => exec_email(worker, payload).await,
         "git-pr" => exec_git_pr(worker, run_id, payload),
+        "charter" => exec_charter(worker, payload),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
 }
@@ -382,12 +389,56 @@ fn exec_git_pr(worker: &str, run_id: &str, payload: &Value) -> Result<Value, Str
     Ok(json!({ "branch": branch, "commit": commit, "pushed": true, "pr": pr }))
 }
 
+/// Overwrite a worker's charter, only after the owner approved the exact text
+/// (D10). Trusted-side; the box never writes here (its repo mount is read-only).
+fn exec_charter(worker: &str, payload: &Value) -> Result<Value, String> {
+    let content = payload
+        .get("charter")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or("charter-edit needs a non-empty \"charter\" field")?;
+    let short = worker.strip_prefix("org/").unwrap_or(worker);
+    let path = crate::cmd::run_box::charter_path(short);
+    let dir = path.parent().ok_or("bad charter path")?;
+    if !dir.exists() {
+        return Err(format!("no worker directory {} — is \"{short}\" a real worker?", dir.display()));
+    }
+    let tmp = dir.join("charter.md.tmp");
+    std::fs::write(&tmp, format!("{}\n", content.trim())).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    eprintln!("charter [{worker}] updated ({} bytes)", content.trim().len());
+    Ok(json!({ "written": path.display().to_string(), "bytes": content.trim().len() }))
+}
+
 fn git(args: &[&str]) -> Result<String, String> {
     let out = std::process::Command::new("git").args(args).output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Current charter vs a proposed one, as a unified diff (for `gates show` on a
+/// charter gate — the owner reviews exactly what would change).
+pub fn charter_diff(worker: &str, proposed: &str) -> Option<String> {
+    let short = worker.strip_prefix("org/").unwrap_or(worker);
+    let current = crate::cmd::run_box::charter_path(short);
+    let current_arg = if current.exists() { current } else { std::path::PathBuf::from("/dev/null") };
+    let tmp = std::env::temp_dir().join(format!("roster-charter-{}.md", std::process::id()));
+    std::fs::write(&tmp, format!("{}\n", proposed.trim())).ok()?;
+    let out = std::process::Command::new("git")
+        .args(["diff", "--no-index", "--"])
+        .arg(&current_arg)
+        .arg(&tmp)
+        .output()
+        .ok()?;
+    let _ = std::fs::remove_file(&tmp);
+    let diff = String::from_utf8_lossy(&out.stdout).to_string();
+    if diff.trim().is_empty() {
+        None
+    } else {
+        Some(diff)
+    }
 }
 
 /// The diff the box produced in a run's worktree (for `gates show` on a code

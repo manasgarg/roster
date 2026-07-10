@@ -1,6 +1,6 @@
 # The worker charter (spec)
 
-**Status: spec — not yet implemented.** Realizes handoff §3.1 (charter) and D10
+**Status: implemented and verified live, 2026-07-10.** Realizes handoff §3.1 (charter) and D10
 (charter edits always gate to the owner; closes the injection→self-programming
 hole), building on the box mount model and the gate machinery already shipped.
 

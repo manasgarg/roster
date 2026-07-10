@@ -54,13 +54,14 @@ fn connect_api_key() -> Result<Value, BErr> {
 
 // ── SMTP (e.g. Mailgun) ───────────────────────────────────────────────────────
 
-/// Collect SMTP settings for the email executor. Implicit-TLS submission (465),
-/// AUTH LOGIN. The credential lands in the vault, off the box; only the
-/// trusted-side executor reads it. For Mailgun: host smtp.mailgun.org, the SMTP
-/// login (postmaster@your-domain) and its password from the domain's SMTP creds.
+/// Collect SMTP settings for the email executor. Port 465 uses implicit TLS;
+/// 587 (or 2525) uses STARTTLS. AUTH LOGIN either way. The credential lands in
+/// the vault, off the box; only the trusted-side executor reads it. For Mailgun:
+/// host smtp.mailgun.org, the SMTP login (postmaster@your-domain) and its
+/// password from the domain's SMTP credentials.
 fn connect_smtp() -> Result<Value, BErr> {
     let host = prompt_default("SMTP host [smtp.mailgun.org]: ", "smtp.mailgun.org")?;
-    let port: u16 = prompt_default("SMTP port [465]: ", "465")?.parse().map_err(|_| "port must be a number")?;
+    let port: u16 = prompt_default("SMTP port [465 = TLS, 587 = STARTTLS] [465]: ", "465")?.parse().map_err(|_| "port must be a number")?;
     let user = prompt("SMTP username (e.g. postmaster@mg.example.com): ")?;
     if user.is_empty() {
         return Err("no username entered".into());

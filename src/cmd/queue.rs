@@ -64,6 +64,25 @@ fn show(id: &str) -> Result<(), BErr> {
     if !t.context.is_null() {
         println!("context  {}", serde_json::to_string_pretty(&t.context)?);
     }
+
+    // Latest activity from this task's run — the worker's own (run-tagged) journal.
+    if let Some(run) = &t.run_id {
+        let events = crate::journal::for_run(&t.subject(), run);
+        if let Some(last) = events.last() {
+            println!(
+                "\nlatest journal entry (run {run}, {} event{}):",
+                events.len(),
+                if events.len() == 1 { "" } else { "s" }
+            );
+            println!(
+                "  {}  {}  {}",
+                last.get("ts").and_then(|v| v.as_str()).unwrap_or(""),
+                last.get("kind").and_then(|v| v.as_str()).unwrap_or("?"),
+                last.get("detail").cloned().unwrap_or(serde_json::Value::Null)
+            );
+        }
+    }
+
     println!("\nprompt:\n{}", t.prompt);
     Ok(())
 }

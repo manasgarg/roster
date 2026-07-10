@@ -41,12 +41,17 @@ pub async fn send(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) ->
 
 async fn send_inner(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) -> Result<String, String> {
     let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await.map_err(|e| format!("connect {}:{}: {e}", cfg.host, cfg.port))?;
-    let name = rustls::pki_types::ServerName::try_from(cfg.host.clone()).map_err(|e| format!("bad host: {e}"))?;
-    let tls = connector().connect(name, tcp).await.map_err(|e| format!("TLS: {e}"))?;
+
+    // Establish TLS: implicit on 465, else STARTTLS (587/2525). Port 465 greets
+    // over TLS; STARTTLS consumed the plaintext greeting and goes straight to EHLO.
+    let implicit = cfg.port == 465;
+    let tls = if implicit { tls_connect(cfg, tcp).await? } else { starttls(cfg, tcp).await? };
     let (rd, mut wr) = tokio::io::split(tls);
     let mut r = BufReader::new(rd);
 
-    expect(&mut r, 220).await?; // greeting
+    if implicit {
+        expect(&mut r, 220).await?; // greeting (over TLS)
+    }
     say(&mut wr, &mut r, "EHLO roster", 250).await?;
     say(&mut wr, &mut r, "AUTH LOGIN", 334).await?;
     say(&mut wr, &mut r, &b64(&cfg.user), 334).await?;
@@ -63,6 +68,28 @@ async fn send_inner(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) 
     expect(&mut r, 250).await?; // accepted for delivery
     let _ = say(&mut wr, &mut r, "QUIT", 221).await;
     Ok("queued for delivery".to_string())
+}
+
+/// Wrap a connected TCP stream in verified TLS for `cfg.host`.
+async fn tls_connect(cfg: &SmtpConfig, tcp: TcpStream) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
+    let name = rustls::pki_types::ServerName::try_from(cfg.host.clone()).map_err(|e| format!("bad host: {e}"))?;
+    connector().connect(name, tcp).await.map_err(|e| format!("TLS: {e}"))
+}
+
+/// Speak plaintext SMTP up to STARTTLS, then upgrade the connection to TLS (the
+/// port-587 path). Fails closed if the server pipelines data before the TLS
+/// handshake (a STARTTLS-injection guard).
+async fn starttls(cfg: &SmtpConfig, tcp: TcpStream) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
+    let (rd, mut wr) = tokio::io::split(tcp);
+    let mut r = BufReader::new(rd);
+    expect(&mut r, 220).await?; // plaintext greeting
+    say(&mut wr, &mut r, "EHLO roster", 250).await?;
+    say(&mut wr, &mut r, "STARTTLS", 220).await?;
+    if !r.buffer().is_empty() {
+        return Err("server pipelined data before the STARTTLS handshake — refusing".into());
+    }
+    let tcp = r.into_inner().unsplit(wr);
+    tls_connect(cfg, tcp).await
 }
 
 fn connector() -> TlsConnector {

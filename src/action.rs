@@ -115,25 +115,25 @@ async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
     };
     let policy = load_action_policy();
     let Some(grant) = grant_for(&policy, worker, &env.intent) else {
-        journal::append(worker, "action-refused", json!({ "intent": env.intent, "reason": "no action grant in scope" }));
+        journal::append(worker, &env.run_id, "action-refused", json!({ "intent": env.intent, "reason": "no action grant in scope" }));
         audit(worker, &env.intent, "refused", None, None);
         return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": format!("no action grant for \"{}\"", env.intent) }));
     };
     let grant = grant.clone();
 
-    journal::append(worker, "action-proposed", json!({ "intent": env.intent, "rationale": env.rationale, "run_id": env.run_id }));
+    journal::append(worker, &env.run_id, "action-proposed", json!({ "intent": env.intent, "rationale": env.rationale, "run_id": env.run_id }));
 
     let (executed, denied) = gate::history(worker, &env.intent);
     let level = trust::evaluate(worker, &env.intent, &env.payload, &grant.trust, &policy.trust, executed, denied);
     if level == "auto" {
         match run_executor(&grant.executor, worker, &env.intent, &env.payload, &env.run_id).await {
             Ok(result) => {
-                journal::append(worker, "executed", json!({ "intent": env.intent, "auto": true, "result": result }));
+                journal::append(worker, &env.run_id, "executed", json!({ "intent": env.intent, "auto": true, "result": result }));
                 audit(worker, &env.intent, "auto-executed", None, Some(&result));
                 reply(StatusCode::OK, json!({ "status": "done", "result": result }))
             }
             Err(e) => {
-                journal::append(worker, "failed", json!({ "intent": env.intent, "auto": true, "error": e }));
+                journal::append(worker, &env.run_id, "failed", json!({ "intent": env.intent, "auto": true, "error": e }));
                 audit(worker, &env.intent, "failed", None, None);
                 reply(StatusCode::OK, json!({ "status": "error", "error": e }))
             }
@@ -160,7 +160,7 @@ async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
         if let Err(e) = gate::save(&g) {
             return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({ "status": "error", "error": format!("could not file gate: {e}") }));
         }
-        journal::append(worker, "gate-filed", json!({ "gate_id": g.id, "intent": env.intent, "rationale": env.rationale }));
+        journal::append(worker, &env.run_id, "gate-filed", json!({ "gate_id": g.id, "intent": env.intent, "rationale": env.rationale }));
         audit(worker, &env.intent, "gated", Some(&g.id), None);
         reply(StatusCode::ACCEPTED, json!({ "status": "pending", "gate_id": g.id, "message": "held for human approval" }))
     }
@@ -184,7 +184,7 @@ pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Res
         g.decided_at = Some(now_rfc3339());
         g.decision_note = note.map(String::from);
         gate::save(&g).map_err(|e| e.to_string())?;
-        journal::append(&g.worker, "approved", json!({ "gate_id": g.id, "by": decided_by, "note": note }));
+        journal::append(&g.worker, &g.run_id, "approved", json!({ "gate_id": g.id, "by": decided_by, "note": note }));
     }
     g.state = "executing".into();
     gate::save(&g).map_err(|e| e.to_string())?;
@@ -194,7 +194,7 @@ pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Res
             g.executed_at = Some(now_rfc3339());
             g.result = Some(result.clone());
             gate::save(&g).map_err(|e| e.to_string())?;
-            journal::append(&g.worker, "executed", json!({ "gate_id": g.id, "intent": g.intent, "result": result }));
+            journal::append(&g.worker, &g.run_id, "executed", json!({ "gate_id": g.id, "intent": g.intent, "result": result }));
             audit(&g.worker, &g.intent, "executed", Some(&g.id), Some(&result));
             resolve_followup(&g);
             Ok(g)
@@ -203,7 +203,7 @@ pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Res
             g.state = "failed".into();
             g.error = Some(e.clone());
             gate::save(&g).map_err(|e| e.to_string())?;
-            journal::append(&g.worker, "failed", json!({ "gate_id": g.id, "intent": g.intent, "error": e }));
+            journal::append(&g.worker, &g.run_id, "failed", json!({ "gate_id": g.id, "intent": g.intent, "error": e }));
             audit(&g.worker, &g.intent, "failed", Some(&g.id), None);
             Err(e)
         }
@@ -220,7 +220,7 @@ pub fn deny_gate(id: &str, decided_by: &str, note: Option<&str>) -> Result<Gate,
     g.decided_at = Some(now_rfc3339());
     g.decision_note = note.map(String::from);
     gate::save(&g).map_err(|e| e.to_string())?;
-    journal::append(&g.worker, "denied", json!({ "gate_id": g.id, "by": decided_by, "note": note }));
+    journal::append(&g.worker, &g.run_id, "denied", json!({ "gate_id": g.id, "by": decided_by, "note": note }));
     audit(&g.worker, &g.intent, "denied", Some(&g.id), None);
     resolve_followup(&g);
     Ok(g)
@@ -257,7 +257,7 @@ fn resolve_followup(g: &Gate) {
     );
     let context = json!({ "resolved_gate": { "id": g.id, "intent": g.intent, "state": g.state, "result": g.result, "decided_by": g.decided_by, "note": g.decision_note } });
     let _ = crate::queue::create(&short, &prompt, "continuation", false, 15.0, context, None, None);
-    journal::append(&g.worker, "continuation-filed", json!({ "gate_id": g.id, "intent": g.intent }));
+    journal::append(&g.worker, &g.run_id, "continuation-filed", json!({ "gate_id": g.id, "intent": g.intent }));
 }
 
 // ── executors (trusted-side; hold real credentials the box never sees) ───────

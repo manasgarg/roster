@@ -186,7 +186,7 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
                         register_commands(&app_id, &guild_id, token).await;
                         guilds.insert(guild_id, g);
                     }
-                    "MESSAGE_CREATE" => handle_message(worker, d, &bot_id, &guilds).await,
+                    "MESSAGE_CREATE" => handle_message(worker, d, &bot_id, &guilds, token).await,
                     "INTERACTION_CREATE" => handle_interaction(worker, d, &guilds, &app_id).await,
                     _ => {}
                 }
@@ -257,7 +257,7 @@ fn resolve_role(d: &Value, guilds: &HashMap<String, Guild>) -> &'static str {
     }
 }
 
-async fn handle_message(worker: &str, d: &Value, bot_id: &str, guilds: &HashMap<String, Guild>) {
+async fn handle_message(worker: &str, d: &Value, bot_id: &str, guilds: &HashMap<String, Guild>, token: &str) {
     // Never react to bots (including ourselves) — avoids reply loops.
     if d["author"]["bot"].as_bool().unwrap_or(false) {
         return;
@@ -304,8 +304,35 @@ async fn handle_message(worker: &str, d: &Value, bot_id: &str, guilds: &HashMap<
     );
     let context = json!({ "discord": { "channel_id": channel_id, "is_dm": is_dm, "author": author, "role": role } });
     match crate::queue::create(worker, &prompt, "discord", false, 15.0, context, None, None) {
-        Ok(t) => eprintln!("discord: {author} ({role}) in {channel_id} → queued {}", t.id),
+        Ok(t) => {
+            eprintln!("discord: {author} ({role}) in {channel_id} → queued {}", t.id);
+            // Show "<worker> is typing…" while the box works on the reply.
+            let (ch, tok, tid) = (channel_id.to_string(), token.to_string(), t.id.clone());
+            tokio::spawn(async move { typing_keepalive(&ch, &tok, &tid).await });
+        }
         Err(e) => eprintln!("discord: could not queue task: {e}"),
+    }
+}
+
+async fn trigger_typing(channel_id: &str, token: &str) {
+    let _ = reqwest::Client::new()
+        .post(format!("{}/channels/{channel_id}/typing", base()))
+        .header("authorization", format!("Bot {token}"))
+        .send()
+        .await;
+}
+
+/// Keep the typing indicator alive (it lasts ~10s) while the task is waiting or
+/// running; stop once it reaches a terminal/needs-review state or a 2-min cap.
+/// The reply message itself clears the indicator when it's sent.
+async fn typing_keepalive(channel_id: &str, token: &str, task_id: &str) {
+    for _ in 0..15 {
+        match crate::queue::find(task_id).map(|t| t.state) {
+            Some(s) if s == "waiting" || s == "running" => {}
+            _ => break,
+        }
+        trigger_typing(channel_id, token).await;
+        tokio::time::sleep(Duration::from_secs(8)).await;
     }
 }
 

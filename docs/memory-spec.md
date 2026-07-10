@@ -1,92 +1,101 @@
-# Memory — notes & promotion (spec)
+# Memory — per-person notes, contextually recalled (spec)
 
-**Status: spec — not yet implemented.** Realizes handoff §3.4 and D10 (the
-promotion rule): workers append notes freely; only a gated step promotes a note
-into always-loaded core; this closes the injection→self-programming hole. Builds
-on the identity + gate machinery already shipped.
+**Status: spec — not yet implemented.** Realizes handoff §3.4, refined: memory is
+what the worker has **learned about the people and context it interacts with**,
+scoped to *who* it's talking to. It is distinct from purpose and does **not**
+touch identity. Builds on the identity/purpose/gate machinery already shipped.
+
+## The three tiers (and where memory fits)
+
+- **Identity** (`identity.md`) — the worker's **constitution**: who it is, its
+  standing rules. Owner-authored, changed **rarely and only by an admin**, never
+  by the worker. Sacred, high bar. *Not* a target for learning.
+- **Purpose** (`purpose.md`, per channel) — its **assigned role** in a channel,
+  set *for* it by trusted humans. **Directive** — "what should I do here?"
+- **Memory** — what it has **learned** about people and context, accumulated *by*
+  it from experience. **Descriptive** — "what do I know about who I'm talking to?"
+
+Memory ≠ purpose: purpose is a role a human assigns; memory is facts the worker
+observes. Memory ≠ identity: identity is the fixed constitution; memory grows and
+is advisory. **Learning goes into memory, never into identity.**
 
 ## Goal (concrete)
 
-yuko remembers across sessions. It jots what it learns — your preferences, facts,
-procedures — and those notes lead every future run. The important, durable ones
-get promoted into its **core identity** (through the existing hard gate). So it
-gets better over time instead of starting fresh each session.
+yuko remembers the people it talks to. When you message it, it recalls what it has
+learned about *you*; when someone else does, what it knows about *them*.
 
 ```
-you: "always keep replies to a couple of sentences"
-yuko: (jots a note) "owner prefers terse replies — 1–2 sentences"
-… next session, unprompted, yuko is terse.
-… later, yuko proposes folding that into its identity → you approve → it's core.
+you: "keep replies to a sentence or two"
+yuko: (remembers, about you) "prefers terse replies — 1–2 sentences"
+… next time you talk to it, unprompted, it's terse — but it isn't terse with
+   someone who likes detail.
 ```
 
-## The two tiers (D10)
+## Scope: per-person + general
 
-- **Notes** — free-form, append-only, **low-stakes** memory the worker jots
-  freely. Fed into every run. **Advisory, never enforcement**: a note can shape
-  behavior but cannot grant a capability or lift a gate.
-- **Core (identity)** — the always-loaded standing self. Editing it is
-  **hard-gated** (`identity-edit`, already built). **Promotion** = a note
-  graduates into core through that gate.
-
-This is exactly D10: workers append notes freely; only a gated curator step
-promotes into core. A malicious or injected note can *persist* and mislead a
-future run, but it can't escalate (capabilities stay in grants + the gateway) and
-it can't rewrite core without a human approving the exact text.
+- Memory is keyed by **who** it's about: a Discord **user id** (a specific person)
+  or **`general`** (facts about the world/procedures, not any one person).
+- **Recall is contextual.** A run is triggered by a conversation with specific
+  people; the worker is given the memory about **the active participant(s) + the
+  general bucket** — not everyone it has ever met.
 
 ## Notes
 
-- **Stored per worker**, off the box: `notes/<worker>.jsonl` (append-only,
-  gitignored runtime state, owner-visible/prunable). The box's repo mount is
+- **Stored per worker**, off the box: `notes/<worker>.jsonl`, each entry
+  `{id, ts, about, note}` where `about` is a user id or `"general"`. Append-only,
+  gitignored runtime state, owner-visible/prunable. The box's repo mount is
   read-only, so the worker never writes here directly.
-- **`remember(note)`** — a box tool → a `remember` action, executor `note`,
-  **trust auto** (jotting is low-stakes, D10). The trusted-side executor appends
-  `{id, ts, note}` to `notes/<worker>.jsonl`; journaled/audited like any action.
-- **`forget(note_id)`** — a box tool → a `forget` action (auto): the executor
-  removes a note. Owners prune via the CLI.
-- **Recall** — notes are fed into **every run**: a `[Memory]` section (after
-  identity, before purpose/briefing/task) for one-shot runs, and inside the
-  session system prompt for conversations.
-- **CLI**: `roster notes ls|rm <id>` for the owner to review and prune.
-
-## Promotion (note → core)
-
-When a note is a durable standing rule rather than a passing fact, it graduates
-into identity: the worker (or owner) uses **`propose_identity_edit`** (already
-built, hard-gated) to fold the note into `identity.md`; a human approves the exact
-new identity. Once in core, the note can be dropped. This is the D10 curator
-step — a person decides what becomes permanent.
+- **`remember(note, about?)`** — a box tool → a `remember` action, executor
+  `note`, **trust auto** (jotting is low-stakes). `about` defaults to the person
+  the worker is currently talking to, or `general`. The trusted-side executor
+  appends the note; journaled/audited like any action.
+- **`forget(note_id)`** — a box tool → a `forget` action (auto): remove a note.
+- **CLI**: `roster notes ls [about] | rm <id>` for the owner to review and prune.
 
 ## Recall into runs
 
-- **One-shot** (`run_box`): after identity — `Identity → Memory → Purpose →
-  Briefing → Task`.
-- **Session** (`session_system_prompt`): notes included alongside identity +
-  purpose.
-- **Bounded**: v1 includes all current notes (kept small by pruning/promotion). If
-  they grow, later refinements can cap to the most recent or most relevant.
+The worker's context = **Identity → (Memory about the active people + general) →
+Purpose → Briefing → Task**.
+
+- **Session** (`session_system_prompt`): include memory about the channel's
+  participants + general.
+- **One-shot** (`run_box`): include general memory (+ any subject the task names).
+- **Bounded**: v1 includes all notes for the in-scope subjects (kept small by
+  pruning); cap/rank later if a person's memory grows large.
+
+## Identity stays sacred
+
+There is **no promotion path from a note into identity**. Identity is edited only
+by an admin, deliberately (a direct file edit or a heavyweight owner action) —
+the worker has no tool to change it. The worker's `propose_identity_edit` tool is
+**removed**; the `identity-edit` action remains for the admin/owner path only.
 
 ## Security invariants
 
-- Notes are **advisory** (fed to the model, never an enforcement input) — like the
-  journal. Capabilities stay in grants + the gateway; a note can't escalate.
-- Notes are written only via a **governed action** (auto); the box **cannot write
+- Memory is **advisory** — fed to the model, never an enforcement input (like the
+  journal). Capabilities stay in grants + the gateway; a note can shape behavior
+  but **cannot grant a capability or lift a gate**.
+- Memory is written only via a **governed action** (auto); the box **cannot write
   the notes file** (read-only mount). The owner can review/prune.
-- Promotion to core (**identity**) stays **hard-gated** (D10) — only a human
-  approves what becomes permanent.
+- **Identity is near-immutable** — owner/admin only, never the worker. With no
+  note→identity promotion, there is **no self-programming path** at all: the worst
+  an injected note can do is persist and mislead a future run, bounded to the
+  person it's filed under, and always prunable.
+- A note about person A is only recalled when interacting with A — so a note
+  can't leak into an unrelated conversation.
 
 ## Build order (small increments)
 
-1. **Notes core** — the `remember` action + `note` executor + `notes/<worker>.jsonl`
-   store + `roster notes ls|rm` + recall into runs (one-shot and session). Promotion
-   already works via `propose_identity_edit`.
-2. **`forget` + recall tuning** — the `forget` action; capping/relevance if notes
-   grow.
+1. **Notes core** — `remember(note, about?)` action + `note` executor +
+   `notes/<worker>.jsonl` + `roster notes ls|rm` + contextual recall (session +
+   one-shot). Remove the worker's `propose_identity_edit`.
+2. **`forget` + recall tuning** — the `forget` action; capping/ranking per subject
+   if memory grows.
 
 ## Open decisions (recommended defaults)
 
-- **`remember` is auto**, not gated (D10: workers append freely). Notes are
-  advisory; core is the gated part.
-- **Per-worker notes** for v1 (memory of the owner/preferences is worker-wide);
-  per-channel memory can come later.
-- **Recall = all current notes** for v1, managed by pruning + promotion; cap or
-  rank later if they grow.
+- **Per-person keyed by user id** (stable) with a display-name hint for the owner;
+  plus a `general` bucket. Per-channel memory can come later if needed.
+- **`remember` is auto** (low-stakes, advisory). Identity — the only high-stakes
+  self — is owner-only, so nothing the worker does needs a gate here.
+- **Recall = all notes for the in-scope subjects** for v1; rank/cap later.

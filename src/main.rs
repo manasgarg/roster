@@ -54,6 +54,7 @@ async fn main() {
         "relay" => cmd::relay::run(&args[2..]),
         "listen" => cmd::listen::run(&args[2..]).await,
         "channel" => cmd::channel::run(&args[2..]),
+        "session" => cmd::session::run(&args[2..]).await,
         "help" | "--help" | "-h" => {
             print_help();
             Ok(())

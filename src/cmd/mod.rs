@@ -12,5 +12,6 @@ pub mod listen;
 pub mod queue;
 pub mod relay;
 pub mod run_box;
+pub mod session;
 pub mod supervise;
 pub mod vault_sync;

@@ -144,6 +144,71 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, ru
     Ok((run_id.to_string(), run_dir, ended_by, status.code()))
 }
 
+// ── rpc session box (warm, multi-message) ────────────────────────────────────
+
+/// Run a persistent box in pi's rpc mode: one warm container that handles a
+/// stream of messages (delivered on `rx`) in a single pi session, exiting after
+/// `idle_secs` of silence or when the box dies. Reuses provision_box, so the
+/// lockdown/identity are identical to a one-shot run. `system_prompt` carries the
+/// worker's identity + purpose + channel framing; each delivered message is one
+/// user turn.
+pub async fn run_session(worker: &str, run_id: &str, system_prompt: &str, mut rx: tokio::sync::mpsc::Receiver<String>, idle_secs: u64) -> Result<(), BErr> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo } =
+        provision_box(worker, run_id, "", None).await?;
+    args.insert(1, "-i".into()); // keep stdin open for the rpc protocol
+    args.extend(pi_prefix(&repo, "rpc", &session_dir)?);
+    args.extend(["--append-system-prompt".into(), system_prompt.to_string()]);
+
+    let mut child = tokio::process::Command::new("docker")
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    let mut stdin = child.stdin.take().ok_or("session box: no stdin")?;
+    let stdout = child.stdout.take().ok_or("session box: no stdout")?;
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
+    let mut log = tokio::fs::File::create(run_dir.join("stdout.jsonl")).await.ok();
+
+    eprintln!("session {run_id} [{worker}] started");
+    let idle = Duration::from_secs(idle_secs);
+    let mut rx_open = true;
+    loop {
+        tokio::select! {
+            m = rx.recv(), if rx_open => match m {
+                Some(msg) => {
+                    // Deliver the message as one pi turn (rpc queues it if busy).
+                    let line = json!({ "type": "prompt", "message": msg }).to_string();
+                    if stdin.write_all(line.as_bytes()).await.is_err() || stdin.write_all(b"\n").await.is_err() {
+                        break;
+                    }
+                    let _ = stdin.flush().await;
+                }
+                None => rx_open = false, // sender dropped; drain stdout, then idle out
+            },
+            l = lines.next_line() => match l {
+                Ok(Some(line)) => {
+                    if let Some(f) = log.as_mut() {
+                        let _ = f.write_all(line.as_bytes()).await;
+                        let _ = f.write_all(b"\n").await;
+                    }
+                }
+                _ => break, // box closed stdout / exited
+            },
+            _ = tokio::time::sleep(idle) => break, // idle: no messages, no output
+        }
+    }
+
+    drop(stdin);
+    docker_kill(&container).await;
+    let _ = child.wait().await;
+    let _ = std::fs::remove_file(&identity_file); // single-use token
+    eprintln!("session {run_id} [{worker}] ended");
+    Ok(())
+}
+
 // ── shared box provisioning ──────────────────────────────────────────────────
 
 /// The pi command prefix shared by both box modes: node + entry, output mode, no

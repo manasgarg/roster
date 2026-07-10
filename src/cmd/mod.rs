@@ -6,5 +6,6 @@
 pub mod connect;
 pub mod create;
 pub mod deploy;
+pub mod gates;
 pub mod run_box;
 pub mod vault_sync;

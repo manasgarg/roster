@@ -370,6 +370,14 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
 /// are tunneled (see forward_websocket); everything else is a buffered forward
 /// with the response streamed back.
 async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: String, client: UpstreamClient) -> Result<Response<Body>, BErr> {
+    // The action host is served internally: parse the envelope and let the
+    // action layer attribute, authorize, and execute-or-gate it. Never forwarded.
+    if host == crate::action::ACTION_HOST {
+        let (_parts, incoming) = req.into_parts();
+        let body = incoming.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
+        return Ok(crate::action::handle_action(&subject, &body).await);
+    }
+
     let headers = lower_headers(req.headers());
     let is_ws = headers.get("upgrade").map(|u| u.eq_ignore_ascii_case("websocket")).unwrap_or(false);
     let method = req.method().as_str().to_string();

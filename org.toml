@@ -27,6 +27,19 @@ name = "web-fetch"
 match = { host = "*", port = 443, method = ["GET"] }
 verdict = "allow"
 
+# Actions the workers may PROPOSE (the box submits an envelope; the gateway
+# executes or gates). intent = action name (D15). trust "auto" runs immediately;
+# "gate" (the T0 default) waits for a human at `roster gates`.
+[[action]]
+name = "message-user"
+executor = "message-user"
+trust = "auto"
+
+[[action]]
+name = "email-send"
+executor = "email"
+trust = "gate"
+
 [budget]
 currencies = ["model_calls", "searches", "fetches", "usd"]
 vars = { price = { search = 0.005 } }

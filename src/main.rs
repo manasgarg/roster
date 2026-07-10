@@ -8,9 +8,12 @@
 //!   roster connect <provider>          create a credential via its login flow
 //!   roster vault-sync                  import an existing pi login into the vault
 
+mod action;
 mod budget;
 mod ca;
 mod cmd;
+mod gate;
+mod journal;
 mod judge;
 mod ledger;
 mod providers;
@@ -19,6 +22,7 @@ mod registry;
 mod scope;
 mod schema;
 mod tls;
+mod trust;
 mod util;
 mod vault;
 
@@ -40,6 +44,7 @@ async fn main() {
         "connect" => cmd::connect::run(&args[2..]).await,
         "vault-sync" => cmd::vault_sync::run(),
         "box" => cmd::run_box::run(&args[2..]).await,
+        "gates" => cmd::gates::run(&args[2..]).await,
         "help" | "--help" | "-h" => {
             print_help();
             Ok(())
@@ -92,7 +97,8 @@ fn print_help() {
            serve                       run the governed-egress gateway\n  \
            create <name>               scaffold workers/<name>/worker.toml\n  \
            deploy                      compile org.toml + workers/* → runs/compiled/\n  \
-           box [--worker <n>] [--ceiling <m>] \"<prompt>\"   run one pi session in the box\n\
+           box [--worker <n>] [--ceiling <m>] \"<prompt>\"   run one pi session in the box\n  \
+           gates [ls|show|approve|deny] approval desk for proposed actions\n\
          {providers}\n  \
            vault-sync                  import an existing pi login into the vault"
     );

@@ -4,6 +4,7 @@
 //! budget::BudgetPolicy) — so the compiled output can't drift from what the
 //! gateway expects. This is the payoff of one language, one schema (D20).
 
+use crate::action::ActionPolicy;
 use crate::budget::BudgetPolicy;
 use crate::schema::Policy;
 use crate::util::root;
@@ -16,9 +17,17 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let org = read_toml(&root.join("org.toml"))?;
     let mut rules: Vec<Value> = Vec::new();
     let mut limits: Vec<Value> = Vec::new();
+    let mut actions: Vec<Value> = Vec::new();
+    let mut trust: Vec<Value> = Vec::new();
 
     for g in array(&org, "grant") {
         rules.push(with_scope(g, "org"));
+    }
+    for a in array(&org, "action") {
+        actions.push(with_scope(a, "org"));
+    }
+    for t in array(&org, "trust") {
+        trust.push(with_scope(t, "org"));
     }
     let org_budget = org.get("budget");
     for l in org_budget.map(|b| array(b, "limit")).unwrap_or_default() {
@@ -48,6 +57,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             for g in array(&w, "grant") {
                 rules.push(with_scope(g, &scope));
             }
+            for a in array(&w, "action") {
+                actions.push(with_scope(a, &scope));
+            }
+            for t in array(&w, "trust") {
+                trust.push(with_scope(t, &scope));
+            }
             if let Some(b) = w.get("budget") {
                 for l in array(b, "limit") {
                     limits.push(with_scope(l, &scope));
@@ -64,21 +79,25 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         "meters": org_budget.map(|b| array(b, "meter")).unwrap_or_default().iter().map(|m| to_json(m)).collect::<Vec<_>>(),
         "limits": limits,
     });
+    let action_policy = json!({ "actions": actions, "trust": trust });
 
     // Validate against the gateway's own types.
     serde_json::from_value::<Policy>(policy.clone()).map_err(|e| format!("compiled policy is invalid: {e}"))?;
     serde_json::from_value::<BudgetPolicy>(budget.clone()).map_err(|e| format!("compiled budget is invalid: {e}"))?;
+    serde_json::from_value::<ActionPolicy>(action_policy.clone()).map_err(|e| format!("compiled actions are invalid: {e}"))?;
 
     let out = root.join("runs").join("compiled");
     fs::create_dir_all(&out)?;
     fs::write(out.join("policy.json"), format!("{}\n", serde_json::to_string_pretty(&policy)?))?;
     fs::write(out.join("budget.json"), format!("{}\n", serde_json::to_string_pretty(&budget)?))?;
+    fs::write(out.join("actions.json"), format!("{}\n", serde_json::to_string_pretty(&action_policy)?))?;
 
     println!(
-        "deployed: {} worker(s) [{}], {} rule(s), {} limit(s)",
+        "deployed: {} worker(s) [{}], {} rule(s), {} action(s), {} limit(s)",
         workers.len(),
         workers.join(", "),
         rules.len(),
+        actions.len(),
         limits.len()
     );
     println!("compiled → runs/compiled/{{policy,budget}}.json (the gateway reads these)");

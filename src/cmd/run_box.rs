@@ -112,6 +112,7 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str) -> Result<(String
     args.push(format!("{}:{BOX_CA_PATH}:ro", host_ca.display()));
     args.extend(["-e".into(), format!("HOME={}", pihome.display())]);
     args.extend(["-e".into(), format!("PI_CODING_AGENT_DIR={}", pihome.join("agent").display())]);
+    args.extend(["-e".into(), format!("ROSTER_RUN_ID={run_id}")]);
     for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
         args.extend(["-e".into(), format!("{k}={proxy_url}")]);
     }

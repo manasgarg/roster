@@ -40,6 +40,14 @@ name = "email-send"
 executor = "email"
 trust = "gate"
 
+# Trust ladder: promote a narrow slice of an action to auto. Here, email to
+# internal addresses runs without a gate; anything else (external recipient)
+# falls through to the T0 gate. A list matches only if EVERY recipient does.
+[[trust]]
+intent = "email-send"
+match = { to = "*@ourco.com" }
+level = "auto"
+
 [budget]
 currencies = ["model_calls", "searches", "fetches", "usd"]
 vars = { price = { search = 0.005 } }

@@ -1,6 +1,9 @@
 # Inbound transport — Discord channels (spec)
 
-**Status: spec — not yet implemented.** Inbound is **Discord only**; email stays
+**Status: implemented and verified live, 2026-07-10** (all 5 increments — outbound
+Discord, the gateway client, channel-trust + slash commands, identity/purpose,
+and the judgement-to-respond framing; the full loop ran against a real bot +
+server). Inbound is **Discord only**; email stays
 **outbound-only** (SMTP, built). Realizes handoff §3.9 — **generalized from a
 single owner id to Discord roles** — and D12 (messages are content, never
 commands). Builds on the `roster relay` hand-off and the governed action path.

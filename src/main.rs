@@ -52,6 +52,7 @@ async fn main() {
         "queue" => cmd::queue::run(&args[2..]),
         "supervise" => cmd::supervise::run(&args[2..]).await,
         "relay" => cmd::relay::run(&args[2..]),
+        "listen" => cmd::listen::run(&args[2..]).await,
         "help" | "--help" | "-h" => {
             print_help();
             Ok(())
@@ -108,6 +109,7 @@ fn print_help() {
            queue [add|ls|show|requeue] file/list/inspect/requeue tasks\n  \
            supervise [--cap n] [--once]  dispatch queued tasks to the box\n  \
            relay --worker <n> \"<msg>\"    turn an inbound message into a task\n  \
+           listen --worker <n>          run the Discord gateway (inbound)\n  \
            gates [ls|show|approve|deny] approval desk for proposed actions\n\
          {providers}\n  \
            vault-sync                  import an existing pi login into the vault"

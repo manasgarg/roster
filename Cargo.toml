@@ -28,6 +28,9 @@ toml = "0.8"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 rustls-native-certs = "0.8"
+# Discord gateway (inbound) WebSocket client — reuses our rustls stack.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+futures-util = "0.3"
 
 [dev-dependencies]
 x509-parser = "0.18"

@@ -4,8 +4,8 @@
 //! The Discord `/channel trust|untrust` slash command maps here.
 //!
 //!   roster channel ls
-//!   roster channel trust <channel_id>
-//!   roster channel untrust <channel_id>
+//!   roster channel trust|untrust <channel_id>
+//!   roster channel mode <channel_id> all|mention
 
 use crate::discord;
 
@@ -14,12 +14,12 @@ type BErr = Box<dyn std::error::Error>;
 pub fn run(args: &[String]) -> Result<(), BErr> {
     match args.first().map(String::as_str).unwrap_or("ls") {
         "ls" | "list" => {
-            let map = discord::trust_designations();
+            let map = discord::channel_settings_all();
             if map.is_empty() {
-                println!("no channels designated (all untrusted by default)");
+                println!("no channels configured (untrusted, mode=all by default)");
             } else {
-                for (id, trusted) in map {
-                    println!("{id}  {}", if trusted { "trusted" } else { "untrusted" });
+                for (id, s) in map {
+                    println!("{id}  {}  mode={}", if s.trusted { "trusted  " } else { "untrusted" }, s.mode);
                 }
             }
             Ok(())
@@ -36,6 +36,16 @@ pub fn run(args: &[String]) -> Result<(), BErr> {
             println!("channel {id} → untrusted");
             Ok(())
         }
-        other => Err(format!("unknown channel subcommand \"{other}\" (try: ls, trust, untrust)").into()),
+        "mode" => {
+            let id = args.get(1).ok_or("usage: roster channel mode <channel_id> all|mention")?;
+            let mode = args.get(2).map(String::as_str).ok_or("usage: roster channel mode <channel_id> all|mention")?;
+            if mode != "all" && mode != "mention" {
+                return Err("mode must be \"all\" or \"mention\"".into());
+            }
+            discord::set_channel_mode(id, mode);
+            println!("channel {id} → mode {mode}");
+            Ok(())
+        }
+        other => Err(format!("unknown channel subcommand \"{other}\" (try: ls, trust, untrust, mode)").into()),
     }
 }

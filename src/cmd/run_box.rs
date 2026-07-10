@@ -47,13 +47,29 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
         return Err("box needs a prompt: roster box \"<prompt>\"".into());
     }
 
-    let (run_id, run_dir, ended_by, exit_code) = run_box(&prompt, ceiling_min, &worker).await?;
+    let (run_id, run_dir, ended_by, exit_code) = run_box(&prompt, ceiling_min, &worker, "").await?;
     println!("box {run_id} ended by {ended_by} (exit code {})", exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()));
     println!("outputs: {}", run_dir.display());
     std::process::exit(if ended_by == "ceiling" { 2 } else { exit_code.unwrap_or(1) });
 }
 
-async fn run_box(prompt: &str, ceiling_min: f64, worker: &str) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
+/// The outcome of one box run, for the supervisor.
+pub struct Outcome {
+    pub run_id: String,
+    pub run_dir: PathBuf,
+    pub ended_by: &'static str,
+    pub exit_code: Option<i32>,
+}
+
+/// Run one box session for a queued task (the supervisor's entry point). Same
+/// machinery as the CLI, but returns the outcome instead of exiting, and passes
+/// the task id into the box so proposed actions carry their provenance.
+pub async fn dispatch(worker: &str, prompt: &str, ceiling_min: f64, task_id: &str) -> Result<Outcome, BErr> {
+    let (run_id, run_dir, ended_by, exit_code) = run_box(prompt, ceiling_min, worker, task_id).await?;
+    Ok(Outcome { run_id, run_dir, ended_by, exit_code })
+}
+
+async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
     ensure_lockdown().await?;
 
     let home = home_dir();
@@ -63,13 +79,16 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str) -> Result<(String
     }
 
     let repo = root();
-    let run_id = time::OffsetDateTime::now_utc()
+    let stamp = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default()
         .chars()
         .take(19)
         .map(|c| if c == 'T' || c == ':' { '-' } else { c })
         .collect::<String>();
+    // A short random suffix so two boxes started in the same second (concurrent
+    // supervisor dispatch) never share a run directory.
+    let run_id = format!("{stamp}-{}", &uuid::Uuid::new_v4().simple().to_string()[..4]);
     let run_dir = repo.join("runs").join(&run_id);
     let workspace = run_dir.join("workspace");
     let session = run_dir.join("session");
@@ -113,6 +132,9 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str) -> Result<(String
     args.extend(["-e".into(), format!("HOME={}", pihome.display())]);
     args.extend(["-e".into(), format!("PI_CODING_AGENT_DIR={}", pihome.join("agent").display())]);
     args.extend(["-e".into(), format!("ROSTER_RUN_ID={run_id}")]);
+    if !task_id.is_empty() {
+        args.extend(["-e".into(), format!("ROSTER_TASK_ID={task_id}")]);
+    }
     for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
         args.extend(["-e".into(), format!("{k}={proxy_url}")]);
     }

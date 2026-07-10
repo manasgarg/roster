@@ -18,6 +18,7 @@ mod judge;
 mod ledger;
 mod providers;
 mod proxy;
+mod queue;
 mod registry;
 mod scope;
 mod schema;
@@ -45,6 +46,8 @@ async fn main() {
         "vault-sync" => cmd::vault_sync::run(),
         "box" => cmd::run_box::run(&args[2..]).await,
         "gates" => cmd::gates::run(&args[2..]).await,
+        "queue" => cmd::queue::run(&args[2..]),
+        "supervise" => cmd::supervise::run(&args[2..]).await,
         "help" | "--help" | "-h" => {
             print_help();
             Ok(())
@@ -98,6 +101,8 @@ fn print_help() {
            create <name>               scaffold workers/<name>/worker.toml\n  \
            deploy                      compile org.toml + workers/* → runs/compiled/\n  \
            box [--worker <n>] [--ceiling <m>] \"<prompt>\"   run one pi session in the box\n  \
+           queue [add|ls]              file/list tasks for the supervisor\n  \
+           supervise [--cap n] [--once]  dispatch queued tasks to the box\n  \
            gates [ls|show|approve|deny] approval desk for proposed actions\n\
          {providers}\n  \
            vault-sync                  import an existing pi login into the vault"

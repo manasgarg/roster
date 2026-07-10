@@ -134,3 +134,9 @@ pub fn list_all() -> Vec<Gate> {
 pub fn for_worker(worker: &str) -> Vec<Gate> {
     list_all().into_iter().filter(|g| g.worker == worker).collect()
 }
+
+/// Still-pending gates filed by a given task's run (the supervisor uses this to
+/// decide whether a finished task needs review or is done).
+pub fn pending_for_task(task_id: &str) -> Vec<Gate> {
+    list_pending().into_iter().filter(|g| g.task_id == task_id).collect()
+}

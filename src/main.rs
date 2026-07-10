@@ -49,6 +49,7 @@ async fn main() {
         "gates" => cmd::gates::run(&args[2..]).await,
         "queue" => cmd::queue::run(&args[2..]),
         "supervise" => cmd::supervise::run(&args[2..]).await,
+        "relay" => cmd::relay::run(&args[2..]),
         "help" | "--help" | "-h" => {
             print_help();
             Ok(())
@@ -104,6 +105,7 @@ fn print_help() {
            box [--worker <n>] [--ceiling <m>] \"<prompt>\"   run one pi session in the box\n  \
            queue [add|ls]              file/list tasks for the supervisor\n  \
            supervise [--cap n] [--once]  dispatch queued tasks to the box\n  \
+           relay --worker <n> \"<msg>\"    turn an inbound message into a task\n  \
            gates [ls|show|approve|deny] approval desk for proposed actions\n\
          {providers}\n  \
            vault-sync                  import an existing pi login into the vault"

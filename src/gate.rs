@@ -140,3 +140,18 @@ pub fn for_worker(worker: &str) -> Vec<Gate> {
 pub fn pending_for_task(task_id: &str) -> Vec<Gate> {
     list_pending().into_iter().filter(|g| g.task_id == task_id).collect()
 }
+
+/// A (worker, intent)'s gate history as (executed, denied) — the numbers the
+/// earned-trust ladder reads. A denial is a reversal signal.
+pub fn history(worker: &str, intent: &str) -> (u32, u32) {
+    let mut executed = 0;
+    let mut denied = 0;
+    for g in list_all().into_iter().filter(|g| g.worker == worker && g.intent == intent) {
+        match g.state.as_str() {
+            "executed" => executed += 1,
+            "denied" => denied += 1,
+            _ => {}
+        }
+    }
+    (executed, denied)
+}

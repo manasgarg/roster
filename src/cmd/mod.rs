@@ -8,6 +8,7 @@ pub mod create;
 pub mod deploy;
 pub mod gates;
 pub mod queue;
+pub mod relay;
 pub mod run_box;
 pub mod supervise;
 pub mod vault_sync;

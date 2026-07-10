@@ -49,6 +49,14 @@ intent = "email-send"
 match = { to = "*@ourco.com" }
 level = "auto"
 
+# Earned trust: an external email still gates at first, but after 3 clean
+# approvals for this worker the privilege is earned and further ones auto-send.
+# A single denial revokes it (back to gating). Listed after the internal rule.
+[[trust]]
+intent = "email-send"
+level = "earned"
+after = 3
+
 # Code tasks: the box edits a writable worktree, then proposes the change. On
 # approval the git-pr executor commits, pushes the branch, and opens a PR — git
 # push is direct (the gateway can't govern git's wire protocol); the box never

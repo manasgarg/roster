@@ -123,7 +123,8 @@ async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
 
     journal::append(worker, "action-proposed", json!({ "intent": env.intent, "rationale": env.rationale, "run_id": env.run_id }));
 
-    let level = trust::evaluate(worker, &env.intent, &env.payload, &grant.trust, &policy.trust);
+    let (executed, denied) = gate::history(worker, &env.intent);
+    let level = trust::evaluate(worker, &env.intent, &env.payload, &grant.trust, &policy.trust, executed, denied);
     if level == "auto" {
         match run_executor(&grant.executor, worker, &env.intent, &env.payload, &env.run_id).await {
             Ok(result) => {

@@ -69,9 +69,17 @@ trust = "gate"
 # The worker may PROPOSE a change to its own charter; the owner must approve it.
 # The "charter" executor is hard-gated in code (D10) — the trust ladder never
 # promotes a charter edit to auto, no matter what trust rules say.
+# The worker may PROPOSE edits to its own identity (admin-approved) or a channel's
+# purpose (trusted-approved); both executors are hard-gated in code (D10) — the
+# trust ladder never promotes a self-edit to auto.
 [[action]]
-name = "charter-edit"
-executor = "charter"
+name = "identity-edit"
+executor = "identity"
+trust = "gate"
+
+[[action]]
+name = "purpose-edit"
+executor = "purpose"
 trust = "gate"
 
 # Reply in a Discord channel. Gated by default; a trust rule can auto a reply in

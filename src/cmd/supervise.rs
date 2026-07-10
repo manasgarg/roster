@@ -127,8 +127,19 @@ fn reclaim() {
 /// the run it can also query live state via the check_gates tool.
 fn effective_prompt(task: &queue::Task) -> String {
     let subject = task.subject();
-    let mut brief: Vec<String> = Vec::new();
+    let mut sections: Vec<String> = Vec::new();
 
+    // Purpose (channel-specific), for Discord tasks — the worker's role here,
+    // sitting between its fixed identity (added by run_box) and the task.
+    if let Some(ch) = task.context.pointer("/discord/channel_id").and_then(|v| v.as_str()) {
+        if let Ok(p) = std::fs::read_to_string(crate::discord::purpose_path(ch)) {
+            if !p.trim().is_empty() {
+                sections.push(format!("[Purpose — your role in this channel]\n{}", p.trim()));
+            }
+        }
+    }
+
+    let mut brief: Vec<String> = Vec::new();
     if let Some(rg) = task.context.get("resolved_gate") {
         brief.push(format!(
             "You are continuing after an earlier action resolved: {} — state {}.",
@@ -136,7 +147,6 @@ fn effective_prompt(task: &queue::Task) -> String {
             rg.get("state").and_then(|v| v.as_str()).unwrap_or("?"),
         ));
     }
-
     let open: Vec<String> = gate::for_worker(&subject)
         .into_iter()
         .filter(|g| !g.is_terminal())
@@ -145,11 +155,15 @@ fn effective_prompt(task: &queue::Task) -> String {
     if !open.is_empty() {
         brief.push(format!("You have actions already awaiting approval — do NOT re-propose these: {}.", open.join(", ")));
     }
+    if !brief.is_empty() {
+        sections.push(format!("[Briefing]\n{}", brief.join("\n")));
+    }
 
-    if brief.is_empty() {
+    if sections.is_empty() {
         task.prompt.clone()
     } else {
-        format!("[Briefing]\n{}\n\n[Task]\n{}", brief.join("\n"), task.prompt)
+        sections.push(format!("[Task]\n{}", task.prompt));
+        sections.join("\n\n")
     }
 }
 

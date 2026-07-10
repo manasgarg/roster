@@ -103,25 +103,49 @@ export default function rosterActionTools(api: PiToolApi): void {
   });
 
   api.registerTool({
-    name: "propose_charter_edit",
-    label: "propose_charter_edit",
+    name: "propose_identity_edit",
+    label: "propose_identity_edit",
     description:
-      "Propose a change to your OWN charter (your standing role and rules). This does NOT change it — it " +
-      "submits the proposed charter for the owner's approval, and charter changes ALWAYS require approval. " +
-      "Provide the COMPLETE new charter text (not a diff), and a rationale for the change.",
-    promptSnippet: "propose_charter_edit(charter, rationale): suggest a change to your charter (owner-approved)",
+      "Propose a change to your OWN identity (your fixed self and standing rules, the same across channels). " +
+      "This does NOT change it — it submits the proposed identity for an admin's approval, and identity changes " +
+      "ALWAYS require approval. Provide the COMPLETE new identity text (not a diff), and a rationale.",
+    promptSnippet: "propose_identity_edit(identity, rationale): suggest a change to your identity (admin-approved)",
     parameters: {
       type: "object",
       properties: {
-        charter: { type: "string", description: "The complete proposed charter, in full (replaces the current one on approval)." },
-        rationale: { type: "string", description: "Why you're proposing this change — shown to the owner." },
+        identity: { type: "string", description: "The complete proposed identity, in full (replaces the current one on approval)." },
+        rationale: { type: "string", description: "Why you're proposing this change — shown to the reviewer." },
       },
-      required: ["charter", "rationale"],
+      required: ["identity", "rationale"],
       additionalProperties: false,
     },
     async execute(_id, params) {
-      const { charter, rationale } = params as { charter: string; rationale: string };
-      const s = await submit("charter-edit", { charter }, rationale);
+      const { identity, rationale } = params as { identity: string; rationale: string };
+      const s = await submit("identity-edit", { identity }, rationale);
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
+    name: "propose_purpose_edit",
+    label: "propose_purpose_edit",
+    description:
+      "Propose a change to a channel's purpose (your role/goals in that channel). This does NOT change it — it " +
+      "submits the proposed purpose for approval. Provide the channel id, the COMPLETE new purpose text, and a rationale.",
+    promptSnippet: "propose_purpose_edit(channel_id, purpose, rationale): suggest a channel's purpose (approved)",
+    parameters: {
+      type: "object",
+      properties: {
+        channel_id: { type: "string", description: "The Discord channel id this purpose is for." },
+        purpose: { type: "string", description: "The complete proposed purpose, in full." },
+        rationale: { type: "string", description: "Why you're proposing this — shown to the reviewer." },
+      },
+      required: ["channel_id", "purpose", "rationale"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const { channel_id, purpose, rationale } = params as { channel_id: string; purpose: string; rationale: string };
+      const s = await submit("purpose-edit", { channel_id, purpose }, rationale);
       return { content: [{ type: "text", text: describe(s) }] };
     },
   });

@@ -206,7 +206,7 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, ru
     for ext in box_extensions(&repo) {
         args.extend(["-e".into(), ext]);
     }
-    args.extend(["--session-dir".into(), session.display().to_string(), with_charter(worker, prompt)]);
+    args.extend(["--session-dir".into(), session.display().to_string(), with_identity(worker, prompt)]);
 
     let mut child = tokio::process::Command::new("docker")
         .args(&args)
@@ -372,21 +372,26 @@ fn box_extensions(repo: &Path) -> Vec<String> {
     paths
 }
 
-/// The worker's charter (workers/<name>/charter.md), read live. The box gets it
-/// read-only via the repo mount and cannot rewrite it; we prepend it here so it
-/// leads every run — the ad-hoc `roster box` path and supervised runs alike.
-pub fn charter_path(worker: &str) -> PathBuf {
-    root().join("workers").join(worker).join("charter.md")
+/// The worker's identity (workers/<name>/identity.md) — its fixed self, the same
+/// across every channel. Read live; the box gets it read-only via the repo mount
+/// and cannot rewrite it. We prepend it so it leads every run.
+pub fn identity_path(worker: &str) -> PathBuf {
+    root().join("workers").join(worker).join("identity.md")
 }
 
-fn with_charter(worker: &str, prompt: &str) -> String {
-    match std::fs::read_to_string(charter_path(worker)) {
-        Ok(c) if !c.trim().is_empty() => format!(
-            "[Charter — your standing role and rules. You cannot change these during this run; \
-             to change them, use propose_charter_edit, which the owner must approve.]\n{}\n\n{prompt}",
+fn with_identity(worker: &str, prompt: &str) -> String {
+    // Prefer identity.md; fall back to the legacy charter.md during migration.
+    let content = std::fs::read_to_string(identity_path(worker))
+        .ok()
+        .filter(|c| !c.trim().is_empty())
+        .or_else(|| std::fs::read_to_string(root().join("workers").join(worker).join("charter.md")).ok().filter(|c| !c.trim().is_empty()));
+    match content {
+        Some(c) => format!(
+            "[Identity — who you are and your standing rules. You cannot change these during this run; \
+             to change them, use propose_identity_edit, which an admin must approve.]\n{}\n\n{prompt}",
             c.trim()
         ),
-        _ => prompt.to_string(),
+        None => prompt.to_string(),
     }
 }
 

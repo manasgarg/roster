@@ -55,11 +55,19 @@ fn show(id: &str) -> Result<(), BErr> {
     // Render the change per executor: a charter gate shows a current-vs-proposed
     // diff; a code gate shows the worktree diff; everything else shows its payload.
     match g.executor.as_str() {
-        "charter" => {
-            let proposed = g.payload.get("charter").and_then(|v| v.as_str()).unwrap_or("");
-            match action::charter_diff(&g.worker, proposed) {
-                Some(d) => println!("\ncharter change — current vs proposed:\n{d}"),
-                None => println!("\n(the proposed charter is identical to the current one)"),
+        "identity" => {
+            let proposed = g.payload.get("identity").or_else(|| g.payload.get("charter")).and_then(|v| v.as_str()).unwrap_or("");
+            match action::identity_diff(&g.worker, proposed) {
+                Some(d) => println!("\nidentity change — current vs proposed:\n{d}"),
+                None => println!("\n(the proposed identity is identical to the current one)"),
+            }
+        }
+        "purpose" => {
+            let ch = g.payload.get("channel_id").and_then(|v| v.as_str()).unwrap_or("");
+            let proposed = g.payload.get("purpose").and_then(|v| v.as_str()).unwrap_or("");
+            match action::purpose_diff(ch, proposed) {
+                Some(d) => println!("\npurpose change (channel {ch}) — current vs proposed:\n{d}"),
+                None => println!("\n(the proposed purpose is identical to the current one)"),
             }
         }
         "git-pr" => {

@@ -129,8 +129,9 @@ async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
     journal::append(worker, &env.run_id, "action-proposed", json!({ "intent": env.intent, "rationale": env.rationale, "run_id": env.run_id }));
 
     let (executed, denied) = gate::history(worker, &env.intent);
-    let level = if grant.executor == "charter" {
-        // D10: charter edits ALWAYS gate — the trust ladder never applies.
+    let level = if grant.executor == "identity" || grant.executor == "purpose" {
+        // D10: edits to a worker's own identity/purpose ALWAYS gate — the trust
+        // ladder never applies to self-programming.
         "gate".to_string()
     } else if grant.executor == "discord" && discord_channel_trusted(&env.payload) {
         // Replies in a trusted channel (or a DM) flow without a gate.
@@ -283,7 +284,8 @@ pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &
         "message-user" => exec_message_user(worker, payload).await,
         "email" => exec_email(worker, payload).await,
         "git-pr" => exec_git_pr(worker, run_id, payload),
-        "charter" => exec_charter(worker, payload),
+        "identity" => exec_identity(worker, payload),
+        "purpose" => exec_purpose(payload),
         "discord" => exec_discord(worker, payload).await,
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
@@ -432,25 +434,46 @@ fn exec_git_pr(worker: &str, run_id: &str, payload: &Value) -> Result<Value, Str
     Ok(json!({ "branch": branch, "commit": commit, "pushed": true, "pr": pr }))
 }
 
-/// Overwrite a worker's charter, only after the owner approved the exact text
+/// Overwrite a worker's identity, only after an admin approved the exact text
 /// (D10). Trusted-side; the box never writes here (its repo mount is read-only).
-fn exec_charter(worker: &str, payload: &Value) -> Result<Value, String> {
+fn exec_identity(worker: &str, payload: &Value) -> Result<Value, String> {
     let content = payload
-        .get("charter")
+        .get("identity")
+        .or_else(|| payload.get("charter"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
-        .ok_or("charter-edit needs a non-empty \"charter\" field")?;
+        .ok_or("identity-edit needs a non-empty \"identity\" field")?;
     let short = worker.strip_prefix("org/").unwrap_or(worker);
-    let path = crate::cmd::run_box::charter_path(short);
-    let dir = path.parent().ok_or("bad charter path")?;
+    let path = crate::cmd::run_box::identity_path(short);
+    let dir = path.parent().ok_or("bad identity path")?;
     if !dir.exists() {
         return Err(format!("no worker directory {} — is \"{short}\" a real worker?", dir.display()));
     }
-    let tmp = dir.join("charter.md.tmp");
-    std::fs::write(&tmp, format!("{}\n", content.trim())).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-    eprintln!("charter [{worker}] updated ({} bytes)", content.trim().len());
+    write_atomic(&path, content)?;
+    eprintln!("identity [{worker}] updated ({} bytes)", content.trim().len());
     Ok(json!({ "written": path.display().to_string(), "bytes": content.trim().len() }))
+}
+
+/// Overwrite a channel's purpose (channels/<id>/purpose.md), post-approval (D10).
+fn exec_purpose(payload: &Value) -> Result<Value, String> {
+    let channel = payload.get("channel_id").and_then(|v| v.as_str()).ok_or("purpose-edit needs a \"channel_id\"")?;
+    let content = payload
+        .get("purpose")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or("purpose-edit needs a non-empty \"purpose\" field")?;
+    let path = crate::discord::purpose_path(channel);
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    write_atomic(&path, content)?;
+    eprintln!("purpose [{channel}] updated ({} bytes)", content.trim().len());
+    Ok(json!({ "written": path.display().to_string(), "channel_id": channel }))
+}
+
+fn write_atomic(path: &std::path::Path, content: &str) -> Result<(), String> {
+    let tmp = path.with_extension("md.tmp");
+    std::fs::write(&tmp, format!("{}\n", content.trim())).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn git(args: &[&str]) -> Result<String, String> {
@@ -461,12 +484,19 @@ fn git(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Current charter vs a proposed one, as a unified diff (for `gates show` on a
-/// charter gate — the owner reviews exactly what would change).
-pub fn charter_diff(worker: &str, proposed: &str) -> Option<String> {
+/// A current-vs-proposed unified diff of a file (for `gates show` on an
+/// identity/purpose gate — the reviewer sees exactly what would change).
+pub fn identity_diff(worker: &str, proposed: &str) -> Option<String> {
     let short = worker.strip_prefix("org/").unwrap_or(worker);
-    let current = crate::cmd::run_box::charter_path(short);
-    let current_arg = if current.exists() { current } else { std::path::PathBuf::from("/dev/null") };
+    file_diff(&crate::cmd::run_box::identity_path(short), proposed)
+}
+
+pub fn purpose_diff(channel_id: &str, proposed: &str) -> Option<String> {
+    file_diff(&crate::discord::purpose_path(channel_id), proposed)
+}
+
+fn file_diff(current: &std::path::Path, proposed: &str) -> Option<String> {
+    let current_arg = if current.exists() { current.to_path_buf() } else { std::path::PathBuf::from("/dev/null") };
     let tmp = std::env::temp_dir().join(format!("roster-charter-{}.md", std::process::id()));
     std::fs::write(&tmp, format!("{}\n", proposed.trim())).ok()?;
     let out = std::process::Command::new("git")

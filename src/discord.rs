@@ -353,6 +353,13 @@ fn command_defs() -> Value {
         { "name": "channel", "description": "Channel trust designation", "options": [
             { "type": 1, "name": "trust", "description": "Mark this channel's participants trusted" },
             { "type": 1, "name": "untrust", "description": "Mark this channel's participants untrusted" }
+        ]},
+        { "name": "purpose", "description": "This channel's purpose for the worker", "options": [
+            { "type": 1, "name": "show", "description": "Show this channel's purpose" },
+            { "type": 1, "name": "set", "description": "Set this channel's purpose", "options": [{ "type": 3, "name": "text", "description": "The purpose", "required": true }] }
+        ]},
+        { "name": "identity", "description": "The worker's fixed identity", "options": [
+            { "type": 1, "name": "show", "description": "Show the worker's identity" }
         ]}
     ])
 }
@@ -429,7 +436,7 @@ async fn handle_interaction(worker: &str, d: &Value, guilds: &HashMap<String, Gu
         .await;
 }
 
-async fn run_command(_worker: &str, d: &Value, role: &str, caller: &str) -> String {
+async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> String {
     let data = &d["data"];
     let cmd = data["name"].as_str().unwrap_or("");
     let sub = data["options"][0]["name"].as_str().unwrap_or("");
@@ -504,6 +511,36 @@ async fn run_command(_worker: &str, d: &Value, role: &str, caller: &str) -> Stri
             set_channel_trust(channel_id, false);
             "This channel's participants are now **untrusted** — they can talk to me, but not administer, and my replies here will be gated.".into()
         }
+        ("purpose", "show") => {
+            if rank < 1 {
+                return denied("trusted participants");
+            }
+            match std::fs::read_to_string(purpose_path(channel_id)) {
+                Ok(p) if !p.trim().is_empty() => format!("This channel's purpose:\n```\n{}\n```", p.trim()),
+                _ => "This channel has no purpose set yet. Set one with `/purpose set`.".into(),
+            }
+        }
+        ("purpose", "set") => {
+            if rank < 1 {
+                return denied("trusted participants");
+            }
+            let text = arg("text");
+            let path = purpose_path(channel_id);
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            match std::fs::write(&path, format!("{}\n", text.trim())) {
+                Ok(()) => "This channel's purpose is updated. It'll shape how I act here from your next message.".into(),
+                Err(e) => format!("Could not set purpose: {e}"),
+            }
+        }
+        ("identity", "show") => {
+            if rank < 2 {
+                return denied("server admins");
+            }
+            match std::fs::read_to_string(crate::cmd::run_box::identity_path(worker)) {
+                Ok(p) if !p.trim().is_empty() => format!("{worker}'s identity:\n```\n{}\n```", p.trim()),
+                _ => format!("{worker} has no identity.md set."),
+            }
+        }
         _ => "Unknown command.".into(),
     }
 }
@@ -556,6 +593,12 @@ pub fn trust_designations() -> HashMap<String, bool> {
 
 fn channel_dir(channel_id: &str) -> PathBuf {
     root().join("channels").join(channel_id)
+}
+
+/// A channel's purpose file (channels/<id>/purpose.md) — the worker's role in
+/// this channel, composed into runs and editable by trusted participants.
+pub fn purpose_path(channel_id: &str) -> PathBuf {
+    channel_dir(channel_id).join("purpose.md")
 }
 
 fn persist_message(channel_id: &str, record: &Value) {

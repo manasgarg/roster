@@ -12,6 +12,10 @@ use tokio::task::JoinSet;
 
 type BErr = Box<dyn std::error::Error>;
 
+/// How often the loop re-polls the queue (for newly-filed tasks) whether idle or
+/// running boxes — the ceiling on dispatch latency.
+const POLL_SECS: u64 = 2;
+
 pub async fn run(args: &[String]) -> Result<(), BErr> {
     let mut cap = 3usize;
     let mut once = false;
@@ -83,11 +87,18 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
             if once {
                 break;
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
             continue;
         }
 
-        if let Some(joined) = set.join_next().await {
+        // Wait for a run to finish, but wake at least every POLL_SECS so a task
+        // filed while a box is running fills a free slot promptly, instead of
+        // waiting for that box to finish.
+        let joined = match tokio::time::timeout(Duration::from_secs(POLL_SECS), set.join_next()).await {
+            Ok(j) => j,
+            Err(_) => continue, // timed out — loop back and re-poll the queue
+        };
+        if let Some(joined) = joined {
             match joined {
                 Ok((task, outcome)) => finalize(task, outcome),
                 Err(e) => eprintln!("supervise: a run panicked: {e}"),

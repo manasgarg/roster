@@ -13,8 +13,33 @@ pub fn run(args: &[String]) -> Result<(), BErr> {
         "add" => add(&args[1..]),
         "ls" | "list" => ls(),
         "show" => show(args.get(1).ok_or("usage: roster queue show <id>")?),
-        other => Err(format!("unknown queue subcommand \"{other}\" (try: add, ls, show)").into()),
+        "requeue" => requeue(args.get(1).ok_or("usage: roster queue requeue <id>")?),
+        other => Err(format!("unknown queue subcommand \"{other}\" (try: add, ls, show, requeue)").into()),
     }
+}
+
+/// Put a stuck or finished task back to `waiting` so the supervisor runs it
+/// again. Refuses if a box for it is still live (would double-run).
+fn requeue(id: &str) -> Result<(), BErr> {
+    let mut t = queue::find(id).ok_or_else(|| format!("no such task {id}"))?;
+    if t.state == "waiting" {
+        println!("task {id} is already waiting");
+        return Ok(());
+    }
+    if let Some(run) = &t.run_id {
+        if crate::cmd::run_box::box_alive(run) {
+            return Err(format!(
+                "task {id} still has a live box ({run}) — let it finish, or `docker kill {}` first",
+                crate::cmd::run_box::container_name(run)
+            )
+            .into());
+        }
+    }
+    let prev = t.state.clone();
+    t.run_id = None;
+    queue::set_state(&mut t, "waiting").map_err(|e| e.to_string())?;
+    println!("requeued {id}: {prev} → waiting");
+    Ok(())
 }
 
 fn show(id: &str) -> Result<(), BErr> {

@@ -44,6 +44,7 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
     }
 
     eprintln!("roster supervise — dispatching tasks (cap {cap}{})", if once { ", once" } else { "" });
+    reclaim();
     let mut set: JoinSet<(queue::Task, Result<run_box::Outcome, String>)> = JoinSet::new();
 
     loop {
@@ -52,24 +53,28 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
 
         // Fill idle slots with the next waiting tasks (each atomically claimed).
         while set.len() < cap {
-            let Some(task) = queue::claim_next() else { break };
+            let Some(mut task) = queue::claim_next() else { break };
             // D6: proactive work is soft-stopped when the worker is over budget;
             // owner-filed/continuation work always runs.
             if task.proactive {
                 let limits = crate::budget::load_budget().limits;
                 if let Some(reason) = ledger::over_any_limit(&task.subject(), &limits, crate::util::now_ms()) {
-                    let mut t = task;
-                    eprintln!("defer {} (proactive, {reason})", t.id);
-                    let _ = queue::set_state(&mut t, "deferred");
+                    eprintln!("defer {} (proactive, {reason})", task.id);
+                    let _ = queue::set_state(&mut task, "deferred");
                     continue;
                 }
             }
-            eprintln!("dispatch {} [{}] {}", task.id, task.worker, first_line(&task.prompt));
+            // Record the run id on the task before the box starts, so a crash
+            // leaves a task we can map to its (now dead) container and reclaim.
+            let run_id = run_box::new_run_id();
+            task.run_id = Some(run_id.clone());
+            let _ = queue::save(&task);
+            eprintln!("dispatch {} [{}] run {run_id} — {}", task.id, task.worker, first_line(&task.prompt));
             let t = task.clone();
             let prompt = effective_prompt(&task);
             set.spawn(async move {
                 let code = t.repo.as_ref().map(|r| run_box::CodeSpec { repo: r.clone(), base: t.base.clone().unwrap_or_else(|| "main".into()) });
-                let out = run_box::dispatch(&t.worker, &prompt, t.ceiling_min, &t.id, code.as_ref()).await.map_err(|e| e.to_string());
+                let out = run_box::dispatch(&t.worker, &prompt, t.ceiling_min, &t.id, &run_id, code.as_ref()).await.map_err(|e| e.to_string());
                 (t, out)
             });
         }
@@ -90,6 +95,19 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
         }
     }
     Ok(())
+}
+
+/// On startup, any task still marked `running` is orphaned from a previous
+/// supervisor. If its box container is gone, put it back to `waiting` so it runs
+/// again; if a container is somehow still alive, leave it be (don't double-run).
+fn reclaim() {
+    for mut t in queue::list_all().into_iter().filter(|t| t.state == "running") {
+        if t.run_id.as_deref().map(run_box::box_alive).unwrap_or(false) {
+            eprintln!("reclaim: {} still has a live box ({}) — leaving it", t.id, t.run_id.as_deref().unwrap_or(""));
+        } else if queue::set_state(&mut t, "waiting").is_ok() {
+            eprintln!("reclaim: {} → waiting (no live box)", t.id);
+        }
+    }
 }
 
 /// The prompt handed to the box, prefixed with a run-start briefing so the

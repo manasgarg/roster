@@ -47,7 +47,8 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
         return Err("box needs a prompt: roster box \"<prompt>\"".into());
     }
 
-    let (run_id, run_dir, ended_by, exit_code) = run_box(&prompt, ceiling_min, &worker, "", None).await?;
+    let run_id = new_run_id();
+    let (run_id, run_dir, ended_by, exit_code) = run_box(&prompt, ceiling_min, &worker, "", &run_id, None).await?;
     println!("box {run_id} ended by {ended_by} (exit code {})", exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()));
     println!("outputs: {}", run_dir.display());
     std::process::exit(if ended_by == "ceiling" { 2 } else { exit_code.unwrap_or(1) });
@@ -70,12 +71,40 @@ pub struct CodeSpec {
 /// Run one box session for a queued task (the supervisor's entry point). Same
 /// machinery as the CLI, but returns the outcome instead of exiting, and passes
 /// the task id into the box so proposed actions carry their provenance.
-pub async fn dispatch(worker: &str, prompt: &str, ceiling_min: f64, task_id: &str, code: Option<&CodeSpec>) -> Result<Outcome, BErr> {
-    let (run_id, _run_dir, ended_by, exit_code) = run_box(prompt, ceiling_min, worker, task_id, code).await?;
+pub async fn dispatch(worker: &str, prompt: &str, ceiling_min: f64, task_id: &str, run_id: &str, code: Option<&CodeSpec>) -> Result<Outcome, BErr> {
+    let (run_id, _run_dir, ended_by, exit_code) = run_box(prompt, ceiling_min, worker, task_id, run_id, code).await?;
     Ok(Outcome { run_id, ended_by, exit_code })
 }
 
-async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, code: Option<&CodeSpec>) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
+/// The container name for a run — the supervisor checks `docker ps` for this to
+/// tell whether a task marked `running` still has a live box.
+pub fn container_name(run_id: &str) -> String {
+    format!("roster-box-{run_id}")
+}
+
+/// Is the box container for this run still alive? (For reclaim/requeue safety.)
+pub fn box_alive(run_id: &str) -> bool {
+    std::process::Command::new("docker")
+        .args(["ps", "-q", "--filter", &format!("name={}", container_name(run_id))])
+        .output()
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+/// A fresh run id: a second-granularity timestamp plus a random suffix so two
+/// boxes started in the same second never collide.
+pub fn new_run_id() -> String {
+    let stamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+        .chars()
+        .take(19)
+        .map(|c| if c == 'T' || c == ':' { '-' } else { c })
+        .collect::<String>();
+    format!("{stamp}-{}", &uuid::Uuid::new_v4().simple().to_string()[..4])
+}
+
+async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, run_id: &str, code: Option<&CodeSpec>) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
     ensure_lockdown().await?;
 
     let home = home_dir();
@@ -85,17 +114,7 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, co
     }
 
     let repo = root();
-    let stamp = time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default()
-        .chars()
-        .take(19)
-        .map(|c| if c == 'T' || c == ':' { '-' } else { c })
-        .collect::<String>();
-    // A short random suffix so two boxes started in the same second (concurrent
-    // supervisor dispatch) never share a run directory.
-    let run_id = format!("{stamp}-{}", &uuid::Uuid::new_v4().simple().to_string()[..4]);
-    let run_dir = repo.join("runs").join(&run_id);
+    let run_dir = repo.join("runs").join(run_id);
     let workspace = run_dir.join("workspace");
     let session = run_dir.join("session");
     let pihome = run_dir.join(".pihome");
@@ -138,7 +157,7 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, co
     write_0600(&identity_file, &format!("{}\n", json!({ "subject": subject })))?;
 
     let proxy_url = format!("http://{token}@host.docker.internal:{GATEWAY_PORT}");
-    let container = format!("roster-box-{run_id}");
+    let container = container_name(run_id);
     let (uid, gid) = (unsafe { libc_getuid() }, unsafe { libc_getgid() });
 
     let mut args: Vec<String> = vec![
@@ -220,7 +239,7 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, co
     let _ = stream.await;
     let _ = std::fs::remove_file(&identity_file); // single-use token
 
-    Ok((run_id, run_dir, ended_by, status.code()))
+    Ok((run_id.to_string(), run_dir, ended_by, status.code()))
 }
 
 // ── lockdown ─────────────────────────────────────────────────────────────────

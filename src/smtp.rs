@@ -7,10 +7,15 @@
 
 use base64::Engine;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use time::format_description::well_known::Rfc2822;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
+
+/// Whole-conversation deadline. Kept under the box's 30s action-tool timeout so
+/// a stuck send surfaces as a clear SMTP error, not an opaque tool timeout.
+const SEND_TIMEOUT_SECS: u64 = 20;
 
 pub struct SmtpConfig {
     pub host: String,
@@ -22,8 +27,19 @@ pub struct SmtpConfig {
     pub from: String,
 }
 
-/// Send one message. Returns a short status on success, or a diagnostic string.
+/// Send one message, bounded by a deadline. Returns a short status on success,
+/// or a diagnostic string (never hangs).
 pub async fn send(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) -> Result<String, String> {
+    match tokio::time::timeout(Duration::from_secs(SEND_TIMEOUT_SECS), send_inner(cfg, to, subject, body)).await {
+        Ok(r) => r,
+        Err(_) => Err(format!(
+            "timed out after {SEND_TIMEOUT_SECS}s talking to {}:{} — is the port reachable? (Mailgun also offers 587)",
+            cfg.host, cfg.port
+        )),
+    }
+}
+
+async fn send_inner(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) -> Result<String, String> {
     let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await.map_err(|e| format!("connect {}:{}: {e}", cfg.host, cfg.port))?;
     let name = rustls::pki_types::ServerName::try_from(cfg.host.clone()).map_err(|e| format!("bad host: {e}"))?;
     let tls = connector().connect(name, tcp).await.map_err(|e| format!("TLS: {e}"))?;

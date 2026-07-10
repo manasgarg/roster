@@ -104,7 +104,7 @@ fn print_help() {
            create <name>               scaffold workers/<name>/worker.toml\n  \
            deploy                      compile org.toml + workers/* → runs/compiled/\n  \
            box [--worker <n>] [--ceiling <m>] \"<prompt>\"   run one pi session in the box\n  \
-           queue [add|ls|show]         file/list/inspect tasks for the supervisor\n  \
+           queue [add|ls|show|requeue] file/list/inspect/requeue tasks\n  \
            supervise [--cap n] [--once]  dispatch queued tasks to the box\n  \
            relay --worker <n> \"<msg>\"    turn an inbound message into a task\n  \
            gates [ls|show|approve|deny] approval desk for proposed actions\n\

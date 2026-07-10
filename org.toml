@@ -46,7 +46,7 @@ wake_on_resolve = true  # after the owner decides, wake the worker to react
 # falls through to the T0 gate. A list matches only if EVERY recipient does.
 [[trust]]
 intent = "email-send"
-match = { to = "*@ourco.com" }
+match = { to = "manasgarg@gmail.com" }
 level = "auto"
 
 # Earned trust: an external email still gates at first, but after 3 clean

@@ -66,7 +66,7 @@ fn connect_smtp() -> Result<Value, BErr> {
     if user.is_empty() {
         return Err("no username entered".into());
     }
-    let pass = prompt("SMTP password: ")?;
+    let pass = prompt_hidden("SMTP password: ")?;
     if pass.is_empty() {
         return Err("no password entered".into());
     }
@@ -330,4 +330,30 @@ fn prompt(question: &str) -> Result<String, BErr> {
 fn prompt_default(question: &str, default: &str) -> Result<String, BErr> {
     let v = prompt(question)?;
     Ok(if v.is_empty() { default.to_string() } else { v })
+}
+
+/// Prompt for a secret without echoing it. Turns off terminal echo with `stty`
+/// for the duration of the read (best-effort: if stdin isn't a tty or `stty`
+/// is unavailable, it falls back to a normal read). Echo is always restored,
+/// even if the read fails.
+fn prompt_hidden(question: &str) -> Result<String, BErr> {
+    print!("{question}");
+    std::io::stdout().flush()?;
+    let echo_off = set_echo(false);
+    let mut line = String::new();
+    let result = std::io::stdin().read_line(&mut line);
+    if echo_off {
+        set_echo(true);
+        println!(); // the Enter the terminal didn't echo
+    }
+    result?;
+    Ok(line.trim().to_string())
+}
+
+fn set_echo(on: bool) -> bool {
+    std::process::Command::new("stty")
+        .arg(if on { "echo" } else { "-echo" })
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }

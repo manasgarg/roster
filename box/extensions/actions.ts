@@ -127,6 +127,29 @@ export default function rosterActionTools(api: PiToolApi): void {
   });
 
   api.registerTool({
+    name: "discord_send",
+    label: "discord_send",
+    description:
+      "Reply in a Discord channel. This does NOT send immediately — it submits the message for governance " +
+      "(it may send automatically or wait for approval). Provide the channel id and the message text.",
+    promptSnippet: "discord_send(channel_id, text): reply in a Discord channel (governed)",
+    parameters: {
+      type: "object",
+      properties: {
+        channel_id: { type: "string", description: "The Discord channel id to post in." },
+        text: { type: "string", description: "The message to send." },
+      },
+      required: ["channel_id", "text"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const { channel_id, text } = params as { channel_id: string; text: string };
+      const s = await submit("discord-send", { channel_id, text }, "");
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
     name: "check_gates",
     label: "check_gates",
     description:

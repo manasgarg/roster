@@ -26,6 +26,7 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
     let cred = match p.get("auth").and_then(|v| v.as_str()) {
         Some("api_key") => connect_api_key()?,
         Some("smtp") => connect_smtp()?,
+        Some("discord") => connect_discord()?,
         Some("oauth") => {
             let login = p.get("login").cloned().unwrap_or_else(|| json!({}));
             match login.get("flow").and_then(|v| v.as_str()) {
@@ -72,6 +73,20 @@ fn connect_smtp() -> Result<Value, BErr> {
     }
     let from = prompt_default(&format!("From address [{user}]: "), &user)?;
     Ok(json!({ "type": "smtp", "host": host, "port": port, "user": user, "pass": pass, "from": from }))
+}
+
+// ── Discord (bot) ─────────────────────────────────────────────────────────────
+
+/// Collect a Discord bot token (for outbound messages) and, optionally, the
+/// owner's user id (so message_user can DM them). The token lands in the vault,
+/// off the box; only the trusted-side executor reads it.
+fn connect_discord() -> Result<Value, BErr> {
+    let token = prompt_hidden("Discord bot token: ")?;
+    if token.is_empty() {
+        return Err("no token entered".into());
+    }
+    let owner_id = prompt("Owner Discord user id (for DMs; optional): ")?;
+    Ok(json!({ "type": "discord", "token": token, "owner_id": owner_id }))
 }
 
 // ── OAuth device-code ────────────────────────────────────────────────────────

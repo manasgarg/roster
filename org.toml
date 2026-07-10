@@ -74,6 +74,13 @@ name = "charter-edit"
 executor = "charter"
 trust = "gate"
 
+# Reply in a Discord channel. Gated by default; a trust rule can auto a reply in
+# a specific channel (e.g. the owner's DM) once earned.
+[[action]]
+name = "discord-send"
+executor = "discord"
+trust = "gate"
+
 [budget]
 currencies = ["model_calls", "searches", "fetches", "usd"]
 vars = { price = { search = 0.005 } }

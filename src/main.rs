@@ -12,6 +12,7 @@ mod action;
 mod budget;
 mod ca;
 mod cmd;
+mod discord;
 mod gate;
 mod journal;
 mod judge;

@@ -273,18 +273,38 @@ fn resolve_followup(g: &Gate) {
 /// subject (uniform judge/inject/meter/audit); local ones act directly.
 pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
     match executor {
-        "message-user" => exec_message_user(worker, payload),
+        "message-user" => exec_message_user(worker, payload).await,
         "email" => exec_email(worker, payload).await,
         "git-pr" => exec_git_pr(worker, run_id, payload),
         "charter" => exec_charter(worker, payload),
+        "discord" => exec_discord(worker, payload).await,
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
 }
 
-/// Deliver a note from the worker to its owner. Non-egress: appends to the
-/// owner's inbox and logs. (A later phase points this at a Discord DM.)
-fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, String> {
+/// Deliver a note from the worker to its owner: a Discord DM when a bot token +
+/// owner id are configured, else the local inbox. The bot token stays in the
+/// vault; the box never holds it.
+async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, String> {
     let text = payload.get("text").and_then(|v| v.as_str()).ok_or("message-user needs a \"text\" field")?;
+
+    if let Some(cred) = crate::vault::get_credential("discord") {
+        let token = cred.get("token").and_then(|v| v.as_str());
+        let owner = cred.get("owner_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        if let (Some(token), Some(owner)) = (token, owner) {
+            match crate::discord::open_dm(token, owner).await {
+                Ok(dm) => match crate::discord::post_message(token, &dm, text).await {
+                    Ok(_) => {
+                        eprintln!("message-user [{worker}] → owner DM");
+                        return Ok(json!({ "delivered": "discord-dm" }));
+                    }
+                    Err(e) => eprintln!("message-user: DM post failed ({e}); using inbox"),
+                },
+                Err(e) => eprintln!("message-user: open DM failed ({e}); using inbox"),
+            }
+        }
+    }
+
     let path = root().join("runs").join("messages.jsonl");
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -293,7 +313,23 @@ fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, String> {
         let _ = writeln!(f, "{}", json!({ "ts": now_rfc3339(), "worker": worker, "text": text }));
     }
     eprintln!("message-user [{worker}]: {text}");
-    Ok(json!({ "delivered": true }))
+    Ok(json!({ "delivered": "inbox" }))
+}
+
+/// Post a message to a Discord channel (the worker's reply). Trusted-side; the
+/// bot token comes from the vault, never the box.
+async fn exec_discord(worker: &str, payload: &Value) -> Result<Value, String> {
+    let channel = payload.get("channel_id").and_then(|v| v.as_str()).ok_or("discord-send needs a \"channel_id\"")?;
+    let text = payload
+        .get("text")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or("discord-send needs non-empty \"text\"")?;
+    let cred = crate::vault::get_credential("discord").ok_or("no discord credential — run: roster connect discord")?;
+    let token = cred.get("token").and_then(|v| v.as_str()).ok_or("discord credential has no token")?;
+    let id = crate::discord::post_message(token, channel, text).await?;
+    eprintln!("discord [{worker}] → channel {channel}");
+    Ok(json!({ "sent": true, "channel_id": channel, "message_id": id }))
 }
 
 /// Send an email. If an SMTP credential is configured in the vault

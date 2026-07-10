@@ -56,7 +56,6 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
 /// The outcome of one box run, for the supervisor.
 pub struct Outcome {
     pub run_id: String,
-    pub run_dir: PathBuf,
     pub ended_by: &'static str,
     pub exit_code: Option<i32>,
 }
@@ -72,8 +71,8 @@ pub struct CodeSpec {
 /// machinery as the CLI, but returns the outcome instead of exiting, and passes
 /// the task id into the box so proposed actions carry their provenance.
 pub async fn dispatch(worker: &str, prompt: &str, ceiling_min: f64, task_id: &str, code: Option<&CodeSpec>) -> Result<Outcome, BErr> {
-    let (run_id, run_dir, ended_by, exit_code) = run_box(prompt, ceiling_min, worker, task_id, code).await?;
-    Ok(Outcome { run_id, run_dir, ended_by, exit_code })
+    let (run_id, _run_dir, ended_by, exit_code) = run_box(prompt, ceiling_min, worker, task_id, code).await?;
+    Ok(Outcome { run_id, ended_by, exit_code })
 }
 
 async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, code: Option<&CodeSpec>) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {

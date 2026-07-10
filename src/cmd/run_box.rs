@@ -175,18 +175,25 @@ pub async fn run_session(worker: &str, run_id: &str, system_prompt: &str, mut rx
     eprintln!("session {run_id} [{worker}] started");
     let idle = Duration::from_secs(idle_secs);
     let mut rx_open = true;
+    let mut busy = false; // a turn is in progress
+    let mut pending: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     loop {
+        // Serialize: feed the next message only once the previous turn is done, so
+        // rapid messages become distinct turns (in order) rather than coalescing.
+        if !busy {
+            if let Some(msg) = pending.pop_front() {
+                let line = json!({ "type": "prompt", "message": msg }).to_string();
+                if stdin.write_all(line.as_bytes()).await.is_err() || stdin.write_all(b"\n").await.is_err() {
+                    break;
+                }
+                let _ = stdin.flush().await;
+                busy = true;
+            }
+        }
         tokio::select! {
             m = rx.recv(), if rx_open => match m {
-                Some(msg) => {
-                    // Deliver the message as one pi turn (rpc queues it if busy).
-                    let line = json!({ "type": "prompt", "message": msg }).to_string();
-                    if stdin.write_all(line.as_bytes()).await.is_err() || stdin.write_all(b"\n").await.is_err() {
-                        break;
-                    }
-                    let _ = stdin.flush().await;
-                }
-                None => rx_open = false, // sender dropped; drain stdout, then idle out
+                Some(msg) => pending.push_back(msg),
+                None => rx_open = false, // sender dropped; drain, then idle out
             },
             l = lines.next_line() => match l {
                 Ok(Some(line)) => {
@@ -194,10 +201,13 @@ pub async fn run_session(worker: &str, run_id: &str, system_prompt: &str, mut rx
                         let _ = f.write_all(line.as_bytes()).await;
                         let _ = f.write_all(b"\n").await;
                     }
+                    if line.contains("\"type\":\"agent_end\"") {
+                        busy = false; // turn complete
+                    }
                 }
                 _ => break, // box closed stdout / exited
             },
-            _ = tokio::time::sleep(idle) => break, // idle: no messages, no output
+            _ = tokio::time::sleep(idle), if !busy => break, // idle only when not mid-turn
         }
     }
 

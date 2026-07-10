@@ -3,6 +3,7 @@
 //! the gateway's own modules (schema, budget, vault, registry) so there is one
 //! set of types, not two.
 
+pub mod channel;
 pub mod connect;
 pub mod create;
 pub mod deploy;

@@ -82,6 +82,11 @@ fn grant_for<'a>(policy: &'a ActionPolicy, worker: &str, intent: &str) -> Option
     policy.actions.iter().find(|a| crate::scope::applies(&a.scope, worker) && a.name == intent)
 }
 
+/// Is a discord-send payload targeting a channel an admin marked trusted?
+fn discord_channel_trusted(payload: &Value) -> bool {
+    payload.get("channel_id").and_then(|v| v.as_str()).map(crate::discord::channel_trusted).unwrap_or(false)
+}
+
 // ── the gateway's action decision ────────────────────────────────────────────
 
 fn reply(status: StatusCode, v: Value) -> Response<Body> {
@@ -124,10 +129,12 @@ async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
     journal::append(worker, &env.run_id, "action-proposed", json!({ "intent": env.intent, "rationale": env.rationale, "run_id": env.run_id }));
 
     let (executed, denied) = gate::history(worker, &env.intent);
-    // D10: charter edits ALWAYS gate — the trust ladder never applies to the
-    // action that rewrites the worker's own standing rules.
     let level = if grant.executor == "charter" {
+        // D10: charter edits ALWAYS gate — the trust ladder never applies.
         "gate".to_string()
+    } else if grant.executor == "discord" && discord_channel_trusted(&env.payload) {
+        // Replies in a trusted channel (or a DM) flow without a gate.
+        "auto".to_string()
     } else {
         trust::evaluate(worker, &env.intent, &env.payload, &grant.trust, &policy.trust, executed, denied)
     };

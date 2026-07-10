@@ -110,6 +110,7 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
     let seq: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(None));
     let mut heartbeat: Option<tokio::task::JoinHandle<()>> = None;
     let mut bot_id = String::new();
+    let mut app_id = String::new();
     let mut guilds: HashMap<String, Guild> = HashMap::new();
 
     let result = loop {
@@ -175,14 +176,18 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
                 match v["t"].as_str().unwrap_or("") {
                     "READY" => {
                         bot_id = d["user"]["id"].as_str().unwrap_or("").to_string();
+                        app_id = d["application"]["id"].as_str().unwrap_or("").to_string();
                         eprintln!("discord: connected as {} ({bot_id})", d["user"]["username"].as_str().unwrap_or("?"));
                     }
                     "GUILD_CREATE" => {
                         let g = ingest_guild(d);
                         eprintln!("discord: guild \"{}\" — {} channels visible", g.name, g.channels);
-                        guilds.insert(d["id"].as_str().unwrap_or("").to_string(), g);
+                        let guild_id = d["id"].as_str().unwrap_or("").to_string();
+                        register_commands(&app_id, &guild_id, token).await;
+                        guilds.insert(guild_id, g);
                     }
                     "MESSAGE_CREATE" => handle_message(worker, d, &bot_id, &guilds).await,
+                    "INTERACTION_CREATE" => handle_interaction(worker, d, &guilds, &app_id).await,
                     _ => {}
                 }
             }
@@ -244,7 +249,12 @@ fn resolve_role(d: &Value, guilds: &HashMap<String, Guild>) -> &'static str {
             return "admin";
         }
     }
-    "untrusted"
+    // Non-admin in a guild channel: trusted only if an admin marked the channel so.
+    if channel_trusted(d["channel_id"].as_str().unwrap_or("")) {
+        "trusted"
+    } else {
+        "untrusted"
+    }
 }
 
 async fn handle_message(worker: &str, d: &Value, bot_id: &str, guilds: &HashMap<String, Guild>) {
@@ -257,6 +267,9 @@ async fn handle_message(worker: &str, d: &Value, bot_id: &str, guilds: &HashMap<
         return;
     }
     let is_dm = d["guild_id"].as_str().is_none();
+    if is_dm {
+        set_channel_trust(channel_id, true); // DMs are always trusted (1:1, sought-out)
+    }
     let role = resolve_role(d, guilds);
     let author = d["author"]["username"].as_str().unwrap_or("?");
     let content = d["content"].as_str().unwrap_or("");
@@ -294,6 +307,222 @@ async fn handle_message(worker: &str, d: &Value, bot_id: &str, guilds: &HashMap<
         Ok(t) => eprintln!("discord: {author} ({role}) in {channel_id} → queued {}", t.id),
         Err(e) => eprintln!("discord: could not queue task: {e}"),
     }
+}
+
+// ── slash commands (the admin surface) ────────────────────────────────────────
+
+/// Command definitions registered per guild (instant, unlike global). Scoped to
+/// what's safe: the approval desk, the queue, and channel trust.
+fn command_defs() -> Value {
+    json!([
+        { "name": "gates", "description": "Roster approval desk", "options": [
+            { "type": 1, "name": "ls", "description": "List pending gates" },
+            { "type": 1, "name": "approve", "description": "Approve a gate", "options": [{ "type": 3, "name": "id", "description": "Gate id", "required": true }] },
+            { "type": 1, "name": "deny", "description": "Deny a gate", "options": [{ "type": 3, "name": "id", "description": "Gate id", "required": true }] }
+        ]},
+        { "name": "queue", "description": "Roster task queue", "options": [
+            { "type": 1, "name": "ls", "description": "List tasks" }
+        ]},
+        { "name": "channel", "description": "Channel trust designation", "options": [
+            { "type": 1, "name": "trust", "description": "Mark this channel's participants trusted" },
+            { "type": 1, "name": "untrust", "description": "Mark this channel's participants untrusted" }
+        ]}
+    ])
+}
+
+async fn register_commands(app_id: &str, guild_id: &str, token: &str) {
+    if app_id.is_empty() {
+        return;
+    }
+    let res = reqwest::Client::new()
+        .put(format!("{}/applications/{app_id}/guilds/{guild_id}/commands", base()))
+        .header("authorization", format!("Bot {token}"))
+        .json(&command_defs())
+        .send()
+        .await;
+    match res {
+        Ok(r) if r.status().is_success() => {}
+        Ok(r) => eprintln!("discord: register commands → {} (guild {guild_id})", r.status()),
+        Err(e) => eprintln!("discord: register commands failed: {e}"),
+    }
+}
+
+fn role_rank(role: &str) -> u8 {
+    match role {
+        "host-op" | "admin" => 2,
+        "trusted" => 1,
+        _ => 0,
+    }
+}
+
+/// The caller's role for an interaction. Discord supplies the member's computed
+/// permissions directly, so we don't recompute from roles here.
+fn interaction_role(d: &Value, guilds: &HashMap<String, Guild>) -> &'static str {
+    let Some(guild_id) = d["guild_id"].as_str() else {
+        return "trusted"; // DM
+    };
+    let perms = d["member"]["permissions"].as_str().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    if perms & PERM_ADMINISTRATOR != 0 {
+        return "admin";
+    }
+    if let Some(g) = guilds.get(guild_id) {
+        if d["member"]["user"]["id"].as_str() == Some(g.owner_id.as_str()) {
+            return "admin";
+        }
+    }
+    if channel_trusted(d["channel_id"].as_str().unwrap_or("")) {
+        "trusted"
+    } else {
+        "untrusted"
+    }
+}
+
+async fn handle_interaction(worker: &str, d: &Value, guilds: &HashMap<String, Guild>, app_id: &str) {
+    if d["type"].as_i64().unwrap_or(0) != 2 {
+        return; // only APPLICATION_COMMAND
+    }
+    let interaction_id = d["id"].as_str().unwrap_or("");
+    let itoken = d["token"].as_str().unwrap_or("");
+    // Ack immediately (deferred, ephemeral) — the interaction token, not bot auth.
+    let _ = reqwest::Client::new()
+        .post(format!("{}/interactions/{interaction_id}/{itoken}/callback", base()))
+        .json(&json!({ "type": 5, "data": { "flags": 64 } }))
+        .send()
+        .await;
+
+    let role = interaction_role(d, guilds);
+    let caller = d["member"]["user"]["username"].as_str().or_else(|| d["user"]["username"].as_str()).unwrap_or("someone");
+    let text = run_command(worker, d, role, caller).await;
+
+    // Fill in the deferred response (webhook uses the interaction token).
+    let _ = reqwest::Client::new()
+        .patch(format!("{}/webhooks/{app_id}/{itoken}/messages/@original", base()))
+        .json(&json!({ "content": text }))
+        .send()
+        .await;
+}
+
+async fn run_command(_worker: &str, d: &Value, role: &str, caller: &str) -> String {
+    let data = &d["data"];
+    let cmd = data["name"].as_str().unwrap_or("");
+    let sub = data["options"][0]["name"].as_str().unwrap_or("");
+    let channel_id = d["channel_id"].as_str().unwrap_or("");
+    let arg = |name: &str| -> String {
+        data["options"][0]["options"]
+            .as_array()
+            .and_then(|a| a.iter().find(|o| o["name"].as_str() == Some(name)))
+            .and_then(|o| o["value"].as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let rank = role_rank(role);
+    let denied = |need: &str| format!("Not permitted — {need} only (you are {role}).");
+
+    match (cmd, sub) {
+        ("gates", "ls") => {
+            if rank < 1 {
+                return denied("trusted participants");
+            }
+            let g = crate::gate::list_pending();
+            if g.is_empty() {
+                "No pending gates.".into()
+            } else {
+                let lines: Vec<String> = g.iter().map(|x| format!("• `{}` {} ({})", x.id, x.intent, x.worker)).collect();
+                format!("Pending gates:\n{}", lines.join("\n"))
+            }
+        }
+        ("gates", "approve") => {
+            if rank < 1 {
+                return denied("trusted participants");
+            }
+            let id = arg("id");
+            match crate::action::execute_gate(&id, &format!("discord:{caller}"), None).await {
+                Ok(g) => format!("Approved `{}` ({}).", g.id, g.intent),
+                Err(e) => format!("Could not approve `{id}`: {e}"),
+            }
+        }
+        ("gates", "deny") => {
+            if rank < 1 {
+                return denied("trusted participants");
+            }
+            let id = arg("id");
+            match crate::action::deny_gate(&id, &format!("discord:{caller}"), None) {
+                Ok(g) => format!("Denied `{}` ({}).", g.id, g.intent),
+                Err(e) => format!("Could not deny `{id}`: {e}"),
+            }
+        }
+        ("queue", "ls") => {
+            if rank < 1 {
+                return denied("trusted participants");
+            }
+            let tasks = crate::queue::list_all();
+            if tasks.is_empty() {
+                "Queue is empty.".into()
+            } else {
+                let lines: Vec<String> = tasks.iter().map(|t| format!("• `{}` [{}] {}", t.id, t.state, first_words(&t.prompt))).collect();
+                format!("Tasks:\n{}", lines.join("\n"))
+            }
+        }
+        ("channel", "trust") => {
+            if rank < 2 {
+                return denied("server admins");
+            }
+            set_channel_trust(channel_id, true);
+            "This channel's participants are now **trusted** — they can administer, and I'll reply here without a gate.".into()
+        }
+        ("channel", "untrust") => {
+            if rank < 2 {
+                return denied("server admins");
+            }
+            set_channel_trust(channel_id, false);
+            "This channel's participants are now **untrusted** — they can talk to me, but not administer, and my replies here will be gated.".into()
+        }
+        _ => "Unknown command.".into(),
+    }
+}
+
+fn first_words(s: &str) -> String {
+    let s = s.replace('\n', " ");
+    if s.len() > 60 {
+        format!("{}…", &s[..60])
+    } else {
+        s
+    }
+}
+
+// ── channel trust designation (trusted vs untrusted participants) ─────────────
+
+fn trust_path() -> PathBuf {
+    root().join("channels").join("trust.json")
+}
+
+fn trust_map() -> HashMap<String, bool> {
+    std::fs::read_to_string(trust_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+/// Is this channel marked trusted? (DMs are marked trusted when first seen.)
+pub fn channel_trusted(channel_id: &str) -> bool {
+    trust_map().get(channel_id).copied().unwrap_or(false)
+}
+
+/// Mark a channel trusted/untrusted (an admin action, or auto for DMs).
+pub fn set_channel_trust(channel_id: &str, trusted: bool) {
+    let mut map = trust_map();
+    if map.get(channel_id).copied() == Some(trusted) {
+        return;
+    }
+    map.insert(channel_id.to_string(), trusted);
+    let path = trust_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(&map) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+pub fn trust_designations() -> HashMap<String, bool> {
+    trust_map()
 }
 
 // ── channel store (history + uploads), under the read-only repo mount ─────────

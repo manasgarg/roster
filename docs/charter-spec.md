@@ -4,6 +4,13 @@
 (charter edits always gate to the owner; closes the injection→self-programming
 hole), building on the box mount model and the gate machinery already shipped.
 
+> **Superseded (design):** once a worker serves multiple Discord channels, the
+> single `charter.md` splits into **`identity.md`** (fixed across channels) +
+> per-channel **`purpose.md`** — see `docs/inbound-spec.md`. The mechanism below
+> (read live, prepended to the run, hard-gated edits) carries over unchanged;
+> only the file layout and composition change. `charter.md` remains the shipped
+> form until that lands.
+
 ## Goal (concrete)
 
 ```

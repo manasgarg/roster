@@ -54,12 +54,40 @@ type PageResult =
   | { ok: true; requestedUrl: string; finalUrl: string; title: string; text: string }
   | { ok: false; requestedUrl: string; error: string };
 
+// Defuddle unconditionally console.warns when a page's own metadata holds a
+// malformed URL (e.g. an og:url with two comma-joined links) — noise we can't
+// act on and which pollutes the box log. Silence warn/error just for the
+// extraction call. Depth-counted so concurrent fetches restore console correctly.
+let quietDepth = 0;
+let realWarn: typeof console.warn;
+let realError: typeof console.error;
+async function quiet<T>(fn: () => Promise<T>): Promise<T> {
+  if (quietDepth++ === 0) {
+    realWarn = console.warn;
+    realError = console.error;
+    console.warn = () => {};
+    console.error = () => {};
+  }
+  try {
+    return await fn();
+  } finally {
+    if (--quietDepth === 0) {
+      console.warn = realWarn;
+      console.error = realError;
+    }
+  }
+}
+
 /** Fetch one URL and extract its readable text. Never throws — failures come back as `{ ok: false }`. */
 async function fetchReadablePage(url: string, signal?: AbortSignal): Promise<PageResult> {
   // Bound every request by our own timeout, honoring an outer cancel (the tool's signal) too.
   const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   const deadline = signal ? AbortSignal.any([signal, timeout]) : timeout;
   try {
+    // Reject a malformed URL here (synchronously, so this try/catch handles it).
+    // Otherwise it reaches Defuddle, whose internal new URL() can reject outside
+    // this scope and crash the whole tool call.
+    new URL(url);
     const response = await fetch(url, {
       headers: BROWSER_HEADERS,
       redirect: "follow",
@@ -77,7 +105,7 @@ async function fetchReadablePage(url: string, signal?: AbortSignal): Promise<Pag
     }
 
     const { document } = parseHTML(body);
-    const extraction = await Defuddle(document, finalUrl, { markdown: true, removeImages: true });
+    const extraction = await quiet(() => Defuddle(document, finalUrl, { markdown: true, removeImages: true }));
     return {
       ok: true,
       requestedUrl: url,
@@ -102,6 +130,28 @@ async function mapLimit<In, Out>(items: In[], limit: number, task: (item: In) =>
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return out;
+}
+
+/** Flatten model-supplied url args: split any that pack several URLs together
+ *  (comma- or whitespace-joined — a common tool-call mistake) and keep only
+ *  valid http(s) URLs, de-duplicated in order. */
+function normalizeUrls(input: unknown): string[] {
+  const raw = Array.isArray(input) ? input : [input];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    for (const piece of item.split(/[\s,]+/)) {
+      const u = piece.trim();
+      if (!u) continue;
+      try {
+        const parsed = new URL(u);
+        if (parsed.protocol === "http:" || parsed.protocol === "https:") seen.add(u);
+      } catch {
+        // not a URL — drop it
+      }
+    }
+  }
+  return [...seen];
 }
 
 function cap(text: string): string {
@@ -246,7 +296,10 @@ export default function rosterWebTools(api: PiToolApi): void {
     promptSnippet: "fetch_pages(urls: string[]): read web pages as clean markdown",
     parameters: fetchParameters,
     async execute(_id, params, signal) {
-      const urls = (params.urls as string[]) ?? [];
+      const urls = normalizeUrls(params.urls);
+      if (urls.length === 0) {
+        return { content: [{ type: "text", text: "No valid URLs to fetch. Pass each URL as a separate array element." }] };
+      }
       const results = await mapLimit(urls, FETCH_CONCURRENCY, (url) => fetchReadablePage(url, signal));
       return { content: [{ type: "text", text: formatPages(results) }] };
     },

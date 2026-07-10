@@ -102,10 +102,17 @@ Two independent decisions keep a busy channel from spawning endless runs or nois
   **trusted participants**+.
 
 A run's context = **identity + the active channel's purpose + briefing + recent
-messages/task**. Two edit paths: a **human** edits via slash command (direct,
-role-checked); the **worker** proposing a change is a **hard-gated** action (D10),
-approved by the appropriate role (identity → admin; purpose → trusted+). This
-replaces `charter.md`; see the note in `charter-spec.md`.
+messages/task**. Edit paths:
+
+- **Identity** — a **human** admin edits via `/identity`; a **worker** proposal is
+  **always hard-gated** (D10, worker-wide, high blast radius).
+- **Purpose** — set **conversationally**, not just by command: when a trusted
+  participant describes the worker's standing role in a channel, the worker
+  refines it with `propose_purpose_edit`, which **auto-applies in a trusted
+  channel** (its participants could `/purpose set` directly anyway) and **gates in
+  an untrusted one**. Humans can still set it directly via `/purpose set`.
+
+This replaces `charter.md`; see the note in `charter-spec.md`.
 
 ## Replies (outbound, governed)
 

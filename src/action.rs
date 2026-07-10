@@ -129,12 +129,13 @@ async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
     journal::append(worker, &env.run_id, "action-proposed", json!({ "intent": env.intent, "rationale": env.rationale, "run_id": env.run_id }));
 
     let (executed, denied) = gate::history(worker, &env.intent);
-    let level = if grant.executor == "identity" || grant.executor == "purpose" {
-        // D10: edits to a worker's own identity/purpose ALWAYS gate — the trust
-        // ladder never applies to self-programming.
+    let level = if grant.executor == "identity" {
+        // Identity is worker-wide — always hard-gated (D10).
         "gate".to_string()
-    } else if grant.executor == "discord" && discord_channel_trusted(&env.payload) {
-        // Replies in a trusted channel (or a DM) flow without a gate.
+    } else if (grant.executor == "discord" || grant.executor == "purpose") && discord_channel_trusted(&env.payload) {
+        // Replies AND channel-purpose refinements flow without a gate in a trusted
+        // channel — its participants are authorized to set the purpose (they could
+        // `/purpose set` directly). Untrusted channels still gate for review.
         "auto".to_string()
     } else {
         trust::evaluate(worker, &env.intent, &env.payload, &grant.trust, &policy.trust, executed, denied)

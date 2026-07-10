@@ -105,6 +105,74 @@ pub fn new_run_id() -> String {
 }
 
 async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, run_id: &str, code: Option<&CodeSpec>) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
+    let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo } =
+        provision_box(worker, run_id, task_id, code).await?;
+    args.extend(pi_prefix(&repo, "json", &session_dir)?);
+    args.push(with_identity(worker, prompt));
+
+    let mut child = tokio::process::Command::new("docker")
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    // Stream the box's stdout to stdout.jsonl.
+    let mut out = child.stdout.take().unwrap();
+    let stdout_path = run_dir.join("stdout.jsonl");
+    let stream = tokio::spawn(async move {
+        if let Ok(mut f) = tokio::fs::File::create(&stdout_path).await {
+            let _ = tokio::io::copy(&mut out, &mut f).await;
+        }
+    });
+
+    // Wait, enforcing the ceiling and Ctrl-C / SIGTERM by killing the container.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(ceiling_min * 60.0);
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut ended_by = "exit";
+    let mut killed = false;
+    let status = loop {
+        tokio::select! {
+            s = child.wait() => break s?,
+            _ = tokio::time::sleep_until(deadline), if !killed => { docker_kill(&container).await; ended_by = "ceiling"; killed = true; }
+            _ = tokio::signal::ctrl_c(), if !killed => { docker_kill(&container).await; killed = true; }
+            _ = sigterm.recv(), if !killed => { docker_kill(&container).await; killed = true; }
+        }
+    };
+    let _ = stream.await;
+    let _ = std::fs::remove_file(&identity_file); // single-use token
+
+    Ok((run_id.to_string(), run_dir, ended_by, status.code()))
+}
+
+// ── shared box provisioning ──────────────────────────────────────────────────
+
+/// The pi command prefix shared by both box modes: node + entry, output mode, no
+/// host extension discovery, Roster's own extensions, and the session dir.
+fn pi_prefix(repo: &Path, mode: &str, session_dir: &Path) -> Result<Vec<String>, BErr> {
+    let mut v = vec!["node".into(), resolve_pi_entry(repo)?, "--mode".into(), mode.into(), "--no-extensions".into()];
+    for ext in box_extensions(repo) {
+        v.push("-e".into());
+        v.push(ext);
+    }
+    v.extend(["--session-dir".into(), session_dir.display().to_string()]);
+    Ok(v)
+}
+
+/// Everything a box needs, up to (but not including) the pi command: the lockdown
+/// check, per-run dirs, an optional code worktree, the sentinel pihome, a minted
+/// identity token, and the docker args through the image + cwd. Shared by the
+/// one-shot runner and the rpc session runner so the lockdown/identity setup is
+/// defined exactly once.
+struct Provisioned {
+    args: Vec<String>,
+    identity_file: PathBuf,
+    container: String,
+    session_dir: PathBuf,
+    run_dir: PathBuf,
+    repo: PathBuf,
+}
+
+async fn provision_box(worker: &str, run_id: &str, task_id: &str, code: Option<&CodeSpec>) -> Result<Provisioned, BErr> {
     ensure_lockdown().await?;
 
     let home = home_dir();
@@ -121,9 +189,7 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, ru
     std::fs::create_dir_all(&workspace)?;
     std::fs::create_dir_all(&session)?;
 
-    // Code task: a writable git worktree on a fresh per-run branch. The box edits
-    // in it (no git needed inside the box); the git-pr executor commits + pushes
-    // from the host on approval. The branch names the worker + run for the PR.
+    // Code task: a writable git worktree on a fresh per-run branch.
     let worktree: Option<PathBuf> = match code {
         Some(cs) => {
             let wt = run_dir.join("worktree");
@@ -199,47 +265,8 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, ru
     }
     let cwd = worktree.as_ref().unwrap_or(&workspace);
     args.extend(["-w".into(), cwd.display().to_string(), "roster-box".into()]);
-    args.extend(["node".into(), resolve_pi_entry(&repo)?, "--mode".into(), "json".into(), "--no-extensions".into()]);
-    // Load only Roster's own vendored extensions (repo mounted read-only at the same
-    // path); `--no-extensions` still suppresses host-configured discovery. Their egress
-    // is governed like any other — Node's fetch routes through the gateway.
-    for ext in box_extensions(&repo) {
-        args.extend(["-e".into(), ext]);
-    }
-    args.extend(["--session-dir".into(), session.display().to_string(), with_identity(worker, prompt)]);
 
-    let mut child = tokio::process::Command::new("docker")
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-
-    // Stream the box's stdout to stdout.jsonl.
-    let mut out = child.stdout.take().unwrap();
-    let stdout_path = run_dir.join("stdout.jsonl");
-    let stream = tokio::spawn(async move {
-        if let Ok(mut f) = tokio::fs::File::create(&stdout_path).await {
-            let _ = tokio::io::copy(&mut out, &mut f).await;
-        }
-    });
-
-    // Wait, enforcing the ceiling and Ctrl-C / SIGTERM by killing the container.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(ceiling_min * 60.0);
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let mut ended_by = "exit";
-    let mut killed = false;
-    let status = loop {
-        tokio::select! {
-            s = child.wait() => break s?,
-            _ = tokio::time::sleep_until(deadline), if !killed => { docker_kill(&container).await; ended_by = "ceiling"; killed = true; }
-            _ = tokio::signal::ctrl_c(), if !killed => { docker_kill(&container).await; killed = true; }
-            _ = sigterm.recv(), if !killed => { docker_kill(&container).await; killed = true; }
-        }
-    };
-    let _ = stream.await;
-    let _ = std::fs::remove_file(&identity_file); // single-use token
-
-    Ok((run_id.to_string(), run_dir, ended_by, status.code()))
+    Ok(Provisioned { args, identity_file, container, session_dir: session, run_dir, repo })
 }
 
 // ── lockdown ─────────────────────────────────────────────────────────────────

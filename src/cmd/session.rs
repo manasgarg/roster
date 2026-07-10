@@ -35,7 +35,11 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
             if l.trim().is_empty() {
                 continue;
             }
-            let msg = run_box::SessionMessage { text: l, context: crate::memory::RunContext::default() };
+            let msg = run_box::SessionMessage {
+                text: l,
+                author_label: "stdin".into(),
+                context: crate::memory::RunContext::default(),
+            };
             if tx.send(msg).await.is_err() {
                 break;
             }
@@ -44,8 +48,15 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
     });
 
     let run_id = run_box::new_run_id();
-    let system = "You are a concise assistant in a test session. Answer each message briefly.";
-    run_box::run_session(&worker, &run_id, system, rx, idle).await?;
+    run_box::run_session(
+        &worker,
+        &run_id,
+        crate::context::RunSurface::DirectBox,
+        crate::memory::RunContext::default(),
+        rx,
+        idle,
+    )
+    .await?;
     reader.abort();
     println!("session ended — transcript: runs/{run_id}/stdout.jsonl");
     Ok(())

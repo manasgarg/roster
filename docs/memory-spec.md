@@ -253,15 +253,18 @@ a broader default, and a correction beats the older note.
 
 ## Recall into runs
 
-The compiled context is:
+The compiled context is split so stable instructions form a cache-friendly
+prefix and volatile observations stay at the end:
 
 ```text
-Identity → Purpose → Memory → Briefing → Task
+system: Identity → Runtime policy → Purpose → Runtime scope
+input:  Memory → Briefing → Task or current message
 ```
 
 Memory is placed after authoritative context, clearly labeled as untrusted,
 advisory observations. The compiled context and selected note IDs are logged so
-"what did the worker see?" is answerable.
+"what did the worker see?" is answerable. The exact rendering and cache
+boundaries are defined in `docs/context-compiler-spec.md`.
 
 Recall is contextual:
 
@@ -273,9 +276,9 @@ Recall is contextual:
 - A worker-only task receives worker memory. Naming a user or channel in task text
   never authorizes access to that scope.
 
-Recall is bounded from v1. The context compiler enforces admin and channel token
-and note limits, excludes expired/disabled/forgotten notes, removes duplicates,
-and ranks eligible notes. The initial ranking favors:
+Recall is bounded from v1. The context compiler enforces admin and channel
+character and note limits, excludes expired/disabled/forgotten notes, removes
+duplicates, and ranks eligible notes. The initial ranking favors:
 
 1. pinned notes;
 2. explicit notes over inferred notes;

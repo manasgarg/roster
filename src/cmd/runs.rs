@@ -1,7 +1,7 @@
 //! `roster runs` — inspect every execution, including warm Discord sessions
 //! that intentionally bypass the durable task queue.
 
-use crate::{journal, memory, queue, runlog};
+use crate::{context as context_compiler, journal, memory, queue, runlog};
 
 type BErr = Box<dyn std::error::Error>;
 
@@ -9,7 +9,8 @@ pub fn run(args: &[String]) -> Result<(), BErr> {
     match args.first().map(String::as_str).unwrap_or("ls") {
         "ls" | "list" => ls(&args[1..]),
         "show" => show(&args[1..]),
-        other => Err(format!("unknown runs subcommand \"{other}\" (try: ls, show)").into()),
+        "context" => context(&args[1..]),
+        other => Err(format!("unknown runs subcommand \"{other}\" (try: ls, show, context)").into()),
     }
 }
 
@@ -186,11 +187,122 @@ fn show(args: &[String]) -> Result<(), BErr> {
         }
     }
 
+    let contexts = context_compiler::trace_events(&run.id);
+    if !contexts.is_empty() {
+        println!(
+            "\ncompiled context ({} event{}):",
+            contexts.len(),
+            if contexts.len() == 1 { "" } else { "s" }
+        );
+        for event in contexts {
+            let status = event
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("?");
+            let phase = event
+                .get("phase")
+                .and_then(|value| value.as_str())
+                .unwrap_or("?");
+            let used = event
+                .pointer("/budget/used_chars")
+                .and_then(|value| value.as_u64())
+                .map(|value| format!("{value} chars"))
+                .unwrap_or_else(|| "-".into());
+            let blocks = event
+                .get("blocks")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.get("kind").and_then(|value| value.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            println!(
+                "  {:<5} {:<8} {:>10}  {}",
+                phase,
+                status,
+                used,
+                if blocks.is_empty() { "-" } else { &blocks }
+            );
+        }
+        println!("  exact prompts: roster runs context {}", run.id);
+    }
+
     let files = runlog::files(&run.run_dir);
     if !files.is_empty() {
         println!("\nfiles:");
         for (path, bytes) in files {
             println!("  {:>10}  {path}", human_bytes(bytes));
+        }
+    }
+    Ok(())
+}
+
+fn context(args: &[String]) -> Result<(), BErr> {
+    let id = args
+        .first()
+        .ok_or("usage: roster runs context <run-id-or-prefix> [--all]")?;
+    let all = match args.get(1).map(String::as_str) {
+        None => false,
+        Some("--all") if args.len() == 2 => true,
+        _ => return Err("usage: roster runs context <run-id-or-prefix> [--all]".into()),
+    };
+    let run = runlog::resolve(id).map_err(|error| -> BErr { error.into() })?;
+    let mut events: Vec<_> = context_compiler::trace_events(&run.id)
+        .into_iter()
+        .filter(|event| event.get("status").and_then(|value| value.as_str()) == Some("compiled"))
+        .collect();
+    if events.is_empty() {
+        return Err(format!("run {} has no compiled context", run.id).into());
+    }
+    let session_system = events
+        .iter()
+        .rev()
+        .find_map(|event| {
+            event
+                .get("system_prompt")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .map(String::from)
+        })
+        .unwrap_or_default();
+    if !all {
+        events = vec![events.pop().unwrap()];
+    }
+    for (index, event) in events.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        println!(
+            "=== {} {}{} ===",
+            event.get("phase").and_then(|value| value.as_str()).unwrap_or("?"),
+            event.get("ts").and_then(|value| value.as_str()).unwrap_or(""),
+            event
+                .get("turn_id")
+                .and_then(|value| value.as_str())
+                .map(|id| format!(" turn {id}"))
+                .unwrap_or_default()
+        );
+        let event_system = event
+            .get("system_prompt")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let system = if !all && event_system.is_empty() {
+            session_system.as_str()
+        } else {
+            event_system
+        };
+        let input = event
+            .get("input_prompt")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !system.is_empty() {
+            println!("\n--- system ---\n{system}");
+        }
+        if !input.is_empty() {
+            println!("\n--- input ---\n{input}");
         }
     }
     Ok(())

@@ -77,10 +77,25 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
             let _ = crate::memory::save_run_context(&run_id, &memory_context);
             eprintln!("dispatch {} [{}] run {run_id} — {}", task.id, task.worker, first_line(&task.prompt));
             let t = task.clone();
-            let prompt = effective_prompt(&task);
+            let context_task = crate::context::TaskInput {
+                task_id: Some(task.id.clone()),
+                origin: task.origin.clone(),
+                text: task.prompt.clone(),
+                continuation: task.context.get("resolved_gate").cloned(),
+            };
             set.spawn(async move {
                 let code = t.repo.as_ref().map(|r| run_box::CodeSpec { repo: r.clone(), base: t.base.clone().unwrap_or_else(|| "main".into()) });
-                let out = run_box::dispatch(&t.worker, &prompt, t.ceiling_min, &t.id, &run_id, code.as_ref()).await.map_err(|e| e.to_string());
+                let out = run_box::dispatch(
+                    &t.worker,
+                    context_task,
+                    &memory_context,
+                    t.ceiling_min,
+                    &t.id,
+                    &run_id,
+                    code.as_ref(),
+                )
+                .await
+                .map_err(|e| e.to_string());
                 (t, out)
             });
         }
@@ -120,61 +135,6 @@ fn reclaim() {
         } else if queue::set_state(&mut t, "waiting").is_ok() {
             eprintln!("reclaim: {} → waiting (no live box)", t.id);
         }
-    }
-}
-
-/// The prompt handed to the box, prefixed with a run-start briefing so the
-/// worker starts with awareness of its own state: any outcome it's reacting to
-/// (a continuation), and its open gates (so it doesn't re-propose them). During
-/// the run it can also query live state via the check_gates tool.
-fn effective_prompt(task: &queue::Task) -> String {
-    let subject = task.subject();
-    let mut sections: Vec<String> = Vec::new();
-
-    // Purpose (channel-specific), for Discord tasks — the worker's role here,
-    // sitting between its fixed identity (added by run_box) and the task.
-    if let Some(ch) = task.context.pointer("/discord/channel_id").and_then(|v| v.as_str()) {
-        if let Ok(p) = std::fs::read_to_string(crate::discord::purpose_path(ch)) {
-            if !p.trim().is_empty() {
-                sections.push(format!("[Purpose — your role in this channel]\n{}", p.trim()));
-            }
-        }
-    }
-
-    let memory = crate::memory::render_recall(
-        &task.worker,
-        &task_memory_context(task),
-        task.run_id.as_deref().unwrap_or(""),
-    );
-    if !memory.is_empty() {
-        sections.push(memory);
-    }
-
-    let mut brief: Vec<String> = Vec::new();
-    if let Some(rg) = task.context.get("resolved_gate") {
-        brief.push(format!(
-            "You are continuing after an earlier action resolved: {} — state {}.",
-            rg.get("intent").and_then(|v| v.as_str()).unwrap_or("?"),
-            rg.get("state").and_then(|v| v.as_str()).unwrap_or("?"),
-        ));
-    }
-    let open: Vec<String> = gate::for_worker(&subject)
-        .into_iter()
-        .filter(|g| !g.is_terminal())
-        .map(|g| format!("{} ({})", g.intent, g.id))
-        .collect();
-    if !open.is_empty() {
-        brief.push(format!("You have actions already awaiting approval — do NOT re-propose these: {}.", open.join(", ")));
-    }
-    if !brief.is_empty() {
-        sections.push(format!("[Briefing]\n{}", brief.join("\n")));
-    }
-
-    if sections.is_empty() {
-        task.prompt.clone()
-    } else {
-        sections.push(format!("[Task]\n{}", task.prompt));
-        sections.join("\n\n")
     }
 }
 

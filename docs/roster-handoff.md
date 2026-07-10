@@ -393,7 +393,8 @@ reset cadence stamps). Nothing applies without the button.
 **Increment 0 — prove two pieces inside Yuko (no Roster scaffolding):**
 - Context compiler: replace ad-hoc `build*Prompt` with deterministic budgeted
   blocks; log compiled context per session. Accept: existing runs behave the
-  same; "what did it see" is answerable from the log.
+  same; "what did it see" is answerable from the log. The concrete contract,
+  security boundary, and migration are in `docs/context-compiler-spec.md`.
 - Promotion rule: split store writes (worker append-only) from core promotion
   (curator only); charter already gates. Accept: a planted "malicious" note
   cannot enter the compiled core without a curator run; curator diff is

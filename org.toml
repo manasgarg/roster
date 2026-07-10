@@ -137,6 +137,15 @@ allow_worker_auto = false
 cross_channel_user_recall = false
 user_memory_in_groups = false
 
+# Context injected into each model turn. Worker specs may override these limits
+# for a particular worker.
+[context]
+max_injected_chars = 48000
+identity_max_chars = 12000
+purpose_max_chars = 8000
+briefing_max_chars = 4000
+task_max_chars = 24000
+
 [budget]
 currencies = ["model_calls", "searches", "fetches", "usd"]
 vars = { price = { search = 0.005 } }

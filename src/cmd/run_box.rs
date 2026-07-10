@@ -48,11 +48,47 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
     }
 
     let run_id = new_run_id();
-    let context = crate::memory::RunContext::default();
-    crate::memory::save_run_context(&run_id, &context)?;
-    let memory = crate::memory::render_recall(&worker, &context, &run_id);
-    let prompt = if memory.is_empty() { prompt } else { format!("{memory}\n\n[Task]\n{prompt}") };
-    let (run_id, run_dir, ended_by, exit_code) = run_box(&prompt, ceiling_min, &worker, "", &run_id, None).await?;
+    let run_context = crate::memory::RunContext::default();
+    crate::runlog::start(&run_id, &worker, "box", None)?;
+    crate::memory::save_run_context(&run_id, &run_context)?;
+    let request = crate::context::ContextRequest {
+        run_id: run_id.clone(),
+        phase: crate::context::ContextPhase::Start,
+        surface: crate::context::RunSurface::DirectBox,
+        worker: worker.clone(),
+        run_context: run_context.clone(),
+        task: Some(crate::context::TaskInput {
+            task_id: None,
+            origin: "direct".into(),
+            text: prompt,
+            continuation: None,
+        }),
+        message: None,
+    };
+    let compiled = match crate::context::compile_and_trace(&request) {
+        Ok(compiled) => compiled,
+        Err(error) => {
+            crate::runlog::fail(&run_id);
+            return Err(error.into());
+        }
+    };
+    let (run_id, run_dir, ended_by, exit_code) = match run_box(
+        &compiled,
+        ceiling_min,
+        &worker,
+        "",
+        &run_id,
+        None,
+        &run_context,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            crate::runlog::fail(&run_id);
+            return Err(error);
+        }
+    };
     println!("box {run_id} ended by {ended_by} (exit code {})", exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()));
     println!("outputs: {}", run_dir.display());
     std::process::exit(if ended_by == "ceiling" { 2 } else { exit_code.unwrap_or(1) });
@@ -76,14 +112,57 @@ pub struct CodeSpec {
 /// the model; the context stays host-side and governs scoped memory actions.
 pub struct SessionMessage {
     pub text: String,
+    pub author_label: String,
     pub context: crate::memory::RunContext,
 }
 
 /// Run one box session for a queued task (the supervisor's entry point). Same
 /// machinery as the CLI, but returns the outcome instead of exiting, and passes
 /// the task id into the box so proposed actions carry their provenance.
-pub async fn dispatch(worker: &str, prompt: &str, ceiling_min: f64, task_id: &str, run_id: &str, code: Option<&CodeSpec>) -> Result<Outcome, BErr> {
-    let (run_id, _run_dir, ended_by, exit_code) = run_box(prompt, ceiling_min, worker, task_id, run_id, code).await?;
+pub async fn dispatch(
+    worker: &str,
+    task: crate::context::TaskInput,
+    run_context: &crate::memory::RunContext,
+    ceiling_min: f64,
+    task_id: &str,
+    run_id: &str,
+    code: Option<&CodeSpec>,
+) -> Result<Outcome, BErr> {
+    let kind = if code.is_some() { "code" } else { "task" };
+    crate::runlog::start(run_id, worker, kind, Some(task_id))?;
+    let request = crate::context::ContextRequest {
+        run_id: run_id.to_string(),
+        phase: crate::context::ContextPhase::Start,
+        surface: crate::context::RunSurface::QueuedTask,
+        worker: worker.to_string(),
+        run_context: run_context.clone(),
+        task: Some(task),
+        message: None,
+    };
+    let compiled = match crate::context::compile_and_trace(&request) {
+        Ok(compiled) => compiled,
+        Err(error) => {
+            crate::runlog::fail(run_id);
+            return Err(error.into());
+        }
+    };
+    let (run_id, _run_dir, ended_by, exit_code) = match run_box(
+        &compiled,
+        ceiling_min,
+        worker,
+        task_id,
+        run_id,
+        code,
+        run_context,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            crate::runlog::fail(run_id);
+            return Err(error);
+        }
+    };
     Ok(Outcome { run_id, ended_by, exit_code })
 }
 
@@ -115,12 +194,31 @@ pub fn new_run_id() -> String {
     format!("{stamp}-{}", &uuid::Uuid::new_v4().simple().to_string()[..4])
 }
 
-async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, run_id: &str, code: Option<&CodeSpec>) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
-    let kind = if code.is_some() { "code" } else if task_id.is_empty() { "box" } else { "task" };
+async fn run_box(
+    compiled: &crate::context::CompiledContext,
+    ceiling_min: f64,
+    worker: &str,
+    task_id: &str,
+    run_id: &str,
+    code: Option<&CodeSpec>,
+    run_context: &crate::memory::RunContext,
+) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
     let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo } =
-        provision_box(worker, run_id, task_id, code, kind).await?;
+        provision_box(worker, run_id, task_id, code, run_context).await?;
     args.extend(pi_prefix(&repo, "json", &session_dir)?);
-    args.push(with_identity(worker, prompt));
+    append_cache_session_id(&mut args, &compiled.cache.route_key);
+    if !compiled.system_prompt.is_empty() {
+        args.extend([
+            "--append-system-prompt".into(),
+            compiled.system_prompt.clone(),
+        ]);
+    }
+    args.push(
+        compiled
+            .input_prompt
+            .clone()
+            .ok_or("one-shot context has no input prompt")?,
+    );
 
     let mut child = match tokio::process::Command::new("docker")
         .args(&args)
@@ -169,23 +267,49 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, ru
 /// Run a persistent box in pi's rpc mode: one warm container that handles a
 /// stream of messages (delivered on `rx`) in a single pi session, exiting after
 /// `idle_secs` of silence or when the box dies. Reuses provision_box, so the
-/// lockdown/identity are identical to a one-shot run. `system_prompt` carries the
-/// worker's identity + purpose + channel framing; each delivered message is one
-/// user turn.
+/// lockdown/identity are identical to a one-shot run. The context compiler
+/// creates the stable system prefix once and a volatile input for each turn.
 pub async fn run_session(
     worker: &str,
     run_id: &str,
-    system_prompt: &str,
+    surface: crate::context::RunSurface,
+    start_context: crate::memory::RunContext,
     mut rx: tokio::sync::mpsc::Receiver<SessionMessage>,
     idle_secs: u64,
 ) -> Result<(), BErr> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+    crate::runlog::start(run_id, worker, "session", None)?;
+    crate::memory::save_run_context(run_id, &start_context)?;
+    let start_request = crate::context::ContextRequest {
+        run_id: run_id.to_string(),
+        phase: crate::context::ContextPhase::Start,
+        surface: surface.clone(),
+        worker: worker.to_string(),
+        run_context: start_context.clone(),
+        task: None,
+        message: None,
+    };
+    let start = match crate::context::compile_and_trace(&start_request) {
+        Ok(compiled) => compiled,
+        Err(error) => {
+            crate::runlog::fail(run_id);
+            return Err(error.into());
+        }
+    };
+
     let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo } =
-        provision_box(worker, run_id, "", None, "session").await?;
+        match provision_box(worker, run_id, "", None, &start_context).await {
+            Ok(provisioned) => provisioned,
+            Err(error) => {
+                crate::runlog::fail(run_id);
+                return Err(error);
+            }
+        };
     args.insert(1, "-i".into()); // keep stdin open for the rpc protocol
     args.extend(pi_prefix(&repo, "rpc", &session_dir)?);
-    args.extend(["--append-system-prompt".into(), system_prompt.to_string()]);
+    append_cache_session_id(&mut args, &start.cache.route_key);
+    args.extend(["--append-system-prompt".into(), start.system_prompt]);
 
     let mut child = match tokio::process::Command::new("docker")
         .args(&args)
@@ -215,14 +339,37 @@ pub async fn run_session(
         // rapid messages become distinct turns (in order) rather than coalescing.
         if !busy {
             if let Some(msg) = pending.pop_front() {
-                crate::memory::save_run_context(run_id, &msg.context)?;
-                let memory = crate::memory::render_recall(worker, &msg.context, run_id);
-                let prompt = if memory.is_empty() {
-                    msg.text
-                } else {
-                    format!("{memory}\n\n[Current message]\n{}", msg.text)
+                if let Err(error) = crate::memory::save_run_context(run_id, &msg.context) {
+                    eprintln!("session {run_id}: context save failed; message not delivered: {error}");
+                    continue;
+                }
+                let request = crate::context::ContextRequest {
+                    run_id: run_id.to_string(),
+                    phase: crate::context::ContextPhase::Turn,
+                    surface: surface.clone(),
+                    worker: worker.to_string(),
+                    run_context: msg.context.clone(),
+                    task: None,
+                    message: Some(crate::context::MessageInput {
+                        provider: msg.context.provider.clone(),
+                        message_id: msg.context.message_id.clone(),
+                        author_label: msg.author_label,
+                        role: msg.context.role.clone(),
+                        text: msg.text,
+                    }),
                 };
-                let line = json!({ "type": "prompt", "message": prompt }).to_string();
+                let compiled = match crate::context::compile_and_trace(&request) {
+                    Ok(compiled) => compiled,
+                    Err(error) => {
+                        eprintln!("session {run_id}: context compilation failed; message not delivered: {error}");
+                        continue;
+                    }
+                };
+                let line = json!({
+                    "type": "prompt",
+                    "message": compiled.input_prompt.unwrap_or_default()
+                })
+                .to_string();
                 if stdin.write_all(line.as_bytes()).await.is_err() || stdin.write_all(b"\n").await.is_err() {
                     break;
                 }
@@ -274,6 +421,15 @@ fn pi_prefix(repo: &Path, mode: &str, session_dir: &Path) -> Result<Vec<String>,
     Ok(v)
 }
 
+/// Pi maps its session id to provider cache-affinity fields. Per-run session
+/// directories keep pi's local transcripts separate even when equivalent runs
+/// intentionally share this stable cache route key.
+fn append_cache_session_id(args: &mut Vec<String>, route_key: &str) {
+    if !route_key.is_empty() {
+        args.extend(["--session-id".into(), route_key.into()]);
+    }
+}
+
 /// Everything a box needs, up to (but not including) the pi command: the lockdown
 /// check, per-run dirs, an optional code worktree, the sentinel pihome, a minted
 /// identity token, and the docker args through the image + cwd. Shared by the
@@ -288,7 +444,13 @@ struct Provisioned {
     repo: PathBuf,
 }
 
-async fn provision_box(worker: &str, run_id: &str, task_id: &str, code: Option<&CodeSpec>, kind: &str) -> Result<Provisioned, BErr> {
+async fn provision_box(
+    worker: &str,
+    run_id: &str,
+    task_id: &str,
+    code: Option<&CodeSpec>,
+    run_context: &crate::memory::RunContext,
+) -> Result<Provisioned, BErr> {
     ensure_lockdown().await?;
 
     let home = home_dir();
@@ -349,6 +511,9 @@ async fn provision_box(worker: &str, run_id: &str, task_id: &str, code: Option<&
         "-u".into(), format!("{uid}:{gid}"),
         "-v".into(), format!("{0}:{0}:ro", repo.display()),
     ];
+    // The repo contains gitignored trusted runtime state. Shadow it before
+    // overlaying only this run's writable paths and authorized channel.
+    append_state_shadows(&mut args, &repo);
     let env_file = repo.join(".env");
     if env_file.exists() {
         args.push("-v".into());
@@ -356,6 +521,15 @@ async fn provision_box(worker: &str, run_id: &str, task_id: &str, code: Option<&
     }
     let mount = |p: &Path| format!("{0}:{0}", p.display());
     args.extend(["-v".into(), mount(&workspace), "-v".into(), mount(&session), "-v".into(), mount(&pihome)]);
+    if let Some(channel) = run_context.channel_id.as_deref() {
+        let channel_dir = repo.join("channels").join(channel);
+        if channel_dir.is_dir() {
+            args.extend([
+                "-v".into(),
+                format!("{0}:{0}:ro", channel_dir.display()),
+            ]);
+        }
+    }
     if let Some(wt) = &worktree {
         args.extend(["-v".into(), mount(wt)]);
     }
@@ -382,9 +556,16 @@ async fn provision_box(worker: &str, run_id: &str, task_id: &str, code: Option<&
     let cwd = worktree.as_ref().unwrap_or(&workspace);
     args.extend(["-w".into(), cwd.display().to_string(), "roster-box".into()]);
 
-    crate::runlog::start(run_id, worker, kind, Some(task_id).filter(|s| !s.is_empty()))?;
-
     Ok(Provisioned { args, identity_file, container, session_dir: session, run_dir, repo })
+}
+
+fn append_state_shadows(args: &mut Vec<String>, repo: &Path) {
+    for name in ["runs", "notes", "journal", "queue", "gates", "channels"] {
+        args.extend([
+            "--tmpfs".into(),
+            format!("{}:rw,noexec,nosuid,nodev", repo.join(name).display()),
+        ]);
+    }
 }
 
 // ── lockdown ─────────────────────────────────────────────────────────────────
@@ -517,27 +698,10 @@ fn box_extensions(repo: &Path) -> Vec<String> {
     paths
 }
 
-/// The worker's identity (workers/<name>/identity.md) — its fixed self, the same
-/// across every channel. Read live; the box gets it read-only via the repo mount
-/// and cannot rewrite it. We prepend it so it leads every run.
+/// Owner-controlled worker identity path. Prompt assembly lives in the context
+/// compiler; this helper remains for the identity admin surfaces.
 pub fn identity_path(worker: &str) -> PathBuf {
     root().join("workers").join(worker).join("identity.md")
-}
-
-fn with_identity(worker: &str, prompt: &str) -> String {
-    // Prefer identity.md; fall back to the legacy charter.md during migration.
-    let content = std::fs::read_to_string(identity_path(worker))
-        .ok()
-        .filter(|c| !c.trim().is_empty())
-        .or_else(|| std::fs::read_to_string(root().join("workers").join(worker).join("charter.md")).ok().filter(|c| !c.trim().is_empty()));
-    match content {
-        Some(c) => format!(
-            "[Identity — who you are and your standing rules. You cannot change these during this run; \
-             only the owner/admin can change them outside this run.]\n{}\n\n{prompt}",
-            c.trim()
-        ),
-        None => prompt.to_string(),
-    }
 }
 
 fn home_dir() -> PathBuf {
@@ -563,4 +727,32 @@ unsafe fn libc_getuid() -> u32 {
 }
 unsafe fn libc_getgid() -> u32 {
     getgid()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trusted_runtime_state_is_shadowed_in_the_box() {
+        let repo = Path::new("/srv/roster");
+        let mut args = Vec::new();
+        append_state_shadows(&mut args, repo);
+        for name in ["runs", "notes", "journal", "queue", "gates", "channels"] {
+            assert!(args.contains(&format!(
+                "/srv/roster/{name}:rw,noexec,nosuid,nodev"
+            )));
+        }
+        assert_eq!(args.iter().filter(|arg| *arg == "--tmpfs").count(), 6);
+    }
+
+    #[test]
+    fn cache_route_key_becomes_the_pi_session_id() {
+        let mut args = vec!["node".into(), "pi".into()];
+        append_cache_session_id(&mut args, "roster-pc-abc123");
+        assert_eq!(
+            args,
+            vec!["node", "pi", "--session-id", "roster-pc-abc123"]
+        );
+    }
 }

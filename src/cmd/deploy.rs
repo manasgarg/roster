@@ -6,6 +6,7 @@
 
 use crate::action::ActionPolicy;
 use crate::budget::BudgetPolicy;
+use crate::context::{CompiledContextPolicy, ContextPolicy};
 use crate::memory::{CompiledMemoryPolicy, MemoryPolicy};
 use crate::schema::Policy;
 use crate::util::root;
@@ -22,7 +23,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut trust: Vec<Value> = Vec::new();
     let mut triggers: Vec<Value> = Vec::new();
     let default_memory = memory_policy(org.get("memory"), None)?;
+    let default_context = context_policy(org.get("context"), None)?;
     let mut worker_memory = std::collections::HashMap::new();
+    let mut worker_context = std::collections::HashMap::new();
 
     for g in array(&org, "grant") {
         rules.push(with_scope(g, "org"));
@@ -59,6 +62,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let scope = format!("org/{name}");
             workers.push(name.clone());
             worker_memory.insert(name.clone(), memory_policy(w.get("memory"), Some(&default_memory))?);
+            worker_context.insert(name.clone(), context_policy(w.get("context"), Some(&default_context))?);
             for g in array(&w, "grant") {
                 rules.push(with_scope(g, &scope));
             }
@@ -94,12 +98,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     });
     let action_policy = json!({ "actions": actions, "trust": trust });
     let memory_policy = CompiledMemoryPolicy { default: default_memory, workers: worker_memory };
+    let context_policy = CompiledContextPolicy { default: default_context, workers: worker_context };
 
     // Validate against the gateway's own types.
     serde_json::from_value::<Policy>(policy.clone()).map_err(|e| format!("compiled policy is invalid: {e}"))?;
     serde_json::from_value::<BudgetPolicy>(budget.clone()).map_err(|e| format!("compiled budget is invalid: {e}"))?;
     serde_json::from_value::<ActionPolicy>(action_policy.clone()).map_err(|e| format!("compiled actions are invalid: {e}"))?;
     serde_json::to_value(&memory_policy).map_err(|e| format!("compiled memory policy is invalid: {e}"))?;
+    serde_json::to_value(&context_policy).map_err(|e| format!("compiled context policy is invalid: {e}"))?;
 
     let out = root.join("runs").join("compiled");
     fs::create_dir_all(&out)?;
@@ -108,6 +114,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(out.join("actions.json"), format!("{}\n", serde_json::to_string_pretty(&action_policy)?))?;
     fs::write(out.join("triggers.json"), format!("{}\n", serde_json::to_string_pretty(&json!({ "triggers": triggers }))?))?;
     fs::write(out.join("memory.json"), format!("{}\n", serde_json::to_string_pretty(&memory_policy)?))?;
+    fs::write(out.join("context.json"), format!("{}\n", serde_json::to_string_pretty(&context_policy)?))?;
 
     println!(
         "deployed: {} worker(s) [{}], {} rule(s), {} action(s), {} trigger(s), {} limit(s)",
@@ -118,8 +125,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         triggers.len(),
         limits.len()
     );
-    println!("compiled → runs/compiled/{{policy,budget,actions,triggers,memory}}.json (the control plane reads these)");
+    println!("compiled → runs/compiled/{{policy,budget,actions,triggers,memory,context}}.json (the control plane reads these)");
     Ok(())
+}
+
+fn context_policy(value: Option<&toml::Value>, base: Option<&ContextPolicy>) -> Result<ContextPolicy, Box<dyn std::error::Error>> {
+    let mut merged = serde_json::to_value(base.cloned().unwrap_or_default())?;
+    if let Some(value) = value {
+        merge_json(&mut merged, to_json(value));
+    }
+    serde_json::from_value(merged).map_err(|e| format!("context policy is invalid: {e}").into())
 }
 
 fn memory_policy(value: Option<&toml::Value>, base: Option<&MemoryPolicy>) -> Result<MemoryPolicy, Box<dyn std::error::Error>> {

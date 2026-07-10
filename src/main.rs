@@ -12,6 +12,7 @@ mod action;
 mod budget;
 mod ca;
 mod cmd;
+mod context;
 mod discord;
 mod gate;
 mod journal;
@@ -118,7 +119,7 @@ fn print_help() {
            listen --worker <n>          run the Discord gateway (inbound)\n  \
            channel [ls|trust|mode|memory]  manage channel behavior\n  \
            notes [ls|show|rm|correct|pin|explain]  inspect and repair memory\n  \
-           runs [ls|show]              inspect all executions, including sessions\n  \
+           runs [ls|show|context]      inspect executions and exact compiled context\n  \
            gates [ls|show|approve|deny] approval desk for proposed actions\n\
          {providers}\n  \
            vault-sync                  import an existing pi login into the vault"

@@ -51,10 +51,25 @@ pub fn evaluate(worker: &str, intent: &str, payload: &Value, default_level: &str
 /// otherwise-internal list falls through to a gate, never silently auto-sends.
 fn predicate_matches(preds: &HashMap<String, String>, payload: &Value) -> bool {
     preds.iter().all(|(field, pat)| match payload.get(field) {
-        Some(Value::String(s)) => glob_matches(pat, s),
-        Some(Value::Array(a)) => !a.is_empty() && a.iter().all(|e| e.as_str().map(|s| glob_matches(pat, s)).unwrap_or(false)),
+        Some(Value::String(s)) => matches_value(pat, s),
+        Some(Value::Array(a)) => !a.is_empty() && a.iter().all(|e| e.as_str().map(|s| matches_value(pat, s)).unwrap_or(false)),
         _ => false,
     })
+}
+
+/// Match a glob against a value, tolerating a mailbox display name: both the raw
+/// string and its bracketed address are tried, so `manasgarg@gmail.com` matches
+/// `Manas Garg <manasgarg@gmail.com>`.
+fn matches_value(pat: &str, s: &str) -> bool {
+    glob_matches(pat, s.trim()) || glob_matches(pat, bare_address(s))
+}
+
+/// The address inside `<...>` if present, else the trimmed string.
+fn bare_address(s: &str) -> &str {
+    match (s.rfind('<'), s.rfind('>')) {
+        (Some(a), Some(b)) if b > a + 1 => s[a + 1..b].trim(),
+        _ => s.trim(),
+    }
 }
 
 #[cfg(test)]
@@ -85,6 +100,16 @@ mod tests {
     fn default_when_no_rule_matches() {
         assert_eq!(evaluate("org/yuko", "discord-send", &json!({}), "gate", &rules(), 0, 0), "gate");
         assert_eq!(evaluate("org/yuko", "message-user", &json!({}), "auto", &[], 0, 0), "auto");
+    }
+
+    #[test]
+    fn matches_recipient_with_display_name() {
+        let rs = vec![TrustRule { scope: "org".into(), intent: "email-send".into(), predicate: [("to".to_string(), "manasgarg@gmail.com".to_string())].into(), level: "auto".into(), after: None }];
+        // plain address, and "Name <addr>" form, both auto
+        assert_eq!(evaluate("org/yuko", "email-send", &json!({"to":["manasgarg@gmail.com"]}), "gate", &rs, 0, 0), "auto");
+        assert_eq!(evaluate("org/yuko", "email-send", &json!({"to":["Manas Garg <manasgarg@gmail.com>"]}), "gate", &rs, 0, 0), "auto");
+        // a different address still gates
+        assert_eq!(evaluate("org/yuko", "email-send", &json!({"to":["Someone <other@gmail.com>"]}), "gate", &rs, 0, 0), "gate");
     }
 
     #[test]

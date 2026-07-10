@@ -309,12 +309,17 @@ async fn exec_email(worker: &str, payload: &Value) -> Result<Value, String> {
         return Ok(json!({ "delivered": "smtp", "provider": cfg.host, "to": to, "status": status }));
     }
 
+    // No SMTP configured: fail loudly so an email is never silently dropped. The
+    // local sink (a file, no real send) is opt-in for offline testing only.
+    if std::env::var("ROSTER_EMAIL_SINK").is_err() {
+        return Err("email not sent: no SMTP configured — run `roster connect smtp` (e.g. your Mailgun SMTP creds)".into());
+    }
     let dir = root().join("runs").join("outbox");
     let _ = std::fs::create_dir_all(&dir);
     let file = dir.join(format!("{}-{}.json", now_rfc3339().replace(':', "-"), worker.replace('/', "_")));
     let rendered = json!({ "from": worker, "to": to, "subject": subject, "body": body });
     std::fs::write(&file, format!("{}\n", serde_json::to_string_pretty(&rendered).unwrap_or_default())).map_err(|e| e.to_string())?;
-    eprintln!("email [{worker}] → {to:?}: {subject} (no smtp configured — wrote local sink)");
+    eprintln!("email [{worker}] → {to:?}: {subject} (ROSTER_EMAIL_SINK — wrote local sink, NOT sent)");
     Ok(json!({ "delivered": "local-sink", "to": to, "file": file.display().to_string() }))
 }
 

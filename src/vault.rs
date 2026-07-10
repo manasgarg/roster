@@ -20,7 +20,7 @@ pub type Credential = Map<String, Value>;
 
 const REFRESH_SKEW_MS: i64 = 60_000;
 
-fn vault_dir() -> PathBuf {
+pub fn vault_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("ROSTER_VAULT_DIR") {
         return PathBuf::from(dir);
     }

@@ -8,7 +8,6 @@ use base64::Engine;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 type BErr = Box<dyn std::error::Error>;
@@ -260,8 +259,9 @@ fn read_registry() -> Result<serde_json::Map<String, Value>, BErr> {
 }
 
 fn write_vault(name: &str, cred: &Value) -> Result<(), BErr> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let dir = Path::new(&home).join(".roster/vault");
+    // Same dir logic the gateway reads from (honors ROSTER_VAULT_DIR), so a
+    // connected credential always lands where injection/executors look for it.
+    let dir = crate::vault::vault_dir();
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{name}.json"));
     std::fs::write(&path, format!("{}\n", serde_json::to_string_pretty(cred)?))?;

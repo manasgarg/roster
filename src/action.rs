@@ -268,7 +268,7 @@ fn resolve_followup(g: &Gate) {
 pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
     match executor {
         "message-user" => exec_message_user(worker, payload),
-        "email" => exec_email(worker, payload),
+        "email" => exec_email(worker, payload).await,
         "git-pr" => exec_git_pr(worker, run_id, payload),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
@@ -289,11 +289,11 @@ fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, String> {
     Ok(json!({ "delivered": true }))
 }
 
-/// Send an email. For now a local sink (writes the rendered message to
-/// runs/outbox/) so the gate→approve→execute→audit path is real and testable
-/// offline; wiring a provider means routing this through the gateway to an email
-/// API (POST + injected key) — the box still never holds the credential.
-fn exec_email(worker: &str, payload: &Value) -> Result<Value, String> {
+/// Send an email. If an SMTP credential is configured in the vault
+/// (`roster connect smtp`), deliver for real over TLS; otherwise fall back to a
+/// local sink so the gate→approve→execute→audit path still works offline. Either
+/// way the box never holds the credential — this runs trusted-side, post-gate.
+async fn exec_email(worker: &str, payload: &Value) -> Result<Value, String> {
     let to: Vec<String> = payload
         .get("to")
         .and_then(|v| v.as_array())
@@ -302,13 +302,32 @@ fn exec_email(worker: &str, payload: &Value) -> Result<Value, String> {
         .ok_or("email needs a non-empty \"to\" array")?;
     let subject = payload.get("subject").and_then(|v| v.as_str()).unwrap_or("");
     let body = payload.get("body").and_then(|v| v.as_str()).unwrap_or("");
+
+    if let Some(cfg) = smtp_config() {
+        let status = crate::smtp::send(&cfg, &to, subject, body).await.map_err(|e| format!("smtp send failed: {e}"))?;
+        eprintln!("email [{worker}] → {to:?} via {}: {subject}", cfg.host);
+        return Ok(json!({ "delivered": "smtp", "provider": cfg.host, "to": to, "status": status }));
+    }
+
     let dir = root().join("runs").join("outbox");
     let _ = std::fs::create_dir_all(&dir);
     let file = dir.join(format!("{}-{}.json", now_rfc3339().replace(':', "-"), worker.replace('/', "_")));
     let rendered = json!({ "from": worker, "to": to, "subject": subject, "body": body });
     std::fs::write(&file, format!("{}\n", serde_json::to_string_pretty(&rendered).unwrap_or_default())).map_err(|e| e.to_string())?;
-    eprintln!("email [{worker}] → {to:?}: {subject}");
+    eprintln!("email [{worker}] → {to:?}: {subject} (no smtp configured — wrote local sink)");
     Ok(json!({ "delivered": "local-sink", "to": to, "file": file.display().to_string() }))
+}
+
+/// SMTP settings from the vault (`~/.roster/vault/smtp.json`), if present.
+fn smtp_config() -> Option<crate::smtp::SmtpConfig> {
+    let c = crate::vault::get_credential("smtp")?;
+    Some(crate::smtp::SmtpConfig {
+        host: c.get("host")?.as_str()?.to_string(),
+        port: c.get("port").and_then(|v| v.as_u64()).unwrap_or(465) as u16,
+        user: c.get("user")?.as_str()?.to_string(),
+        pass: c.get("pass")?.as_str()?.to_string(),
+        from: c.get("from")?.as_str()?.to_string(),
+    })
 }
 
 /// Land a code task's worktree as a pushed branch (and a PR where possible). The

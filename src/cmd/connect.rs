@@ -26,6 +26,7 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
 
     let cred = match p.get("auth").and_then(|v| v.as_str()) {
         Some("api_key") => connect_api_key()?,
+        Some("smtp") => connect_smtp()?,
         Some("oauth") => {
             let login = p.get("login").cloned().unwrap_or_else(|| json!({}));
             match login.get("flow").and_then(|v| v.as_str()) {
@@ -50,6 +51,27 @@ fn connect_api_key() -> Result<Value, BErr> {
         return Err("no key entered".into());
     }
     Ok(json!({ "type": "api_key", "key": key }))
+}
+
+// ── SMTP (e.g. Mailgun) ───────────────────────────────────────────────────────
+
+/// Collect SMTP settings for the email executor. Implicit-TLS submission (465),
+/// AUTH LOGIN. The credential lands in the vault, off the box; only the
+/// trusted-side executor reads it. For Mailgun: host smtp.mailgun.org, the SMTP
+/// login (postmaster@your-domain) and its password from the domain's SMTP creds.
+fn connect_smtp() -> Result<Value, BErr> {
+    let host = prompt_default("SMTP host [smtp.mailgun.org]: ", "smtp.mailgun.org")?;
+    let port: u16 = prompt_default("SMTP port [465]: ", "465")?.parse().map_err(|_| "port must be a number")?;
+    let user = prompt("SMTP username (e.g. postmaster@mg.example.com): ")?;
+    if user.is_empty() {
+        return Err("no username entered".into());
+    }
+    let pass = prompt("SMTP password: ")?;
+    if pass.is_empty() {
+        return Err("no password entered".into());
+    }
+    let from = prompt_default(&format!("From address [{user}]: "), &user)?;
+    Ok(json!({ "type": "smtp", "host": host, "port": port, "user": user, "pass": pass, "from": from }))
 }
 
 // ── OAuth device-code ────────────────────────────────────────────────────────
@@ -302,4 +324,10 @@ fn prompt(question: &str) -> Result<String, BErr> {
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
     Ok(line.trim().to_string())
+}
+
+/// Prompt with a fallback used when the reply is empty.
+fn prompt_default(question: &str, default: &str) -> Result<String, BErr> {
+    let v = prompt(question)?;
+    Ok(if v.is_empty() { default.to_string() } else { v })
 }

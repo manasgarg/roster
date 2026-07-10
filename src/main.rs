@@ -22,6 +22,7 @@ mod queue;
 mod registry;
 mod scope;
 mod schema;
+mod smtp;
 mod tls;
 mod trigger;
 mod trust;

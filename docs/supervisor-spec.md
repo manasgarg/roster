@@ -1,6 +1,10 @@
 # The supervisor and gates (spec)
 
-**Status: spec — not yet implemented.** Makes the settled design concrete:
+**Status: implemented and verified live, 2026-07-10** (all 7 build-order phases;
+see the commits). The action host, gates, approval desk, trust ladder (incl.
+earned promotion), queue + `supervise` loop, schedule triggers, continuations,
+journal briefing, the code-task worktree flow, and the inbound relay all run and
+were tested end to end. Makes the settled design concrete:
 handoff §3.5–3.9 (wake-ups, task queue, gateway verdicts, approval desk) and
 decisions D6, D8, D12, D15, D20. Where the handoff left mechanism open, this
 resolves it and says why. Nothing here re-litigates a settled decision; it

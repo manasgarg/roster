@@ -14,8 +14,14 @@ The full design, decision log, and build plan live in
 
 ## Status
 
-Early scaffolding. Built from scratch in small, understandable increments;
-each increment runs live and is tested before the next one starts.
+Built from scratch in small, understandable increments; each increment runs
+live and is tested before the next one starts. Working today: the locked-down
+box, the governed-egress gateway (TLS termination, default-deny judge,
+credential injection + OAuth refresh, budget metering), governed web
+search/fetch, and the full supervisor + gate machinery — a task queue, the
+`supervise` dispatch loop, an approval desk with an earned trust ladder,
+schedule triggers, continuations, and the code-task worktree→gated-PR flow
+(see `docs/supervisor-spec.md`).
 
 ## Toolchain
 
@@ -23,11 +29,13 @@ The language boundary is the trust boundary (see D20 in the handoff):
 
 - **The whole trusted host-side is Rust** — one `roster` binary (crate at the
   repo root) with subcommands: `serve` (the gateway — TLS termination, judge,
-  vault, refresh), plus `create` / `deploy` / `box` / `connect` / `vault-sync`.
-  `cargo build`, `cargo test`.
+  vault, refresh, and the action host), `supervise` (the orchestration loop),
+  `queue` / `gates` / `relay` (task queue, approval desk, inbound edge), plus
+  `create` / `deploy` / `box` / `connect` / `vault-sync`. `cargo build`, `cargo test`.
 - **TypeScript lives only inside the untrusted box** — pi (the engine,
-  vendored) and its extensions. They reach the Rust side across the container
-  contract, a serialized boundary that's serialized anyway.
+  vendored) and its extensions (`box/extensions/`: web search/fetch, and the
+  action tools). They reach the Rust side across the container contract, a
+  serialized boundary that's serialized anyway.
 - **Near-zero dependencies by policy.** `npm install` provides pi to the box;
   there is no host-side Node code.
 - `npm test` runs the gateway's Rust tests (`cargo test`).
@@ -36,17 +44,18 @@ The language boundary is the trust boundary (see D20 in the handoff):
 
 ```
 Cargo.toml src/   the trusted host-side control plane (Rust): the `roster` binary
-box/              Dockerfile for the locked-down container image (roster-box)
+box/              Dockerfile + extensions/ for the locked-down container (roster-box)
 providers.json    provider registry (login/refresh/inject), read by CLI + gateway
-org.toml          OWNER-ONLY: shared grants + fleet-aggregate caps + metering
+org.toml          OWNER-ONLY: shared grants, actions, trust, caps + metering
 workers/<name>/   OWNER-ONLY worker specs (worker.toml) overlaying org.toml
 docs/             design docs, the implementation handoff, per-increment specs
-runs/             per-run outputs, logs, and runs/compiled/ (all gitignored)
+runs/  queue/  gates/  journal/   runtime state (all gitignored)
 ```
 
 The Rust modules under `src/`: the serve path (`proxy`, `tls`, `ca`, `judge`),
 credentials (`vault`, `providers`, `registry`), budgets (`budget`, `ledger`,
-`scope`), the schema, and the subcommands in `src/cmd/`.
+`scope`), the supervisor/governance layer (`action`, `gate`, `trust`, `queue`,
+`trigger`, `journal`), the schema, and the subcommands in `src/cmd/`.
 
 ## Run
 

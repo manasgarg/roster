@@ -53,6 +53,36 @@ supervisor files a **continuation task** and a fresh box picks it up with journa
 context. Ephemeral boxes and slow humans coexist through the queue, not through
 blocking.
 
+## Visibility: the worker must see its own gate state
+
+An async gate is useless to the worker if it can't later learn what became of it.
+The box that filed a gate is usually gone before the human decides, so visibility
+works *across* runs, through two surfaces:
+
+- **The journal is a shared, append-only timeline, and *every* actor writes to
+  it** — the box (its reasoning and the action it proposed), the gateway (gate
+  filed / auto-executed), the approval desk (approved or denied, by whom, when),
+  and the executor (finished with this result, or failed). One per-worker log,
+  `journal/<worker>/events.jsonl`, is the single place the whole story lands.
+- **The gate queue is visible to the worker.** At the start of every run the
+  supervisor briefs the box with its worker's open gates and any resolved since
+  the last run; during a run a read-only tool lets pi re-check. pi sees only its
+  own worker's gates — so it never re-proposes something already pending, and a
+  continuation run knows exactly what was approved, when, and whether it finished.
+
+Each gate therefore carries its **full lifecycle with timestamps** —
+`filed → approved (by whom, when) | denied → executing → executed (result) |
+failed` — and pi reads the current node. "Is my email still pending, was it sent,
+did it fail?" is always answerable.
+
+**This costs nothing in safety, because the journal is a *view*, not the
+enforcement state.** Execution is driven by the authoritative `gates/` store,
+which is trusted-side and un-writable by the box; the gateway and executors never
+consult the journal to decide anything. A compromised box could scribble a fake
+"approved" line into its own journal and still not move one unapproved byte — the
+executor acts only on a real gate resolved by a real human. So the worker gets
+rich, honest visibility for free.
+
 ## The pieces
 
 **1. Action envelope (box → gateway).** The box's only trusted route is the
@@ -105,10 +135,16 @@ credentials the box never sees:
 
 **4. Gates (durable records).** `gates/pending/<id>.json` while awaiting a human;
 moved to `gates/resolved/<id>.json` on decision (fail closed if unreadable, §3.9).
-A gate carries the frozen payload, the intent, the originating run/task, the
-trust evaluation, and — once decided — the decider, timestamp, note, and result.
+A gate is a **timestamped state machine** —
+`filed → approved (decider, time) | denied → executing → executed (result) |
+failed` — carrying the frozen payload, the intent, and the originating run/task.
 The human reviews the **exact** bytes that will go out; the worker cannot alter
-the payload after proposing it.
+the payload after proposing it. Every transition is appended to the worker's
+journal, so on its next run the worker sees the gate was approved at T and the
+send finished (or failed) — the state awareness an async action demands
+(see *Visibility*). For a **code gate** the payload is a branch + diff; the diff
+is rendered from the run's worktree and attached to the gate — it is an ordinary
+gate, not a separate kind of thing.
 
 **5. Trust ladder.** Per `(worker, intent)`, starting at **T0: every irreversible
 gated** (§3.9). Owner config promotes an intent (optionally narrowed by a payload
@@ -152,15 +188,18 @@ an empty scratch workspace — fine for research, not for code. For a code task 
 supervisor provisions a writable **git worktree** at a base ref
 (`runs/<id>/worktree`), mounts it read-write, and the box commits to
 `worker/<name>/<task>`. `commit_and_push` / `open_pr` are gated intents; the diff
-is rendered to `reviews/` for the human; on approval the executors push (direct)
-and open the PR (REST via gateway).
+(rendered from the worktree) rides on the gate for the human to review; on
+approval the executors push (direct) and open the PR (REST via gateway).
 
 **9. Continuity — the journal (§3.2).** Ephemeral boxes have no memory across
 runs, so a worker that spans propose → wait → react needs durable state.
-`journal/<worker>/events.jsonl` is the append-only record of what it did and
-decided; the supervisor feeds a relevant slice into each new box run. Charter /
-core-memory promotion always gates to the owner (D10) — the worker appends notes;
-only a curator step promotes them, closing the injection→self-programming hole.
+`journal/<worker>/events.jsonl` is the append-only record of what happened, and
+**every actor appends to it** — box, gateway, approval desk, executors — making it
+the worker's single source of truth for its own history *and* its gate state (see
+*Visibility*). The supervisor feeds a relevant slice into each new box run. It is
+pi's *view*, never the enforcement state. Charter / core-memory promotion always
+gates to the owner (D10) — the worker appends notes; only a curator step promotes
+them, closing the injection→self-programming hole.
 
 ## On-disk layout (all gitignored)
 
@@ -168,15 +207,15 @@ only a curator step promotes them, closing the injection→self-programming hole
 queue/<worker>/<task-id>.json     durable per-worker task queue
 gates/pending/<gate-id>.json      gated actions awaiting a human
 gates/resolved/<gate-id>.json     decided gates (audit)
-journal/<worker>/events.jsonl     per-worker memory across runs
+journal/<worker>/events.jsonl     per-worker memory + gate timeline (every actor appends)
 mailbox/<worker>/                 owner→worker steer messages (delivered at turn boundaries, §3.2)
-reviews/<gate-id>/                 rendered diffs/artifacts for code gates
-runs/<run-id>/                     existing per-run outputs (+ per-run worktree/)
+runs/<run-id>/                     existing per-run outputs (+ per-run worktree/ for code tasks)
 runs/decisions.jsonl              existing gateway audit log — gates & executions append here too
 ```
 
-`gates/`, `mailbox/`, `reviews/` are the dirs already reserved in `.gitignore`;
-`queue/` and `journal/` join them.
+`gates/` and `mailbox/` are dirs already reserved in `.gitignore`; `queue/` and
+`journal/` join them. (The reserved `reviews/` is dropped — a code review is just
+a gate whose payload is a branch + diff, not a separate store.)
 
 ## Invariants (what must always hold)
 
@@ -194,6 +233,10 @@ runs/decisions.jsonl              existing gateway audit log — gates & executi
   and the queue are owner-only and unreachable from the box.
 - Enforcement lives in the trusted side, never in a box extension (D8): the
   action tools only *record intent*; the gateway and supervisor decide and act.
+- The **journal is the worker's view; `gates/` is the authoritative state**. It is
+  trusted-side and box-unwritable, and enforcement never reads the journal — so a
+  box cannot conjure an approval by writing one. This is what lets the worker have
+  full visibility (open gates, decisions, results) at zero cost to safety.
 
 ## Open question resolved — Q3 (built-in queue vs GitHub mirror)
 
@@ -215,8 +258,8 @@ local and trusted.
 3. **Trust ladder (explicit `auto`/`gate` from TOML)** — the auto fast-path.
 4. **`roster supervise` + built-in queue + `roster queue add`** — dispatch loop.
 5. **Schedule triggers + continuations + journal** — proactive work and reactions.
-6. **Working-copy flow + git push/PR executors + `reviews/`** — code tasks land as
-   gated PRs.
+6. **Working-copy flow + git push/PR executors** — code tasks land as gated PRs
+   (the diff rides on the gate).
 7. **Earned promotion; inbound relay** (Discord owner-only per §3.9/D12; email
    webhook) — later.
 

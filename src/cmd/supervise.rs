@@ -73,6 +73,8 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
             let run_id = run_box::new_run_id();
             task.run_id = Some(run_id.clone());
             let _ = queue::save(&task);
+            let memory_context = task_memory_context(&task);
+            let _ = crate::memory::save_run_context(&run_id, &memory_context);
             eprintln!("dispatch {} [{}] run {run_id} — {}", task.id, task.worker, first_line(&task.prompt));
             let t = task.clone();
             let prompt = effective_prompt(&task);
@@ -139,6 +141,15 @@ fn effective_prompt(task: &queue::Task) -> String {
         }
     }
 
+    let memory = crate::memory::render_recall(
+        &task.worker,
+        &task_memory_context(task),
+        task.run_id.as_deref().unwrap_or(""),
+    );
+    if !memory.is_empty() {
+        sections.push(memory);
+    }
+
     let mut brief: Vec<String> = Vec::new();
     if let Some(rg) = task.context.get("resolved_gate") {
         brief.push(format!(
@@ -164,6 +175,18 @@ fn effective_prompt(task: &queue::Task) -> String {
     } else {
         sections.push(format!("[Task]\n{}", task.prompt));
         sections.join("\n\n")
+    }
+}
+
+fn task_memory_context(task: &queue::Task) -> crate::memory::RunContext {
+    let d = task.context.get("discord").unwrap_or(&serde_json::Value::Null);
+    crate::memory::RunContext {
+        provider: if d.is_null() { String::new() } else { "discord".into() },
+        channel_id: d.get("channel_id").and_then(|v| v.as_str()).map(String::from),
+        user_id: d.get("author_id").and_then(|v| v.as_str()).map(String::from),
+        message_id: d.get("message_id").and_then(|v| v.as_str()).map(String::from),
+        role: d.get("role").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        is_dm: d.get("is_dm").and_then(|v| v.as_bool()).unwrap_or(false),
     }
 }
 

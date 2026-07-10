@@ -27,7 +27,7 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
         return Err("session needs --worker <name>".into());
     }
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
+    let (tx, rx) = tokio::sync::mpsc::channel::<run_box::SessionMessage>(32);
     let reader = tokio::spawn(async move {
         use tokio::io::AsyncBufReadExt;
         let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
@@ -35,7 +35,8 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
             if l.trim().is_empty() {
                 continue;
             }
-            if tx.send(l).await.is_err() {
+            let msg = run_box::SessionMessage { text: l, context: crate::memory::RunContext::default() };
+            if tx.send(msg).await.is_err() {
                 break;
             }
         }

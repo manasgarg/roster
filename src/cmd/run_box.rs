@@ -48,6 +48,10 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
     }
 
     let run_id = new_run_id();
+    let context = crate::memory::RunContext::default();
+    crate::memory::save_run_context(&run_id, &context)?;
+    let memory = crate::memory::render_recall(&worker, &context, &run_id);
+    let prompt = if memory.is_empty() { prompt } else { format!("{memory}\n\n[Task]\n{prompt}") };
     let (run_id, run_dir, ended_by, exit_code) = run_box(&prompt, ceiling_min, &worker, "", &run_id, None).await?;
     println!("box {run_id} ended by {ended_by} (exit code {})", exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()));
     println!("outputs: {}", run_dir.display());
@@ -66,6 +70,13 @@ pub struct Outcome {
 pub struct CodeSpec {
     pub repo: String,
     pub base: String,
+}
+
+/// One trusted conversation turn delivered to a warm session. The text goes to
+/// the model; the context stays host-side and governs scoped memory actions.
+pub struct SessionMessage {
+    pub text: String,
+    pub context: crate::memory::RunContext,
 }
 
 /// Run one box session for a queued task (the supervisor's entry point). Same
@@ -152,7 +163,13 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, ru
 /// lockdown/identity are identical to a one-shot run. `system_prompt` carries the
 /// worker's identity + purpose + channel framing; each delivered message is one
 /// user turn.
-pub async fn run_session(worker: &str, run_id: &str, system_prompt: &str, mut rx: tokio::sync::mpsc::Receiver<String>, idle_secs: u64) -> Result<(), BErr> {
+pub async fn run_session(
+    worker: &str,
+    run_id: &str,
+    system_prompt: &str,
+    mut rx: tokio::sync::mpsc::Receiver<SessionMessage>,
+    idle_secs: u64,
+) -> Result<(), BErr> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
     let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo } =
@@ -176,13 +193,20 @@ pub async fn run_session(worker: &str, run_id: &str, system_prompt: &str, mut rx
     let idle = Duration::from_secs(idle_secs);
     let mut rx_open = true;
     let mut busy = false; // a turn is in progress
-    let mut pending: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let mut pending: std::collections::VecDeque<SessionMessage> = std::collections::VecDeque::new();
     loop {
         // Serialize: feed the next message only once the previous turn is done, so
         // rapid messages become distinct turns (in order) rather than coalescing.
         if !busy {
             if let Some(msg) = pending.pop_front() {
-                let line = json!({ "type": "prompt", "message": msg }).to_string();
+                crate::memory::save_run_context(run_id, &msg.context)?;
+                let memory = crate::memory::render_recall(worker, &msg.context, run_id);
+                let prompt = if memory.is_empty() {
+                    msg.text
+                } else {
+                    format!("{memory}\n\n[Current message]\n{}", msg.text)
+                };
+                let line = json!({ "type": "prompt", "message": prompt }).to_string();
                 if stdin.write_all(line.as_bytes()).await.is_err() || stdin.write_all(b"\n").await.is_err() {
                     break;
                 }
@@ -295,7 +319,7 @@ async fn provision_box(worker: &str, run_id: &str, task_id: &str, code: Option<&
     let identity_dir = home.join(".roster/identity");
     std::fs::create_dir_all(&identity_dir)?;
     let identity_file = identity_dir.join(format!("{token}.json"));
-    write_0600(&identity_file, &format!("{}\n", json!({ "subject": subject })))?;
+    write_0600(&identity_file, &format!("{}\n", json!({ "subject": subject, "run_id": run_id })))?;
 
     let proxy_url = format!("http://{token}@host.docker.internal:{GATEWAY_PORT}");
     let container = container_name(run_id);
@@ -490,7 +514,7 @@ fn with_identity(worker: &str, prompt: &str) -> String {
     match content {
         Some(c) => format!(
             "[Identity — who you are and your standing rules. You cannot change these during this run; \
-             to change them, use propose_identity_edit, which an admin must approve.]\n{}\n\n{prompt}",
+             only the owner/admin can change them outside this run.]\n{}\n\n{prompt}",
             c.trim()
         ),
         None => prompt.to_string(),

@@ -6,6 +6,7 @@
 
 use crate::action::ActionPolicy;
 use crate::budget::BudgetPolicy;
+use crate::memory::{CompiledMemoryPolicy, MemoryPolicy};
 use crate::schema::Policy;
 use crate::util::root;
 use serde_json::{json, Value};
@@ -20,6 +21,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut actions: Vec<Value> = Vec::new();
     let mut trust: Vec<Value> = Vec::new();
     let mut triggers: Vec<Value> = Vec::new();
+    let default_memory = memory_policy(org.get("memory"), None)?;
+    let mut worker_memory = std::collections::HashMap::new();
 
     for g in array(&org, "grant") {
         rules.push(with_scope(g, "org"));
@@ -55,6 +58,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             let scope = format!("org/{name}");
             workers.push(name.clone());
+            worker_memory.insert(name.clone(), memory_policy(w.get("memory"), Some(&default_memory))?);
             for g in array(&w, "grant") {
                 rules.push(with_scope(g, &scope));
             }
@@ -89,11 +93,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         "limits": limits,
     });
     let action_policy = json!({ "actions": actions, "trust": trust });
+    let memory_policy = CompiledMemoryPolicy { default: default_memory, workers: worker_memory };
 
     // Validate against the gateway's own types.
     serde_json::from_value::<Policy>(policy.clone()).map_err(|e| format!("compiled policy is invalid: {e}"))?;
     serde_json::from_value::<BudgetPolicy>(budget.clone()).map_err(|e| format!("compiled budget is invalid: {e}"))?;
     serde_json::from_value::<ActionPolicy>(action_policy.clone()).map_err(|e| format!("compiled actions are invalid: {e}"))?;
+    serde_json::to_value(&memory_policy).map_err(|e| format!("compiled memory policy is invalid: {e}"))?;
 
     let out = root.join("runs").join("compiled");
     fs::create_dir_all(&out)?;
@@ -101,6 +107,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(out.join("budget.json"), format!("{}\n", serde_json::to_string_pretty(&budget)?))?;
     fs::write(out.join("actions.json"), format!("{}\n", serde_json::to_string_pretty(&action_policy)?))?;
     fs::write(out.join("triggers.json"), format!("{}\n", serde_json::to_string_pretty(&json!({ "triggers": triggers }))?))?;
+    fs::write(out.join("memory.json"), format!("{}\n", serde_json::to_string_pretty(&memory_policy)?))?;
 
     println!(
         "deployed: {} worker(s) [{}], {} rule(s), {} action(s), {} trigger(s), {} limit(s)",
@@ -111,8 +118,32 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         triggers.len(),
         limits.len()
     );
-    println!("compiled → runs/compiled/{{policy,budget}}.json (the gateway reads these)");
+    println!("compiled → runs/compiled/{{policy,budget,actions,triggers,memory}}.json (the control plane reads these)");
     Ok(())
+}
+
+fn memory_policy(value: Option<&toml::Value>, base: Option<&MemoryPolicy>) -> Result<MemoryPolicy, Box<dyn std::error::Error>> {
+    let mut merged = serde_json::to_value(base.cloned().unwrap_or_default())?;
+    if let Some(value) = value {
+        merge_json(&mut merged, to_json(value));
+    }
+    serde_json::from_value(merged).map_err(|e| format!("memory policy is invalid: {e}").into())
+}
+
+fn merge_json(base: &mut Value, overlay: Value) {
+    match (base, overlay) {
+        (Value::Object(base), Value::Object(overlay)) => {
+            for (key, value) in overlay {
+                match base.get_mut(&key) {
+                    Some(existing) => merge_json(existing, value),
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
 }
 
 fn read_toml(path: &std::path::Path) -> Result<toml::Value, Box<dyn std::error::Error>> {

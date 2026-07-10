@@ -301,14 +301,22 @@ async fn handle_message(worker: &str, d: &Value, bot_id: &str, guilds: &HashMap<
         " [group chat; you were not directly addressed — reply only if useful]"
     };
     let text = format!("{author} ({role}){hint}: {content}");
+    let context = crate::memory::RunContext {
+        provider: "discord".into(),
+        channel_id: Some(channel_id.to_string()),
+        user_id: d["author"]["id"].as_str().map(String::from),
+        message_id: d["id"].as_str().map(String::from),
+        role: role.to_string(),
+        is_dm,
+    };
     eprintln!("discord: {author} ({role}) in {channel_id} → session");
-    route_to_session(worker, channel_id, is_dm, text, token).await;
+    route_to_session(worker, channel_id, is_dm, text, context, token).await;
 }
 
 // ── conversation sessions: one warm box per active channel ────────────────────
 
-fn sessions() -> &'static Mutex<HashMap<String, tokio::sync::mpsc::Sender<String>>> {
-    static S: OnceLock<Mutex<HashMap<String, tokio::sync::mpsc::Sender<String>>>> = OnceLock::new();
+fn sessions() -> &'static Mutex<HashMap<String, tokio::sync::mpsc::Sender<crate::cmd::run_box::SessionMessage>>> {
+    static S: OnceLock<Mutex<HashMap<String, tokio::sync::mpsc::Sender<crate::cmd::run_box::SessionMessage>>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -317,11 +325,22 @@ const SESSION_IDLE_SECS: u64 = 90;
 /// Deliver a message to the channel's live session, or start a new one. A live
 /// session keeps the box warm across messages; it exits on idle (its sender then
 /// reads closed, and the next message starts a fresh one).
-async fn route_to_session(worker: &str, channel_id: &str, is_dm: bool, message: String, token: &str) {
+async fn route_to_session(
+    worker: &str,
+    channel_id: &str,
+    is_dm: bool,
+    text: String,
+    context: crate::memory::RunContext,
+    token: &str,
+) {
+    let message = crate::cmd::run_box::SessionMessage { text, context };
     let delivered = {
         let map = sessions().lock().unwrap();
         match map.get(channel_id) {
-            Some(tx) => tx.try_send(message.clone()).is_ok(),
+            Some(tx) => tx.try_send(crate::cmd::run_box::SessionMessage {
+                text: message.text.clone(),
+                context: message.context.clone(),
+            }).is_ok(),
             None => false,
         }
     };
@@ -330,7 +349,7 @@ async fn route_to_session(worker: &str, channel_id: &str, is_dm: bool, message: 
         return;
     }
     // Start a new session (clears any stale closed sender).
-    let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+    let (tx, rx) = tokio::sync::mpsc::channel::<crate::cmd::run_box::SessionMessage>(64);
     let _ = tx.try_send(message);
     sessions().lock().unwrap().insert(channel_id.to_string(), tx);
     let system = session_system_prompt(worker, channel_id, is_dm);
@@ -407,6 +426,30 @@ fn command_defs() -> Value {
             { "type": 1, "name": "mode", "description": "How the worker wakes here", "options": [
                 { "type": 3, "name": "mode", "description": "all = every message, mention = only when @mentioned", "required": true,
                   "choices": [{ "name": "all", "value": "all" }, { "name": "mention", "value": "mention" }] }
+            ]},
+            { "type": 1, "name": "memory", "description": "Enable or disable memory in this channel", "options": [
+                { "type": 3, "name": "state", "description": "on or off", "required": true,
+                  "choices": [{ "name": "on", "value": "on" }, { "name": "off", "value": "off" }] }
+            ]},
+            { "type": 1, "name": "memory-inferred", "description": "Choose whether inferred channel notes need review", "options": [
+                { "type": 3, "name": "state", "description": "auto or review", "required": true,
+                  "choices": [{ "name": "auto", "value": "auto" }, { "name": "review", "value": "review" }] }
+            ]},
+            { "type": 1, "name": "memory-kinds", "description": "Limit memory kinds in this channel", "options": [
+                { "type": 3, "name": "kinds", "description": "default or comma-separated kinds", "required": true }
+            ]},
+            { "type": 1, "name": "memory-retention", "description": "Shorten channel memory retention", "options": [
+                { "type": 3, "name": "days", "description": "default or a positive number of days", "required": true }
+            ]}
+        ]},
+        { "name": "memory", "description": "Inspect or correct scoped memory", "options": [
+            { "type": 1, "name": "show", "description": "Show your and this channel's visible memories" },
+            { "type": 1, "name": "forget", "description": "Forget a memory", "options": [
+                { "type": 3, "name": "id", "description": "Memory id", "required": true }
+            ]},
+            { "type": 1, "name": "correct", "description": "Correct a memory", "options": [
+                { "type": 3, "name": "id", "description": "Memory id", "required": true },
+                { "type": 3, "name": "text", "description": "Complete corrected note", "required": true }
             ]}
         ]},
         { "name": "purpose", "description": "This channel's purpose for the worker", "options": [
@@ -496,6 +539,15 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
     let cmd = data["name"].as_str().unwrap_or("");
     let sub = data["options"][0]["name"].as_str().unwrap_or("");
     let channel_id = d["channel_id"].as_str().unwrap_or("");
+    let caller_id = d["member"]["user"]["id"].as_str().or_else(|| d["user"]["id"].as_str()).unwrap_or("");
+    let memory_context = crate::memory::RunContext {
+        provider: "discord".into(),
+        channel_id: Some(channel_id.to_string()).filter(|s| !s.is_empty()),
+        user_id: Some(caller_id.to_string()).filter(|s| !s.is_empty()),
+        message_id: None,
+        role: role.to_string(),
+        is_dm: d["guild_id"].as_str().is_none(),
+    };
     let arg = |name: &str| -> String {
         data["options"][0]["options"]
             .as_array()
@@ -581,6 +633,89 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
                 "I'll now respond here **only when @mentioned**.".into()
             }
         }
+        ("channel", "memory") => {
+            if rank < 1 {
+                return denied("trusted participants");
+            }
+            let state = arg("state");
+            let enabled = match state.as_str() {
+                "on" => true,
+                "off" => false,
+                _ => return "Memory state must be `on` or `off`.".into(),
+            };
+            set_channel_memory(channel_id, enabled);
+            format!("Memory is now **{}** in this channel.", if enabled { "on" } else { "off" })
+        }
+        ("channel", "memory-inferred") => {
+            if rank < 1 {
+                return denied("trusted participants");
+            }
+            let state = arg("state");
+            let enabled = match state.as_str() {
+                "auto" => true,
+                "review" => false,
+                _ => return "Inferred memory must be `auto` or `review`.".into(),
+            };
+            set_channel_memory_inferred_auto(channel_id, enabled);
+            format!("Inferred channel memories now require **{}**.", if enabled { "no review" } else { "review" })
+        }
+        ("channel", "memory-kinds") => {
+            if rank < 1 {
+                return denied("trusted participants");
+            }
+            let value = arg("kinds");
+            match crate::cmd::channel::parse_memory_kinds(&value) {
+                Ok(kinds) => {
+                    set_channel_memory_allowed_kinds(channel_id, kinds.clone());
+                    format!("Channel memory kinds: **{}**.", kinds.map(|v| v.join(", ")).unwrap_or_else(|| "default".into()))
+                }
+                Err(e) => format!("Could not set memory kinds: {e}"),
+            }
+        }
+        ("channel", "memory-retention") => {
+            if rank < 1 {
+                return denied("trusted participants");
+            }
+            let value = arg("days");
+            let days = if value == "default" {
+                None
+            } else {
+                match value.parse::<u64>().ok().filter(|n| *n > 0) {
+                    Some(days) => Some(days),
+                    None => return "Retention must be `default` or a positive number of days.".into(),
+                }
+            };
+            set_channel_memory_retention_days(channel_id, days);
+            format!("Channel memory retention: **{}**.", days.map(|n| format!("{n} days")).unwrap_or_else(|| "default".into()))
+        }
+        ("memory", "show") => {
+            let notes = crate::memory::visible_in_context(worker, &memory_context);
+            if notes.is_empty() {
+                "No visible memories about you or this channel.".into()
+            } else {
+                let lines: Vec<String> = notes
+                    .iter()
+                    .take(20)
+                    .map(|n| format!("• `{}` [{} / {}] {}", n.id, n.scope.as_str(), n.status(), n.note))
+                    .collect();
+                format!("Visible memories:\n{}", lines.join("\n"))
+            }
+        }
+        ("memory", "forget") => {
+            let id = arg("id");
+            match crate::memory::participant_mutate(worker, "forget", &id, None, &memory_context) {
+                Ok(()) => format!("Forgot `{id}`."),
+                Err(e) => format!("Could not forget `{id}`: {e}"),
+            }
+        }
+        ("memory", "correct") => {
+            let id = arg("id");
+            let text = arg("text");
+            match crate::memory::participant_mutate(worker, "correct", &id, Some(&text), &memory_context) {
+                Ok(()) => format!("Corrected `{id}`."),
+                Err(e) => format!("Could not correct `{id}`: {e}"),
+            }
+        }
         ("purpose", "show") => {
             if rank < 1 {
                 return denied("trusted participants");
@@ -633,15 +768,41 @@ pub struct ChannelSettings {
     /// "all" (wake on every message) | "mention" (wake only on @mention/DM).
     #[serde(default = "default_mode")]
     pub mode: String,
+    /// Channel-local memory controls may only make the worker policy stricter.
+    #[serde(default = "default_memory_enabled")]
+    pub memory_enabled: bool,
+    #[serde(default)]
+    pub memory_recall_max_notes: Option<usize>,
+    #[serde(default)]
+    pub memory_recall_char_budget: Option<usize>,
+    #[serde(default)]
+    pub memory_inferred_auto: bool,
+    #[serde(default)]
+    pub memory_allowed_kinds: Option<Vec<String>>,
+    #[serde(default)]
+    pub memory_retention_days: Option<u64>,
 }
 
 fn default_mode() -> String {
     "all".to_string()
 }
 
+fn default_memory_enabled() -> bool {
+    true
+}
+
 impl Default for ChannelSettings {
     fn default() -> Self {
-        Self { trusted: false, mode: default_mode() }
+        Self {
+            trusted: false,
+            mode: default_mode(),
+            memory_enabled: true,
+            memory_recall_max_notes: None,
+            memory_recall_char_budget: None,
+            memory_inferred_auto: false,
+            memory_allowed_kinds: None,
+            memory_retention_days: None,
+        }
     }
 }
 
@@ -657,7 +818,11 @@ fn load_settings() -> HashMap<String, ChannelSettings> {
     std::fs::read_to_string(root().join("channels").join("trust.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<HashMap<String, bool>>(&s).ok())
-        .map(|m| m.into_iter().map(|(k, v)| (k, ChannelSettings { trusted: v, mode: default_mode() })).collect())
+        .map(|m| {
+            m.into_iter()
+                .map(|(k, v)| (k, ChannelSettings { trusted: v, ..Default::default() }))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -695,6 +860,62 @@ pub fn set_channel_mode(channel_id: &str, mode: &str) {
     let mut m = load_settings();
     let e = m.entry(channel_id.to_string()).or_default();
     e.mode = mode.to_string();
+    save_settings(&m);
+}
+
+pub fn channel_memory_enabled(channel_id: &str) -> bool {
+    load_settings().get(channel_id).map(|s| s.memory_enabled).unwrap_or(true)
+}
+
+pub fn channel_memory_recall_max_notes(channel_id: &str) -> Option<usize> {
+    load_settings().get(channel_id).and_then(|s| s.memory_recall_max_notes)
+}
+
+pub fn channel_memory_recall_char_budget(channel_id: &str) -> Option<usize> {
+    load_settings().get(channel_id).and_then(|s| s.memory_recall_char_budget)
+}
+
+pub fn channel_memory_inferred_auto(channel_id: &str) -> bool {
+    load_settings().get(channel_id).map(|s| s.memory_inferred_auto).unwrap_or(false)
+}
+
+pub fn channel_memory_allowed_kinds(channel_id: &str) -> Option<Vec<String>> {
+    load_settings().get(channel_id).and_then(|s| s.memory_allowed_kinds.clone())
+}
+
+pub fn channel_memory_retention_days(channel_id: &str) -> Option<u64> {
+    load_settings().get(channel_id).and_then(|s| s.memory_retention_days)
+}
+
+pub fn set_channel_memory_inferred_auto(channel_id: &str, enabled: bool) {
+    let mut m = load_settings();
+    m.entry(channel_id.to_string()).or_default().memory_inferred_auto = enabled;
+    save_settings(&m);
+}
+
+pub fn set_channel_memory_allowed_kinds(channel_id: &str, kinds: Option<Vec<String>>) {
+    let mut m = load_settings();
+    m.entry(channel_id.to_string()).or_default().memory_allowed_kinds = kinds;
+    save_settings(&m);
+}
+
+pub fn set_channel_memory_retention_days(channel_id: &str, days: Option<u64>) {
+    let mut m = load_settings();
+    m.entry(channel_id.to_string()).or_default().memory_retention_days = days;
+    save_settings(&m);
+}
+
+pub fn set_channel_memory(channel_id: &str, enabled: bool) {
+    let mut m = load_settings();
+    m.entry(channel_id.to_string()).or_default().memory_enabled = enabled;
+    save_settings(&m);
+}
+
+pub fn set_channel_memory_budget(channel_id: &str, notes: Option<usize>, chars: Option<usize>) {
+    let mut m = load_settings();
+    let entry = m.entry(channel_id.to_string()).or_default();
+    entry.memory_recall_max_notes = notes;
+    entry.memory_recall_char_budget = chars;
     save_settings(&m);
 }
 

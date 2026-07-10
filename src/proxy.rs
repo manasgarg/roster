@@ -178,13 +178,13 @@ fn empty() -> Body {
 
 // ── identity ────────────────────────────────────────────────────────────────
 
-/// Resolve the call's subject from the CONNECT's Proxy-Authorization. The
+/// Resolve the call's subject and run from the CONNECT's Proxy-Authorization. The
 /// trusted runner sets `HTTP(S)_PROXY=http://<token>@…` and registers
 /// `~/.roster/identity/<token>.json = {subject}` (off the box mount), so the box
 /// can present only its own random token — it can't claim another worker's
 /// identity. Unknown/absent ⇒ "org" (host-side tools with no creds).
-fn resolve_subject(proxy_auth: Option<&hyper::header::HeaderValue>) -> String {
-    let default = || "org".to_string();
+fn resolve_identity(proxy_auth: Option<&hyper::header::HeaderValue>) -> (String, String) {
+    let default = || ("org".to_string(), String::new());
     let Some(b64) = proxy_auth
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Basic "))
@@ -206,7 +206,11 @@ fn resolve_subject(proxy_auth: Option<&hyper::header::HeaderValue>) -> String {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.get("subject").and_then(|s| s.as_str()).map(String::from))
+        .and_then(|v| {
+            let subject = v.get("subject")?.as_str()?.to_string();
+            let run_id = v.get("run_id").and_then(Value::as_str).unwrap_or("").to_string();
+            Some((subject, run_id))
+        })
         .unwrap_or_else(default)
 }
 
@@ -246,7 +250,7 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
         let authority = req.uri().authority().map(|a| a.to_string()).unwrap_or_default();
         let host = authority.split(':').next().unwrap_or("").to_string();
         let port: u16 = authority.split(':').nth(1).and_then(|p| p.parse().ok()).unwrap_or(443);
-        let subject = resolve_subject(req.headers().get(hyper::header::PROXY_AUTHORIZATION));
+        let (subject, run_id) = resolve_identity(req.headers().get(hyper::header::PROXY_AUTHORIZATION));
 
         // Tunnel escape hatch: judge host+port only; if the rule says tunnel,
         // raw-pipe without terminating (host-only visibility).
@@ -289,7 +293,7 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
                 Err(_) => return,
             };
             let io = TokioIo::new(tls_stream);
-            let svc = service_fn(move |r| handle(r, "https", host.clone(), subject.clone(), client.clone()));
+            let svc = service_fn(move |r| handle(r, "https", host.clone(), subject.clone(), run_id.clone(), client.clone()));
             let _ = server_http1::Builder::new().serve_connection(io, svc).with_upgrades().await;
         });
         Ok(Response::new(empty()))
@@ -299,8 +303,8 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
         Ok(resp)
     } else if req.uri().scheme_str() == Some("http") {
         let host = req.uri().host().unwrap_or("").to_string();
-        let subject = resolve_subject(req.headers().get(hyper::header::PROXY_AUTHORIZATION));
-        handle(req, "http", host, subject, client).await
+        let (subject, run_id) = resolve_identity(req.headers().get(hyper::header::PROXY_AUTHORIZATION));
+        handle(req, "http", host, subject, run_id, client).await
     } else {
         let mut resp = Response::new(full("{\"error\":\"not a proxy request\"}"));
         *resp.status_mut() = StatusCode::BAD_REQUEST;
@@ -369,7 +373,7 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
 /// A decrypted (or plain-http) request: judge, then forward. WebSocket upgrades
 /// are tunneled (see forward_websocket); everything else is a buffered forward
 /// with the response streamed back.
-async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: String, client: UpstreamClient) -> Result<Response<Body>, BErr> {
+async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: String, run_id: String, client: UpstreamClient) -> Result<Response<Body>, BErr> {
     // The action host is served internally: parse the envelope and let the
     // action layer attribute, authorize, and execute-or-gate it. Never forwarded.
     if host == crate::action::ACTION_HOST {
@@ -377,7 +381,7 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: S
         let method = parts.method.as_str().to_string();
         let path = parts.uri.path().to_string();
         let body = incoming.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
-        return Ok(crate::action::handle_action(&subject, &method, &path, &body).await);
+        return Ok(crate::action::handle_action(&subject, &run_id, &method, &path, &body).await);
     }
 
     let headers = lower_headers(req.headers());

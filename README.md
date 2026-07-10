@@ -21,7 +21,10 @@ credential injection + OAuth refresh, budget metering), governed web
 search/fetch, and the full supervisor + gate machinery — a task queue, the
 `supervise` dispatch loop, an approval desk with an earned trust ladder,
 schedule triggers, continuations, and the code-task worktree→gated-PR flow
-(see `docs/supervisor-spec.md`).
+(see `docs/supervisor-spec.md`). Discord channels now have warm conversation
+sessions, per-channel purpose and behavior controls, and scoped worker/channel/
+user memory with governed writes, bounded recall, participant correction, and
+owner inspection (see `docs/memory-spec.md`).
 
 ## Toolchain
 
@@ -30,7 +33,8 @@ The language boundary is the trust boundary (see D20 in the handoff):
 - **The whole trusted host-side is Rust** — one `roster` binary (crate at the
   repo root) with subcommands: `serve` (the gateway — TLS termination, judge,
   vault, refresh, and the action host), `supervise` (the orchestration loop),
-  `queue` / `gates` / `relay` (task queue, approval desk, inbound edge), plus
+  `queue` / `gates` / `relay` (task queue, approval desk, inbound edge),
+  `listen` / `channel` / `notes` (Discord and memory control), plus
   `create` / `deploy` / `box` / `connect` / `vault-sync`. `cargo build`, `cargo test`.
 - **TypeScript lives only inside the untrusted box** — pi (the engine,
   vendored) and its extensions (`box/extensions/`: web search/fetch, and the
@@ -49,13 +53,13 @@ providers.json    provider registry (login/refresh/inject), read by CLI + gatewa
 org.toml          OWNER-ONLY: shared grants, actions, trust, caps + metering
 workers/<name>/   OWNER-ONLY worker specs (worker.toml) overlaying org.toml
 docs/             design docs, the implementation handoff, per-increment specs
-runs/  queue/  gates/  journal/   runtime state (all gitignored)
+runs/  queue/  gates/  journal/  channels/  notes/   runtime state (all gitignored)
 ```
 
 The Rust modules under `src/`: the serve path (`proxy`, `tls`, `ca`, `judge`),
 credentials (`vault`, `providers`, `registry`), budgets (`budget`, `ledger`,
 `scope`), the supervisor/governance layer (`action`, `gate`, `trust`, `queue`,
-`trigger`, `journal`), the schema, and the subcommands in `src/cmd/`.
+`trigger`, `journal`, `memory`), the schema, and the subcommands in `src/cmd/`.
 
 ## Run
 
@@ -67,7 +71,7 @@ compiled by `deploy`:
 ```
 docker build -t roster-box box/          # once
 roster create yuko                        # scaffold workers/yuko/worker.toml
-roster deploy                             # compile specs → runs/compiled/{policy,budget}.json
+roster deploy                             # compile specs → runs/compiled/{policy,budget,actions,triggers,memory}.json
 roster serve &                            # the box's only door out (gateway)
 roster box --worker yuko "write pong to answer.txt"
 ```

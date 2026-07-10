@@ -66,21 +66,54 @@ name = "code-change"
 executor = "git-pr"
 trust = "gate"
 
-# The worker may PROPOSE a change to its own charter; the owner must approve it.
-# The "charter" executor is hard-gated in code (D10) — the trust ladder never
-# promotes a charter edit to auto, no matter what trust rules say.
-# The worker may PROPOSE edits to its own identity (admin-approved) or a channel's
-# purpose (trusted-approved); both executors are hard-gated in code (D10) — the
-# trust ladder never promotes a self-edit to auto.
-[[action]]
-name = "identity-edit"
-executor = "identity"
-trust = "gate"
-
+# A channel's trusted participants may refine its purpose. Identity remains an
+# owner-only file and is not exposed as a worker tool.
 [[action]]
 name = "purpose-edit"
 executor = "purpose"
 trust = "gate"
+
+# Scoped memory. The note executor applies its own scope/actor checks and may
+# raise worker-wide or inferred writes to a gate regardless of this base trust.
+[[action]]
+name = "remember"
+executor = "note"
+trust = "auto"
+
+[[action]]
+name = "forget"
+executor = "note"
+trust = "auto"
+
+[[action]]
+name = "memory-correct"
+executor = "note"
+trust = "auto"
+
+[[action]]
+name = "memory-disable"
+executor = "note"
+trust = "auto"
+
+[[action]]
+name = "memory-enable"
+executor = "note"
+trust = "auto"
+
+[[action]]
+name = "memory-pin"
+executor = "note"
+trust = "auto"
+
+[[action]]
+name = "memory-unpin"
+executor = "note"
+trust = "auto"
+
+[[action]]
+name = "memory-preferences"
+executor = "note"
+trust = "auto"
 
 # Reply in a Discord channel. Gated by default; a trust rule can auto a reply in
 # a specific channel (e.g. the owner's DM) once earned.
@@ -88,6 +121,21 @@ trust = "gate"
 name = "discord-send"
 executor = "discord"
 trust = "gate"
+
+# Fleet-wide memory defaults. A worker may make these stricter or smaller in
+# workers/<name>/worker.toml with its own [memory] table.
+[memory]
+enabled = true
+allowed_kinds = ["preference", "fact", "decision", "research", "interaction"]
+max_note_chars = 2000
+max_notes_per_scope = 100
+recall_max_notes = 20
+recall_char_budget = 6000
+# max_retention_days = 365  # optional hard maximum; unset keeps durable notes
+allow_inferred_user_auto = false
+allow_worker_auto = false
+cross_channel_user_recall = false
+user_memory_in_groups = false
 
 [budget]
 currencies = ["model_calls", "searches", "fetches", "usd"]

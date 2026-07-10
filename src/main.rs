@@ -17,6 +17,7 @@ mod gate;
 mod journal;
 mod judge;
 mod ledger;
+mod memory;
 mod providers;
 mod proxy;
 mod queue;
@@ -53,6 +54,7 @@ async fn main() {
         "supervise" => cmd::supervise::run(&args[2..]).await,
         "relay" => cmd::relay::run(&args[2..]),
         "listen" => cmd::listen::run(&args[2..]).await,
+        "notes" => cmd::notes::run(&args[2..]),
         "channel" => cmd::channel::run(&args[2..]),
         "session" => cmd::session::run(&args[2..]).await,
         "help" | "--help" | "-h" => {
@@ -112,6 +114,8 @@ fn print_help() {
            supervise [--cap n] [--once]  dispatch queued tasks to the box\n  \
            relay --worker <n> \"<msg>\"    turn an inbound message into a task\n  \
            listen --worker <n>          run the Discord gateway (inbound)\n  \
+           channel [ls|trust|mode|memory]  manage channel behavior\n  \
+           notes [ls|show|rm|correct|pin|explain]  inspect and repair memory\n  \
            gates [ls|show|approve|deny] approval desk for proposed actions\n\
          {providers}\n  \
            vault-sync                  import an existing pi login into the vault"

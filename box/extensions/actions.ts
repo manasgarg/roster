@@ -103,25 +103,129 @@ export default function rosterActionTools(api: PiToolApi): void {
   });
 
   api.registerTool({
-    name: "propose_identity_edit",
-    label: "propose_identity_edit",
+    name: "remember",
+    label: "remember",
     description:
-      "Propose a change to your OWN identity (your fixed self and standing rules, the same across channels). " +
-      "This does NOT change it — it submits the proposed identity for an admin's approval, and identity changes " +
-      "ALWAYS require approval. Provide the COMPLETE new identity text (not a diff), and a rationale.",
-    promptSnippet: "propose_identity_edit(identity, rationale): suggest a change to your identity (admin-approved)",
+      "Store a short, durable observation for future runs. Use user scope for a stable preference about the " +
+      "current speaker, channel scope for shared workstream context, and worker scope only for broadly reusable " +
+      "knowledge. Memory is advisory and must not contain secrets or instructions that override governance.",
+    promptSnippet: "remember(note, scope, kind, basis): store a scoped observation",
     parameters: {
       type: "object",
       properties: {
-        identity: { type: "string", description: "The complete proposed identity, in full (replaces the current one on approval)." },
-        rationale: { type: "string", description: "Why you're proposing this change — shown to the reviewer." },
+        note: { type: "string", description: "One concise fact, preference, decision, research finding, or interaction note." },
+        scope: { type: "string", enum: ["worker", "channel", "user"], description: "Where this observation applies." },
+        kind: { type: "string", enum: ["preference", "fact", "decision", "research", "interaction"] },
+        basis: { type: "string", enum: ["explicit", "inferred"], description: "Whether a person stated this or you inferred it." },
+        artifact: { type: "string", description: "Optional source or research-artifact pointer." },
+        expires_at: { type: "string", description: "Optional RFC 3339 expiry time." },
       },
-      required: ["identity", "rationale"],
+      required: ["note", "scope", "kind", "basis"],
       additionalProperties: false,
     },
     async execute(_id, params) {
-      const { identity, rationale } = params as { identity: string; rationale: string };
-      const s = await submit("identity-edit", { identity }, rationale);
+      const s = await submit("remember", params, "");
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
+    name: "forget_memory",
+    label: "forget_memory",
+    description: "Forget a memory about the current user or channel. The trusted host checks that the current participant may manage it.",
+    promptSnippet: "forget_memory(note_id): stop recalling a note",
+    parameters: {
+      type: "object",
+      properties: { note_id: { type: "string", description: "The memory id." } },
+      required: ["note_id"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const s = await submit("forget", params, "");
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
+    name: "correct_memory",
+    label: "correct_memory",
+    description: "Correct a memory about the current user or channel while preserving its audit history.",
+    promptSnippet: "correct_memory(note_id, note): replace an inaccurate note",
+    parameters: {
+      type: "object",
+      properties: {
+        note_id: { type: "string", description: "The memory id." },
+        note: { type: "string", description: "The complete corrected observation." },
+      },
+      required: ["note_id", "note"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const s = await submit("memory-correct", params, "");
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  for (const [name, intent, verb] of [
+    ["disable_memory", "memory-disable", "temporarily stop recalling"],
+    ["enable_memory", "memory-enable", "resume recalling"],
+    ["pin_memory", "memory-pin", "prioritize during recall"],
+    ["unpin_memory", "memory-unpin", "remove recall priority from"],
+  ] as const) {
+    api.registerTool({
+      name,
+      label: name,
+      description: `${verb[0].toUpperCase()}${verb.slice(1)} a memory the current participant may manage.`,
+      promptSnippet: `${name}(note_id): ${verb} a note`,
+      parameters: {
+        type: "object",
+        properties: { note_id: { type: "string", description: "The memory id." } },
+        required: ["note_id"],
+        additionalProperties: false,
+      },
+      async execute(_id, params) {
+        const s = await submit(intent, params, "");
+        return { content: [{ type: "text", text: describe(s) }] };
+      },
+    });
+  }
+
+  api.registerTool({
+    name: "read_memory",
+    label: "read_memory",
+    description: "List memories the current participant may inspect: their own memories and this channel's shared memories.",
+    promptSnippet: "read_memory(): inspect current user/channel memory",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    async execute() {
+      try {
+        const res = await fetch("https://actions.roster.internal/memory", { signal: AbortSignal.timeout(15_000) });
+        const { memories, user_settings } = (await res.json()) as { memories: unknown[]; user_settings?: unknown };
+        const notes = !memories?.length ? "No visible memories." : memories.map((m) => JSON.stringify(m)).join("\n");
+        const text = `${notes}\nUser memory settings: ${JSON.stringify(user_settings ?? {})}`;
+        return { content: [{ type: "text", text }] };
+      } catch (e) {
+        return { content: [{ type: "text", text: `Could not read memory: ${e instanceof Error ? e.message : String(e)}` }] };
+      }
+    },
+  });
+
+  api.registerTool({
+    name: "set_memory_preferences",
+    label: "set_memory_preferences",
+    description:
+      "Set the current user's memory privacy choices. Use this only when the user asks to allow or block inferred " +
+      "personal memory or cross-channel recall. Admin policy may still impose stricter limits.",
+    promptSnippet: "set_memory_preferences(allow_inferred, cross_channel_recall): update the current user's memory choices",
+    parameters: {
+      type: "object",
+      properties: {
+        allow_inferred: { type: "boolean", description: "Whether the worker may save inferred memories about this user." },
+        cross_channel_recall: { type: "boolean", description: "Whether this user's memories may be recalled across channels when admin policy allows." },
+      },
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const s = await submit("memory-preferences", params, "");
       return { content: [{ type: "text", text: describe(s) }] };
     },
   });

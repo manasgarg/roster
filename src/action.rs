@@ -99,37 +99,64 @@ fn reply(status: StatusCode, v: Value) -> Response<Body> {
 /// Route a request to the action host. `worker` is resolved from the identity
 /// token. POST /submit proposes an action; GET /gates and /journal are the
 /// worker's read-only view of its own state (the box's cross-run awareness).
-pub async fn handle_action(worker: &str, method: &str, path: &str, body: &[u8]) -> Response<Body> {
+pub async fn handle_action(worker: &str, trusted_run_id: &str, method: &str, path: &str, body: &[u8]) -> Response<Body> {
     match (method, path) {
-        ("POST", "/submit") => submit(worker, body).await,
+        ("POST", "/submit") => submit(worker, trusted_run_id, body).await,
         ("GET", "/gates") => {
             let gates: Vec<Value> = crate::gate::for_worker(worker).iter().map(|g| g.summary()).collect();
             reply(StatusCode::OK, json!({ "gates": gates }))
         }
         ("GET", "/journal") => reply(StatusCode::OK, json!({ "events": journal::tail(worker, 30) })),
+        ("GET", "/memory") => {
+            let memories = crate::memory::visible_to_current_actor(worker, trusted_run_id);
+            let user_settings = crate::memory::current_user_settings(worker, trusted_run_id);
+            journal::append(
+                worker,
+                trusted_run_id,
+                "memory-read",
+                json!({ "note_ids": memories.iter().map(|n| n.id.as_str()).collect::<Vec<_>>() }),
+            );
+            reply(StatusCode::OK, json!({ "memories": memories, "user_settings": user_settings }))
+        }
         _ => reply(StatusCode::NOT_FOUND, json!({ "status": "error", "error": "unknown action endpoint" })),
     }
 }
 
 /// Handle one action envelope: attribute, authorize, and either execute now or
 /// file a gate.
-async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
+async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> {
     let env: Envelope = match serde_json::from_slice(body) {
         Ok(e) => e,
         Err(e) => return reply(StatusCode::BAD_REQUEST, json!({ "status": "error", "error": format!("bad envelope: {e}") })),
     };
+    let run_id = if trusted_run_id.is_empty() { env.run_id.clone() } else { trusted_run_id.to_string() };
     let policy = load_action_policy();
     let Some(grant) = grant_for(&policy, worker, &env.intent) else {
-        journal::append(worker, &env.run_id, "action-refused", json!({ "intent": env.intent, "reason": "no action grant in scope" }));
+        journal::append(worker, &run_id, "action-refused", json!({ "intent": env.intent, "reason": "no action grant in scope" }));
         audit(worker, &env.intent, "refused", None, None);
         return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": format!("no action grant for \"{}\"", env.intent) }));
     };
     let grant = grant.clone();
+    if grant.executor == "note" && trusted_run_id.is_empty() {
+        journal::append(worker, &run_id, "action-refused", json!({ "intent": env.intent, "reason": "memory action has no trusted run context" }));
+        audit(worker, &env.intent, "refused", None, None);
+        return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": "memory action has no trusted run context" }));
+    }
 
-    journal::append(worker, &env.run_id, "action-proposed", json!({ "intent": env.intent, "rationale": env.rationale, "run_id": env.run_id }));
+    journal::append(worker, &run_id, "action-proposed", json!({ "intent": env.intent, "rationale": env.rationale, "run_id": run_id }));
 
     let (executed, denied) = gate::history(worker, &env.intent);
-    let level = if grant.executor == "identity" {
+    let level = if grant.executor == "note" {
+        let context = crate::memory::load_run_context(&run_id);
+        match crate::memory::action_trust(worker, &env.intent, &env.payload, &context) {
+            Ok(level) => level.to_string(),
+            Err(reason) => {
+                journal::append(worker, &run_id, "action-refused", json!({ "intent": env.intent, "reason": reason }));
+                audit(worker, &env.intent, "refused", None, None);
+                return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": reason }));
+            }
+        }
+    } else if grant.executor == "identity" {
         // Identity is worker-wide — always hard-gated (D10).
         "gate".to_string()
     } else if (grant.executor == "discord" || grant.executor == "purpose") && discord_channel_trusted(&env.payload) {
@@ -141,14 +168,14 @@ async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
         trust::evaluate(worker, &env.intent, &env.payload, &grant.trust, &policy.trust, executed, denied)
     };
     if level == "auto" {
-        match run_executor(&grant.executor, worker, &env.intent, &env.payload, &env.run_id).await {
+        match run_executor(&grant.executor, worker, &env.intent, &env.payload, &run_id).await {
             Ok(result) => {
-                journal::append(worker, &env.run_id, "executed", json!({ "intent": env.intent, "auto": true, "result": result }));
+                journal::append(worker, &run_id, "executed", json!({ "intent": env.intent, "auto": true, "result": result }));
                 audit(worker, &env.intent, "auto-executed", None, Some(&result));
                 reply(StatusCode::OK, json!({ "status": "done", "result": result }))
             }
             Err(e) => {
-                journal::append(worker, &env.run_id, "failed", json!({ "intent": env.intent, "auto": true, "error": e }));
+                journal::append(worker, &run_id, "failed", json!({ "intent": env.intent, "auto": true, "error": e }));
                 audit(worker, &env.intent, "failed", None, None);
                 reply(StatusCode::OK, json!({ "status": "error", "error": e }))
             }
@@ -161,7 +188,7 @@ async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
             executor: grant.executor.clone(),
             payload: env.payload.clone(),
             rationale: env.rationale.clone(),
-            run_id: env.run_id.clone(),
+            run_id: run_id.clone(),
             task_id: env.task_id.clone(),
             state: "pending".into(),
             filed_at: gate::now(),
@@ -175,7 +202,7 @@ async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
         if let Err(e) = gate::save(&g) {
             return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({ "status": "error", "error": format!("could not file gate: {e}") }));
         }
-        journal::append(worker, &env.run_id, "gate-filed", json!({ "gate_id": g.id, "intent": env.intent, "rationale": env.rationale }));
+        journal::append(worker, &run_id, "gate-filed", json!({ "gate_id": g.id, "intent": env.intent, "rationale": env.rationale }));
         audit(worker, &env.intent, "gated", Some(&g.id), None);
         reply(StatusCode::ACCEPTED, json!({ "status": "pending", "gate_id": g.id, "message": "held for human approval" }))
     }
@@ -288,6 +315,7 @@ pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &
         "identity" => exec_identity(worker, payload),
         "purpose" => exec_purpose(payload),
         "discord" => exec_discord(worker, payload).await,
+        "note" => crate::memory::execute(worker, intent, payload, run_id),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
 }

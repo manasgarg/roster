@@ -1,134 +1,365 @@
-# Memory — per-channel notes, recalled in context (spec)
+# Memory — scoped notes with governed recall (spec)
 
-**Status: spec — not yet implemented.** Realizes handoff §3.4, refined: memory is
-what the worker has **learned in a channel**, scoped **per channel** (a DM is a
-per-person channel, so this covers people too). It sits alongside purpose in the
-channel store, is distinct from purpose, and does **not** touch identity. Builds
-on the identity/purpose/gate machinery already shipped.
+**Status: implemented.** Memory is what a worker has learned from
+its work and interactions. It is descriptive, scoped, inspectable, and
+correctable. It helps the worker resume work and adapt to people without changing
+its identity, purpose, capabilities, or gates.
 
-## The three tiers (and where memory fits)
+This spec defines three memory scopes:
 
-- **Identity** (`identity.md`) — the worker's **constitution**: who it is, its
-  standing rules. Owner-authored, changed **rarely and only by an admin**, never
-  by the worker. Sacred, high bar. *Not* a target for learning.
-- **Purpose** (`channels/<id>/purpose.md`) — its **assigned role** in a channel,
-  set *for* it by trusted humans. **Directive** — "what should I do here?"
-- **Memory** (`channels/<id>/notes.jsonl`) — what it has **learned** in this
-  channel, accumulated *by* it from experience. **Descriptive** — "what do I know
-  about this place and the people in it?"
+1. **Worker** — knowledge that applies across the worker's conversations.
+2. **Channel** — shared context that applies only in one channel or workstream.
+3. **User** — knowledge about one person across their interactions with the
+   worker.
 
-Memory ≠ purpose: purpose is a role a human assigns; memory is facts the worker
-observes. Both are per-channel and co-located, but one is prescriptive and one is
-learned. Memory ≠ identity: identity is the fixed constitution; **learning goes
-into memory, never into identity.**
+In a DM, the user is the only participant and the DM acts as their channel. The
+channel and user scopes remain distinct: the channel holds conversation or
+workstream context; the user scope holds durable facts and preferences about the
+person.
 
-## Goal (concrete)
+## Memory is not authority
 
-yuko remembers per channel. What it learns talking to you in your DM stays in that
-DM's memory; what it learns in #eng stays in #eng. It carries context forward
-within a channel without bleeding it across channels.
+Roster has three different kinds of context:
 
+- **Identity** (`identity.md`) is the worker's constitution. It is owner-authored,
+  changed rarely, and never learned or edited by the worker.
+- **Purpose** (`purpose.md`, per channel) is the role assigned to the worker by a
+  trusted human. It is directive: "what should I do here?"
+- **Memory** is learned context. It is descriptive: "what have I learned that may
+  help here?"
+
+Memory is always advisory and untrusted. A memory cannot grant a capability,
+lift a gate, change a budget, override identity or purpose, or authorize an
+action. There is no automatic promotion path from memory into identity, purpose,
+or a procedure. Such changes use their existing trusted paths.
+
+## The three scopes
+
+### Worker memory
+
+Worker memory applies across the worker's runs. Examples include a reusable
+research finding, a recurring lesson, or a pointer to a maintained synthesis.
+
+Worker memory has the widest blast radius. The owner/admin controls its write,
+retention, and recall policy. The worker may write or propose worker memories
+only when that policy allows it. The recommended default is review for inferred
+worker-wide memories.
+
+Worker memory is not a place for standing instructions. A learned procedure may
+be proposed for promotion through a trusted admin path, but remains an advisory
+observation until then.
+
+### Channel memory
+
+Channel memory is shared context for one channel or workstream. Examples include:
+
+- a decision made by the channel;
+- the current research question and open questions;
+- local terminology;
+- reporting conventions for that channel;
+- a pointer to the latest channel research brief.
+
+A channel steward controls channel policy and accepted shared memories. Ordinary
+participants may create explicit notes about the current conversation or propose
+shared notes. They cannot change the global memory policy or memories belonging
+to another channel.
+
+Until channel-steward roles exist, the owner/admin performs steward operations.
+
+### User memory
+
+User memory contains durable context about a person, such as an explicitly stated
+communication preference. It follows the user across channels where policy
+permits cross-channel recall.
+
+The person controls memories about themselves: they can inspect, correct,
+disable, or forget them. A channel steward does not gain access to all of a
+person's memories merely because that person is in the channel.
+
+Inferred user memory is more error-prone than explicit memory. Every user note
+records whether it came from an explicit statement or an inference. The
+recommended default is to remember explicit preferences automatically and
+require repeated evidence or review for inferred personal facts.
+
+## DMs
+
+A DM run recalls:
+
+```text
+worker memory
++ DM channel memory
++ the DM user's memory
 ```
-(in your DM) you: "keep replies to a sentence or two"
-yuko: (remembers, in this channel) "owner prefers terse replies"
-… next time in this DM, unprompted, it's terse — but #eng is unaffected.
+
+The two narrower scopes serve different purposes:
+
+```text
+user:discord:123
+  "Prefers concise status reports."
+
+channel:discord:456
+  "This conversation is researching agent memory for Roster."
 ```
 
-## Scope: per channel
+Even if an adapter exposes a DM as a user-addressed channel, Roster preserves
+both scope meanings. This prevents every fact mentioned in a DM from becoming a
+permanent fact about the user.
 
-- Memory is keyed by **channel** — `channels/<channel_id>/notes.jsonl`, beside that
-  channel's `purpose.md` and `messages.jsonl`. A **DM channel** is 1:1, so its
-  memory is effectively memory about that person; a **group channel**'s memory is
-  about that channel's context and the people in it.
-- **Recall is per channel.** A run for a channel conversation is given **that
-  channel's notes** — never another channel's. So memory can't leak across
-  channels.
+## Research memory and research material
 
-## Notes
+Memory is the small, recalled layer. It does not replace the worker's research
+filing system.
 
-- Each entry `{id, ts, author?, note}` in `channels/<channel_id>/notes.jsonl`
-  (append-only, gitignored runtime state, owner-visible/prunable). The box's repo
-  mount is read-only, so the worker never writes here directly.
-- **`remember(channel_id, note)`** — a box tool → a `remember` action, executor
-  `note`, **trust auto** (jotting is low-stakes, advisory). The worker passes its
-  current `channel_id` (as it does for `discord_send`). The trusted-side executor
-  appends the note; journaled/audited like any action.
-- **`forget(channel_id, note_id)`** — a box tool → a `forget` action (auto).
-- **CLI**: `roster notes ls <channel_id>` (review), `rm <channel_id> <note_id>`
-  (prune), `add <channel_id> "<note>"` (owner-authored memory).
+- Raw sources, extracted material, long notes, finished briefs, and detailed
+  evidence remain in the cache/store described by the filing system.
+- Memory holds short claims, decisions, open questions, preferences, and pointers
+  to those artifacts.
+- Research memories include provenance. A synthesis may be regenerated; its
+  evidence chain must not be lost.
+
+For v1, a research project maps to a channel. If projects later span channels,
+add a project scope rather than putting project state into worker memory.
+
+## Stored record
+
+Memory is stored per worker, off the box, as an append-only event log:
+`notes/<worker>.jsonl`. The box's repo mount remains read-only; the worker never
+writes this file directly.
+
+A created note has at least:
+
+```json
+{
+  "op": "remember",
+  "id": "note_01J...",
+  "ts": "2026-07-10T12:00:00Z",
+  "scope": "user",
+  "scope_id": "discord:123",
+  "kind": "preference",
+  "note": "Prefers replies of one or two sentences.",
+  "basis": "explicit",
+  "source": {
+    "channel_id": "discord:456",
+    "message_id": "discord:789",
+    "author_id": "discord:123"
+  },
+  "expires_at": null
+}
+```
+
+Required fields and meanings:
+
+- `scope` is `worker`, `channel`, or `user`.
+- `scope_id` is absent for worker memory and is a provider-qualified stable ID
+  for channel and user memory.
+- `kind` is initially `preference`, `fact`, `decision`, `research`, or
+  `interaction`.
+- `basis` is `explicit` or `inferred`.
+- `source` identifies why the memory exists. System-generated research memories
+  may point to an artifact or run instead of a chat message.
+- `expires_at` supports temporary memory and retention policy.
+
+Display names are optional hints for people reviewing notes. They are never used
+as identity keys.
+
+Corrections, disabling, pinning, and forgetting are new events referring to the
+original note. They do not silently rewrite history. A `forget` tombstone removes
+the note from recall immediately; compaction can physically erase deleted content
+when required by retention or privacy policy.
+
+## Memory actions
+
+The box exposes governed actions rather than filesystem access:
+
+- `remember(note, scope?, scope_id?, kind?, basis?, source?)`
+- `forget(note_id)`
+- `correct(note_id, replacement)`
+- `disable(note_id)` / `enable(note_id)`
+- `pin(note_id)` / `unpin(note_id)`
+
+The trusted executor derives the worker, current channel, actor, and available
+subjects from the run envelope. Tool arguments do not grant access. For example,
+a model cannot gain access to another user's memory by supplying their ID.
+
+Safe defaults reduce tool-call ceremony:
+
+- An explicit preference about the current speaker defaults to user scope.
+- Shared conversation state defaults to the current channel.
+- Worker scope is never inferred merely because no user or channel was supplied;
+  it must be selected deliberately and allowed by admin policy.
+
+Every action is journaled and audited. Auto-approved note creation is permitted
+only within the configured write policy. Wider or sensitive writes may require
+review.
+
+## Authority and tuning
+
+Authority follows blast radius. Admin rules are hard limits; narrower scopes may
+be more restrictive but cannot relax them.
+
+### Owner/admin controls
+
+The owner/admin controls the memory system and worker-wide behavior:
+
+- allowed and prohibited memory kinds;
+- sensitive-data rules;
+- whether inferred memories are allowed or require review;
+- worker-scope writes and recall;
+- cross-channel user recall;
+- maximum note size, count, retention, and recall token budget;
+- ranking and consolidation mechanisms;
+- audit, storage, compaction, and deletion policy;
+- the set of channel-level options participants may change.
+
+### Channel-steward controls
+
+Within the admin limits, a channel steward controls:
+
+- whether memory is enabled for the channel;
+- which allowed note kinds are active;
+- whether inferred channel notes are automatic or reviewed;
+- shorter retention and smaller recall budgets;
+- accepted, pinned, or corrected shared notes;
+- channel research and reporting conventions;
+- the channel's recall profile.
+
+### Participant controls
+
+An ordinary participant may:
+
+- explicitly ask the worker to remember something about themselves;
+- choose whether that memory is user-wide or only shared in the current channel;
+- inspect, correct, disable, or forget memories about themselves;
+- opt out of inferred personal memory or cross-channel recall;
+- create or propose channel notes when channel policy permits;
+- ask which memories were used in a response.
+
+A participant cannot change another person's memory, another channel's memory,
+worker-wide policy, or the worker's identity, purpose, grants, gates, or budgets.
+
+### Precedence
+
+```text
+admin hard limits
+  → worker defaults
+    → channel policy
+      → participant choices about themselves
+        → worker inference
+```
+
+For privacy and safety, the more restrictive rule wins. For two advisory notes
+about the same subject, explicit beats inferred, a current scoped decision beats
+a broader default, and a correction beats the older note.
 
 ## Recall into runs
 
-The worker's context = **Identity → (this channel's Memory) → Purpose → recent
-conversation → the new message(s)**.
+The compiled context is:
 
-- **Session** (`session_system_prompt`): the channel's notes are included
-  alongside its purpose — so a warm session carries the channel's learned context.
-- **Non-channel tasks** (scheduled, code) have no channel and so no channel memory
-  in v1 (a general/worker-wide bucket could be added later if needed).
-- **Bounded**: v1 includes all of a channel's notes (kept small by pruning); cap or
-  rank later if one channel's memory grows large.
+```text
+Identity → Purpose → Memory → Briefing → Task
+```
 
-## Tuning memory — the owner's levers
+Memory is placed after authoritative context, clearly labeled as untrusted,
+advisory observations. The compiled context and selected note IDs are logged so
+"what did the worker see?" is answerable.
 
-Memory is meant to be **steered over time**, not set-and-forget. Five levers, from
-in-the-moment to structural:
+Recall is contextual:
 
-1. **Steer by talking** (primary) — in the channel: "remember I prefer terse
-   replies", "forget that", "actually it's X not Y". The worker uses its
-   `remember`/`forget` tools; most tuning happens in conversation, no CLI.
-2. **Inspect & prune** — `roster notes ls <channel>` / `rm <channel> <id>`, and
-   `/notes` in Discord, to review and clean up a channel's memory.
-3. **Author directly** — `roster notes add <channel> "<note>"`: put a fact in
-   yourself, same as one the worker wrote.
-4. **Shape *what* it remembers** (the tune-over-time lever) — what the worker jots
-   is guided by **identity** (its general disposition: "be judicious, don't hoard
-   chit-chat") and the channel's **purpose** ("in here, track deploy status"). You
-   steer its *judgement*, not each note.
-5. **Review mode** (later) — an optional per-channel setting where new memory is
-   *proposed* and the owner approves it (reusing the gate machinery), for channels
-   that want tight control.
+- A DM receives worker + DM channel + DM user memory.
+- A group channel receives worker + channel memory. Relevant user memories may be
+  included only when allowed for shared-context recall; private user notes remain
+  out of group context.
+- A one-shot channel task receives worker + that channel's memory.
+- A worker-only task receives worker memory. Naming a user or channel in task text
+  never authorizes access to that scope.
 
-Plus **observability**: every `remember`/`forget` is journaled/audited, and a
-channel's memory appears verbatim in the run transcript — so you can see exactly
-what's recalled and when it changed.
+Recall is bounded from v1. The context compiler enforces admin and channel token
+and note limits, excludes expired/disabled/forgotten notes, removes duplicates,
+and ranks eligible notes. The initial ranking favors:
 
-## Identity stays sacred
+1. pinned notes;
+2. explicit notes over inferred notes;
+3. notes matching the current channel, user, and task;
+4. current notes over stale notes;
+5. recent notes when other signals are equal.
 
-There is **no promotion path from a note into identity**. Identity is edited only
-by an admin, deliberately (a direct file edit or a heavyweight owner action) — the
-worker has no tool to change it. The worker's `propose_identity_edit` tool is
-**removed**; the `identity-edit` action remains for the admin/owner path only.
+The system records candidates, selected notes, and exclusion reasons. Owners can
+inspect the full trace; channel stewards see their channel's trace; participants
+can see the memories about themselves or shared with the channel, subject to the
+privacy policy.
 
-## Security invariants
+## Security and privacy invariants
 
-- Memory is **advisory** — fed to the model, never an enforcement input (like the
-  journal). Capabilities stay in grants + the gateway; a note can shape behavior
-  but **cannot grant a capability or lift a gate**.
-- Memory is written only via a **governed action** (auto); the box **cannot write
-  the notes file** (read-only mount). The owner can review/prune per channel.
-- **Per-channel isolation** — a note is recalled only in the channel it was filed
-  in, so it can't leak into an unrelated conversation.
-- **Identity is near-immutable** — owner/admin only, never the worker. With no
-  note→identity promotion, there is **no self-programming path** at all: the worst
-  an injected note can do is persist and mislead future runs in that one channel,
-  and it's always prunable.
+- Memory never participates in authorization or policy enforcement.
+- Memory is rendered as quoted data, not instructions.
+- A note cannot alter identity, purpose, capabilities, gates, or budgets.
+- The host authorizes memory actions from trusted run metadata, not model-supplied
+  subject IDs.
+- Worker-wide and cross-channel recall follow admin policy.
+- Channel membership does not grant access to another person's private memory.
+- Secrets, credentials, and prohibited sensitive data are rejected by the write
+  policy.
+- Recall has hard size limits, so repeated note creation cannot exhaust the model
+  context.
+- Every write, correction, recall, and deletion is attributable and auditable.
+- Owners and users can prune memory, and a forgotten note stops being recalled
+  immediately.
 
-## Build order (small increments)
+These boundaries limit exposure and influence; they do not make model-visible
+memory confidential from other content in the same run. Private personal memory
+therefore stays out of group-channel prompts.
 
-1. **Notes core** — `remember`/`forget` actions + `note` executor +
-   `channels/<id>/notes.jsonl` + recall into the session system prompt +
-   `roster notes ls|rm|add`. Steering-by-talking (lever 1), inspect/prune/author
-   (levers 2–3), and shaping-via-identity/purpose (lever 4) all work from this.
-   Remove the worker's `propose_identity_edit`.
-2. **`/notes` slash command + review mode** — the Discord inspect/prune surface,
-   and the optional per-channel "propose memory for approval" mode (lever 5);
-   capping/ranking per channel if memory grows.
+## Owner and participant interfaces
 
-## Open decisions (recommended defaults)
+The owner CLI supports at least:
 
-- **Per channel** (matches purpose + history; DMs cover per-person). A separate
-  worker-wide/general bucket is deferred.
-- **`remember` is auto** (low-stakes, advisory). Identity — the only high-stakes
-  self — is owner-only, so nothing the worker does here needs a gate.
-- **Recall = all of the channel's notes** for v1; rank/cap later.
+```text
+roster notes ls [--worker <id>] [--scope worker|channel|user] [--scope-id <id>]
+roster notes show <id>
+roster notes rm <id>
+roster notes correct <id>
+roster notes pin <id>
+roster notes explain <run-id>
+```
+
+Equivalent participant operations may be requested conversationally:
+
+```text
+"Remember that I prefer short status reports."
+"Only remember that for this channel."
+"What do you remember about me?"
+"That note is wrong."
+"Forget that."
+"Do not use memories about me across channels."
+```
+
+The host still enforces scope and actor authorization. Natural-language content
+does not bypass the governed action path.
+
+## Implementation
+
+1. **Scoped core (built)** — append-only event schema; worker/channel/user scopes;
+   `remember` and `forget`; provenance; host-side authorization; bounded
+   contextual recall; owner `ls`, `show`, `rm`, and recall trace.
+2. **Correction and participant control (built)** — correct/disable/pin events;
+   conversational inspect/correct/forget; explicit versus inferred policy;
+   channel-steward and user authorization.
+3. **Tuning and maintenance (partly built)** — configurable limits, channel
+   overrides, expiry and retention, duplicate detection, compaction, and recall
+   traces are built. Automated consolidation proposals remain future work.
+
+Remove the worker's `propose_identity_edit` tool as part of the scoped core. The
+existing admin/owner identity-edit path remains unchanged.
+
+## Recommended defaults
+
+- Explicit user preferences: automatic, user-correctable.
+- Inferred user facts: review or repeated evidence; never sensitive traits.
+- Channel observations: automatic only for low-risk kinds; channel decisions are
+  explicit or steward-approved.
+- Worker-wide inferred memory: review.
+- Cross-channel user recall: off unless the user and admin policy permit it.
+- Group recall of private user memory: off.
+- Recall: bounded and logged from the first version.
+- Research projects: channel-scoped in v1; detailed evidence stays in the
+  research filing system.

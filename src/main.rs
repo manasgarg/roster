@@ -126,7 +126,7 @@ fn print_help() {
            listen --worker <n>          run the Discord gateway (inbound)\n  \
            channel [ls|trust|mode|memory]  manage channel behavior\n  \
            memory [ls|show|rm|correct|pin|explain] inspect and repair interaction memory\n  \
-           knowledge [status|log|show|reset] inspect and recover worker world knowledge\n  \
+           knowledge <worker>           print the worker's Git repository path\n  \
            runs [ls|show|context]      inspect executions and exact compiled context\n  \
            gates [ls|show|approve|deny] approval desk for proposed actions\n\
          {providers}\n  \

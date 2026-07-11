@@ -81,8 +81,8 @@ roster box --worker yuko "write pong to answer.txt"
 roster queue ls                           # durable tasks, newest activity first
 roster runs ls                            # all executions, including Discord sessions
 roster runs show <run-id>                 # metadata, conversation, journal, memory, files
-roster knowledge status yuko              # Git head and pending knowledge updates
-roster knowledge log yuko                 # host-authored knowledge commit history
+roster knowledge yuko                     # print the worker's bare Git repository path
+git -C "$(roster knowledge yuko)" log      # use normal Git commands after discovery
 ```
 
 The gateway terminates TLS (with a host-minted CA at `~/.roster/ca/`, whose

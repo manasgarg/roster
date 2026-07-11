@@ -537,17 +537,20 @@ mode.
 
 ## Owner interface
 
-The exact command names may change, but the owner needs at least:
+Roster only needs to expose repository discovery:
 
 ```text
-roster knowledge status <worker>
-roster knowledge log <worker> [--limit 20]
-roster knowledge show <worker> <commit>
-roster knowledge diff <worker> <commit>
-roster knowledge reset <worker> [--to <commit>] --yes
-roster knowledge pending <worker>
-roster knowledge resolve <worker> <pending-id>
-roster knowledge reorganize <worker> <task-file>
+roster knowledge <worker>
+```
+
+The command prints the canonical bare repository path. After that, the owner uses
+normal Git commands such as `git -C <path> log`, `git -C <path> show`, or
+`git clone <path>`. Direct owner pushes are an administrative override: they
+must preserve the repository invariants and must not race an active
+reorganization job. Roster-specific commands remain appropriate for non-Git
+systems such as the publication blob store.
+
+```text
 roster blobs ls [--worker <worker>]
 roster blobs show <blob-id>
 ```
@@ -555,10 +558,6 @@ roster blobs show <blob-id>
 `roster runs show` should display the knowledge base commit, write mode, produced
 commit, integration state, fetch receipt IDs, and published blob IDs.
 
-`reset` is owner-only recovery. It restores the selected historical tree—or the
-initial tree when `--to` is omitted—by creating and integrating a new commit. It
-does not rewrite or discard Git history. Irreversible history purging remains a
-separate emergency operation.
 
 ## Security invariants
 

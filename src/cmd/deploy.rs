@@ -62,6 +62,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             if declared != Some(name.as_str()) {
                 return Err(format!("{}: name {:?} != folder \"{}\"", spec.display(), declared, name).into());
             }
+            crate::knowledge::initialize(&name)
+                .map_err(|error| format!("could not initialize {name} knowledge: {error}"))?;
             let scope = format!("org/{name}");
             workers.push(name.clone());
             worker_memory.insert(name.clone(), memory_policy(w.get("memory"), Some(&default_memory))?);

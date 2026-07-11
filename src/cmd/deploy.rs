@@ -142,7 +142,20 @@ fn memory_policy(value: Option<&toml::Value>, base: Option<&MemoryPolicy>) -> Re
     if let Some(value) = value {
         merge_json(&mut merged, to_json(value));
     }
-    serde_json::from_value(merged).map_err(|e| format!("memory policy is invalid: {e}").into())
+    let policy: MemoryPolicy = serde_json::from_value(merged)
+        .map_err(|e| format!("memory policy is invalid: {e}"))?;
+    if let Some(kind) = policy
+        .allowed_kinds
+        .iter()
+        .find(|kind| !crate::memory::SUPPORTED_MEMORY_KINDS.contains(&kind.as_str()))
+    {
+        return Err(format!(
+            "memory policy kind \"{kind}\" is not interaction memory; supported kinds are {}",
+            crate::memory::SUPPORTED_MEMORY_KINDS.join(", ")
+        )
+        .into());
+    }
+    Ok(policy)
 }
 
 fn merge_json(base: &mut Value, overlay: Value) {

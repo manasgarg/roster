@@ -73,7 +73,7 @@ name = "purpose-edit"
 executor = "purpose"
 trust = "gate"
 
-# Scoped memory. The note executor applies its own scope/actor checks and may
+# Scoped interaction memory. The note executor applies its own scope/actor checks and may
 # raise worker-wide or inferred writes to a gate regardless of this base trust.
 [[action]]
 name = "remember"
@@ -126,7 +126,7 @@ trust = "gate"
 # workers/<name>/worker.toml with its own [memory] table.
 [memory]
 enabled = true
-allowed_kinds = ["preference", "fact", "decision", "research", "interaction"]
+allowed_kinds = ["preference", "fact", "decision", "interaction"]
 max_note_chars = 2000
 max_notes_per_scope = 100
 recall_max_notes = 20

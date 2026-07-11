@@ -56,7 +56,11 @@ async fn main() {
         "supervise" => cmd::supervise::run(&args[2..]).await,
         "relay" => cmd::relay::run(&args[2..]),
         "listen" => cmd::listen::run(&args[2..]).await,
-        "notes" => cmd::notes::run(&args[2..]),
+        "memory" => cmd::notes::run(&args[2..]),
+        "notes" => {
+            eprintln!("warning: `roster notes` is deprecated; use `roster memory`");
+            cmd::notes::run(&args[2..])
+        }
         "runs" => cmd::runs::run(&args[2..]),
         "channel" => cmd::channel::run(&args[2..]),
         "session" => cmd::session::run(&args[2..]).await,
@@ -118,7 +122,7 @@ fn print_help() {
            relay --worker <n> \"<msg>\"    turn an inbound message into a task\n  \
            listen --worker <n>          run the Discord gateway (inbound)\n  \
            channel [ls|trust|mode|memory]  manage channel behavior\n  \
-           notes [ls|show|rm|correct|pin|explain]  inspect and repair memory\n  \
+           memory [ls|show|rm|correct|pin|explain] inspect and repair interaction memory\n  \
            runs [ls|show|context]      inspect executions and exact compiled context\n  \
            gates [ls|show|approve|deny] approval desk for proposed actions\n\
          {providers}\n  \

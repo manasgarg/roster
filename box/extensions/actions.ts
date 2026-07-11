@@ -113,11 +113,11 @@ export default function rosterActionTools(api: PiToolApi): void {
     parameters: {
       type: "object",
       properties: {
-        note: { type: "string", description: "One concise fact, preference, decision, research finding, or interaction note." },
+        note: { type: "string", description: "One concise user preference, conversational fact, decision, or interaction note. Research about the world belongs in the knowledge repository." },
         scope: { type: "string", enum: ["worker", "channel", "user"], description: "Where this observation applies." },
-        kind: { type: "string", enum: ["preference", "fact", "decision", "research", "interaction"] },
+        kind: { type: "string", enum: ["preference", "fact", "decision", "interaction"] },
         basis: { type: "string", enum: ["explicit", "inferred"], description: "Whether a person stated this or you inferred it." },
-        artifact: { type: "string", description: "Optional source or research-artifact pointer." },
+        artifact: { type: "string", description: "Optional pointer to the interaction that established this memory." },
         expires_at: { type: "string", description: "Optional RFC 3339 expiry time." },
       },
       required: ["note", "scope", "kind", "basis"],

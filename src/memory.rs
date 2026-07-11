@@ -1,7 +1,7 @@
 //! Scoped, append-only worker memory.
 //!
 //! The box can propose memory actions, but the trusted host derives the active
-//! worker/channel/user from the run context and owns the JSONL event log. Notes
+//! worker/channel/user from the run context and owns the JSONL event log. Memories
 //! are advisory prompt data, never authorization inputs.
 
 use crate::util::{now_rfc3339, root};
@@ -17,6 +17,8 @@ const DEFAULT_NOTE_CHARS: usize = 2_000;
 const DEFAULT_SCOPE_NOTES: usize = 100;
 const DEFAULT_RECALL_NOTES: usize = 20;
 const DEFAULT_RECALL_CHARS: usize = 6_000;
+pub const SUPPORTED_MEMORY_KINDS: &[&str] =
+    &["preference", "fact", "decision", "interaction"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -177,8 +179,9 @@ impl Default for MemoryPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            allowed_kinds: vec!["preference", "fact", "decision", "research", "interaction"]
-                .into_iter()
+            allowed_kinds: SUPPORTED_MEMORY_KINDS
+                .iter()
+                .copied()
                 .map(String::from)
                 .collect(),
             max_note_chars: DEFAULT_NOTE_CHARS,
@@ -242,7 +245,16 @@ fn short_worker(worker: &str) -> &str {
     worker.strip_prefix("org/").unwrap_or(worker)
 }
 
-fn notes_path(worker: &str) -> PathBuf {
+fn memory_path(worker: &str) -> PathBuf {
+    root()
+        .join("memory")
+        .join(format!("{}.jsonl", short_worker(worker)))
+}
+
+/// Memory used to live under `notes/`. Read the old event log as well so an
+/// upgrade does not lose conversational continuity. All new writes go to
+/// `memory/`; an owner-requested compaction finishes the physical migration.
+fn legacy_notes_path(worker: &str) -> PathBuf {
     root()
         .join("notes")
         .join(format!("{}.jsonl", short_worker(worker)))
@@ -294,7 +306,7 @@ fn append_event(worker: &str, event: &Value) -> Result<(), String> {
     let _guard = write_lock()
         .lock()
         .map_err(|_| "memory write lock poisoned")?;
-    let path = notes_path(worker);
+    let path = memory_path(worker);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -307,10 +319,15 @@ fn append_event(worker: &str, event: &Value) -> Result<(), String> {
 }
 
 fn read_events(worker: &str) -> Vec<Value> {
-    std::fs::read_to_string(notes_path(worker))
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
+    [legacy_notes_path(worker), memory_path(worker)]
+        .into_iter()
+        .flat_map(|path| {
+            std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect::<Vec<Value>>()
+        })
         .collect()
 }
 
@@ -580,7 +597,9 @@ fn remember(
         .get("kind")
         .and_then(Value::as_str)
         .unwrap_or("fact");
-    if !policy.allowed_kinds.iter().any(|k| k == kind) {
+    if !SUPPORTED_MEMORY_KINDS.contains(&kind)
+        || !policy.allowed_kinds.iter().any(|k| k == kind)
+    {
         return Err(format!("memory kind \"{kind}\" is not allowed"));
     }
     let basis = parse_basis(payload)?;
@@ -813,7 +832,8 @@ pub fn compact(worker: &str) -> Result<usize, String> {
     let _guard = write_lock()
         .lock()
         .map_err(|_| "memory write lock poisoned")?;
-    let path = notes_path(worker);
+    let path = memory_path(worker);
+    let legacy = legacy_notes_path(worker);
     let notes: Vec<MemoryNote> = fold_events(&read_events(worker))
         .into_iter()
         .filter(|n| !n.forgotten)
@@ -843,6 +863,9 @@ pub fn compact(worker: &str) -> Result<usize, String> {
         writeln!(f, "{event}").map_err(|e| e.to_string())?;
     }
     std::fs::rename(tmp, path).map_err(|e| e.to_string())?;
+    if legacy.exists() {
+        std::fs::remove_file(legacy).map_err(|e| e.to_string())?;
+    }
     Ok(notes.len())
 }
 
@@ -880,7 +903,9 @@ fn eligible(note: &MemoryNote, context: &RunContext, policy: &MemoryPolicy) -> b
     if !note.active() {
         return false;
     }
-    if !policy.allowed_kinds.contains(&note.kind) {
+    if !SUPPORTED_MEMORY_KINDS.contains(&note.kind.as_str())
+        || !policy.allowed_kinds.contains(&note.kind)
+    {
         return false;
     }
     match note.scope {

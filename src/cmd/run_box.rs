@@ -560,7 +560,7 @@ async fn provision_box(
 }
 
 fn append_state_shadows(args: &mut Vec<String>, repo: &Path) {
-    for name in ["runs", "notes", "journal", "queue", "gates", "channels"] {
+    for name in ["runs", "memory", "notes", "journal", "queue", "gates", "channels"] {
         args.extend([
             "--tmpfs".into(),
             format!("{}:rw,noexec,nosuid,nodev", repo.join(name).display()),
@@ -738,12 +738,12 @@ mod tests {
         let repo = Path::new("/srv/roster");
         let mut args = Vec::new();
         append_state_shadows(&mut args, repo);
-        for name in ["runs", "notes", "journal", "queue", "gates", "channels"] {
+        for name in ["runs", "memory", "notes", "journal", "queue", "gates", "channels"] {
             assert!(args.contains(&format!(
                 "/srv/roster/{name}:rw,noexec,nosuid,nodev"
             )));
         }
-        assert_eq!(args.iter().filter(|arg| *arg == "--tmpfs").count(), 6);
+        assert_eq!(args.iter().filter(|arg| *arg == "--tmpfs").count(), 7);
     }
 
     #[test]

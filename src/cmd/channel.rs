@@ -123,7 +123,7 @@ pub fn parse_memory_kinds(value: &str) -> Result<Option<Vec<String>>, BErr> {
     if value == "default" {
         return Ok(None);
     }
-    let allowed = ["preference", "fact", "decision", "research", "interaction"];
+    let allowed = crate::memory::SUPPORTED_MEMORY_KINDS;
     let kinds: Vec<String> = value
         .split(',')
         .map(str::trim)
@@ -143,7 +143,11 @@ mod tests {
     #[test]
     fn memory_kinds_are_validated() {
         assert!(parse_memory_kinds("default").unwrap().is_none());
-        assert_eq!(parse_memory_kinds("fact,research").unwrap().unwrap(), vec!["fact", "research"]);
+        assert!(parse_memory_kinds("research").is_err());
+        assert_eq!(
+            parse_memory_kinds("fact,interaction").unwrap().unwrap(),
+            vec!["fact", "interaction"]
+        );
         assert!(parse_memory_kinds("fact,secrets").is_err());
     }
 }

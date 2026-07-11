@@ -1,4 +1,4 @@
-//! `roster notes` — owner/admin inspection and repair of scoped memory.
+//! `roster memory` — owner/admin inspection and repair of scoped memory.
 
 use crate::memory::{self, MemoryScope};
 
@@ -18,7 +18,7 @@ pub fn run(args: &[String]) -> Result<(), BErr> {
         "compact" => compact(&args[1..]),
         "explain" => explain(&args[1..]),
         other => Err(format!(
-            "unknown notes subcommand \"{other}\" (try: ls, show, rm, correct, disable, enable, pin, unpin, compact, explain)"
+            "unknown memory subcommand \"{other}\" (try: ls, show, rm, correct, disable, enable, pin, unpin, compact, explain)"
         )
         .into()),
     }
@@ -35,7 +35,7 @@ fn worker_arg(args: &[String]) -> Result<String, BErr> {
     let pos = args
         .iter()
         .position(|a| a == "--worker")
-        .ok_or("notes command needs --worker <name>")?;
+        .ok_or("memory command needs --worker <name>")?;
     args.get(pos + 1)
         .cloned()
         .ok_or_else(|| "--worker wants a name".into())
@@ -114,7 +114,7 @@ fn show(args: &[String]) -> Result<(), BErr> {
     let id = positional(args)
         .first()
         .copied()
-        .ok_or("usage: roster notes show <id> --worker <name>")?;
+        .ok_or("usage: roster memory show <id> --worker <name>")?;
     let note = memory::find(&worker, id).ok_or_else(|| format!("no such memory {id}"))?;
     println!("{}", serde_json::to_string_pretty(&note)?);
     Ok(())
@@ -126,7 +126,7 @@ fn mutate(op: &str, args: &[String], replacement: Option<&str>) -> Result<(), BE
     let id = parts
         .first()
         .copied()
-        .ok_or_else(|| format!("usage: roster notes {op} <id> --worker <name>"))?;
+        .ok_or_else(|| format!("usage: roster memory {op} <id> --worker <name>"))?;
     memory::admin_mutate(&worker, op, id, replacement).map_err(|e| -> BErr { e.into() })?;
     println!("memory {id} → {op}");
     Ok(())
@@ -136,13 +136,13 @@ fn correct(args: &[String]) -> Result<(), BErr> {
     let parts = positional(args);
     let replacement = parts.iter().skip(1).copied().collect::<Vec<_>>().join(" ");
     if parts.is_empty() || replacement.trim().is_empty() {
-        return Err("usage: roster notes correct <id> --worker <name> <replacement>".into());
+        return Err("usage: roster memory correct <id> --worker <name> <replacement>".into());
     }
     mutate("correct", args, Some(&replacement))
 }
 
 fn explain(args: &[String]) -> Result<(), BErr> {
-    let run_id = args.first().ok_or("usage: roster notes explain <run-id>")?;
+    let run_id = args.first().ok_or("usage: roster memory explain <run-id>")?;
     let trace = memory::recall_trace(run_id);
     if trace.is_empty() {
         println!("no memory recall trace for run {run_id}");

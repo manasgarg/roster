@@ -35,7 +35,7 @@ The language boundary is the trust boundary (see D20 in the handoff):
   vault, refresh, and the action host), `supervise` (the orchestration loop),
   `queue` / `runs` / `gates` / `relay` (task queue, execution history,
   approval desk, inbound edge),
-  `listen` / `channel` / `notes` (Discord and memory control), plus
+  `listen` / `channel` / `memory` (Discord and interaction-memory control), plus
   `create` / `deploy` / `box` / `connect` / `vault-sync`. `cargo build`, `cargo test`.
 - **TypeScript lives only inside the untrusted box** — pi (the engine,
   vendored) and its extensions (`box/extensions/`: web search/fetch, and the
@@ -54,7 +54,7 @@ providers.json    provider registry (login/refresh/inject), read by CLI + gatewa
 org.toml          OWNER-ONLY: shared grants, actions, trust, caps + metering
 workers/<name>/   OWNER-ONLY worker specs (worker.toml) overlaying org.toml
 docs/             design docs, the implementation handoff, per-increment specs
-runs/  queue/  gates/  journal/  channels/  notes/   runtime state (all gitignored)
+runs/  queue/  gates/  journal/  channels/  memory/  runtime state (all gitignored)
 ```
 
 The Rust modules under `src/`: the serve path (`proxy`, `tls`, `ca`, `judge`),

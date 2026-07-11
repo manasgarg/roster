@@ -556,7 +556,7 @@ Required changes:
 - Context traces remain at `runs/<run-id>/context.jsonl` for simple run
   inspection, but the box sees an empty shadow mount at the repository's
   `runs/` path. Only the current run's required child mounts are overlaid.
-- Raw `notes/`, `journal/`, `queue/`, `gates/`, and other runs are not readable
+- Raw `memory/`, legacy `notes/`, `journal/`, `queue/`, `gates/`, and other runs are not readable
   inside a box.
 - The complete `channels/` tree is not exposed. A run may receive an explicit
   read-only mount for its current channel history/files when its trusted context
@@ -567,7 +567,7 @@ Required changes:
   or a governed, scope-checking read tool.
 
 Version one keeps the existing host paths and adds empty tmpfs or equivalent
-shadow mounts over `runs/`, `notes/`, `journal/`, `queue/`, `gates/`, and
+shadow mounts over `runs/`, `memory/`, legacy `notes/`, `journal/`, `queue/`, `gates/`, and
 `channels/` after mounting the repository read-only. Docker then overlays only:
 
 - the current run's writable workspace, pi session directory, and pihome;

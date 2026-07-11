@@ -1,7 +1,7 @@
-# Memory — scoped notes with governed recall (spec)
+# Interaction memory — scoped memories with governed recall (spec)
 
-**Status: implemented.** Memory is what a worker has learned from
-its work and interactions. It is descriptive, scoped, inspectable, and
+**Status: implemented.** Memory is what a worker has learned from its
+interactions with people and channels. It is descriptive, scoped, inspectable, and
 correctable. It helps the worker resume work and adapt to people without changing
 its identity, purpose, capabilities, or gates.
 
@@ -37,8 +37,8 @@ or a procedure. Such changes use their existing trusted paths.
 
 ### Worker memory
 
-Worker memory applies across the worker's runs. Examples include a reusable
-research finding, a recurring lesson, or a pointer to a maintained synthesis.
+Worker memory applies across the worker's runs. Examples include a recurring
+interaction lesson or a broadly applicable communication convention.
 
 Worker memory has the widest blast radius. The owner/admin controls its write,
 retention, and recall policy. The worker may write or propose worker memories
@@ -54,10 +54,10 @@ observation until then.
 Channel memory is shared context for one channel or workstream. Examples include:
 
 - a decision made by the channel;
-- the current research question and open questions;
+- the current workstream decision and open questions;
 - local terminology;
 - reporting conventions for that channel;
-- a pointer to the latest channel research brief.
+- the agreed reporting format for the workstream.
 
 A channel steward controls channel policy and accepted shared memories. Ordinary
 participants may create explicit notes about the current conversation or propose
@@ -98,33 +98,38 @@ user:discord:123
   "Prefers concise status reports."
 
 channel:discord:456
-  "This conversation is researching agent memory for Roster."
+  "This conversation uses a weekly written status update."
 ```
 
 Even if an adapter exposes a DM as a user-addressed channel, Roster preserves
 both scope meanings. This prevents every fact mentioned in a DM from becoming a
 permanent fact about the user.
 
-## Research memory and research material
+## Research knowledge is separate
 
-Memory is the small, recalled layer. It does not replace the worker's research
-filing system.
+Interaction memory does not store the worker's research about the world.
 
-- Raw sources, extracted material, long notes, finished briefs, and detailed
-  evidence remain in the cache/store described by the filing system.
-- Memory holds short claims, decisions, open questions, preferences, and pointers
-  to those artifacts.
-- Research memories include provenance. A synthesis may be regenerated; its
-  evidence chain must not be lost.
+- Sources, extracted material, claims, research notes, syntheses, and briefs
+  belong in the worker's Git-backed knowledge repository or temporary scratch
+  space.
+- Published documents belong in the governed blob store.
+- Memory holds continuity about people, channels, and their interactions. It is
+  never an automatically recalled index of research artifacts.
 
-For v1, a research project maps to a channel. If projects later span channels,
-add a project scope rather than putting project state into worker memory.
+The full storage and concurrency model is defined in
+`docs/knowledge-repo-spec.md`. Nothing automatically promotes or copies content
+between interaction memory and the knowledge repository.
 
 ## Stored record
 
 Memory is stored per worker, off the box, as an append-only event log:
-`notes/<worker>.jsonl`. The box's repo mount remains read-only; the worker never
+`memory/<worker>.jsonl`. The box's repo mount remains read-only; the worker never
 writes this file directly.
+
+Deployments upgraded from the older `notes/<worker>.jsonl` path continue to read
+that legacy log. New events use `memory/`, and owner compaction completes the
+physical migration. Existing records with the retired `research` kind remain
+inspectable but are not recalled and cannot be newly created.
 
 A created note has at least:
 
@@ -152,11 +157,10 @@ Required fields and meanings:
 - `scope` is `worker`, `channel`, or `user`.
 - `scope_id` is absent for worker memory and is a provider-qualified stable ID
   for channel and user memory.
-- `kind` is initially `preference`, `fact`, `decision`, `research`, or
-  `interaction`.
+- `kind` is `preference`, `fact`, `decision`, or `interaction`.
 - `basis` is `explicit` or `inferred`.
-- `source` identifies why the memory exists. System-generated research memories
-  may point to an artifact or run instead of a chat message.
+- `source` identifies the interaction that established the memory and may point
+  to its channel, message, author, or run.
 - `expires_at` supports temporary memory and retention policy.
 
 Display names are optional hints for people reviewing notes. They are never used
@@ -220,7 +224,7 @@ Within the admin limits, a channel steward controls:
 - whether inferred channel notes are automatic or reviewed;
 - shorter retention and smaller recall budgets;
 - accepted, pinned, or corrected shared notes;
-- channel research and reporting conventions;
+- channel interaction and reporting conventions;
 - the channel's recall profile.
 
 ### Participant controls
@@ -317,12 +321,12 @@ therefore stays out of group-channel prompts.
 The owner CLI supports at least:
 
 ```text
-roster notes ls [--worker <id>] [--scope worker|channel|user] [--scope-id <id>]
-roster notes show <id>
-roster notes rm <id>
-roster notes correct <id>
-roster notes pin <id>
-roster notes explain <run-id>
+roster memory ls [--worker <id>] [--scope worker|channel|user] [--scope-id <id>]
+roster memory show <id>
+roster memory rm <id>
+roster memory correct <id>
+roster memory pin <id>
+roster memory explain <run-id>
 ```
 
 Equivalent participant operations may be requested conversationally:
@@ -364,5 +368,5 @@ existing admin/owner identity-edit path remains unchanged.
 - Cross-channel user recall: off unless the user and admin policy permit it.
 - Group recall of private user memory: off.
 - Recall: bounded and logged from the first version.
-- Research projects: channel-scoped in v1; detailed evidence stays in the
-  research filing system.
+- Research material never enters interaction memory; it stays in the knowledge
+  repository, scratch space, or publication store.

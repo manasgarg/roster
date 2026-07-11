@@ -489,13 +489,12 @@ Likewise, worker/channel/user memories are not written into the knowledge
 repository automatically. If a user explicitly asks for a durable research note
 or publication, that is handled as knowledge work, not as a memory write.
 
-The current implementation uses `notes/<worker>.jsonl` and `roster notes` for
-interaction memory. Before exposing the Git-backed notes repository, the product
-should remove this naming collision. The recommended migration is:
+Interaction memory now uses `memory/<worker>.jsonl` and `roster memory`. The old
+names remain a read-compatible migration path:
 
 ```text
-notes/<worker>.jsonl  → memory/<worker>.jsonl
-roster notes ...      → roster memory ...
+notes/<worker>.jsonl  → memory/<worker>.jsonl       legacy logs remain readable
+roster notes ...      → roster memory ...           deprecated CLI alias
 ```
 
 The migration is a naming and storage move only; it does not convert interaction

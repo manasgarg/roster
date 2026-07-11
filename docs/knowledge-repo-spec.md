@@ -51,6 +51,9 @@ knowledge/<worker>/repo.git     canonical host-side repository
 
 The canonical branch is `main`. Git metadata, hooks, branch refs, and integration
 credentials remain host-controlled and are never writable from inside a box.
+`roster create <worker>` initializes this repository as part of worker creation.
+Run provisioning also performs the same idempotent check so workers created by an
+older release are upgraded on first use.
 
 The repository separates durable records from their organization:
 
@@ -541,6 +544,7 @@ roster knowledge status <worker>
 roster knowledge log <worker> [--limit 20]
 roster knowledge show <worker> <commit>
 roster knowledge diff <worker> <commit>
+roster knowledge reset <worker> [--to <commit>] --yes
 roster knowledge pending <worker>
 roster knowledge resolve <worker> <pending-id>
 roster knowledge reorganize <worker> <task-file>
@@ -550,6 +554,11 @@ roster blobs show <blob-id>
 
 `roster runs show` should display the knowledge base commit, write mode, produced
 commit, integration state, fetch receipt IDs, and published blob IDs.
+
+`reset` is owner-only recovery. It restores the selected historical tree—or the
+initial tree when `--to` is omitted—by creating and integrating a new commit. It
+does not rewrite or discard Git history. Irreversible history purging remains a
+separate emergency operation.
 
 ## Security invariants
 

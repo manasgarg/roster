@@ -804,6 +804,126 @@ pub fn initialize(worker: &str) -> Result<String, String> {
     Ok(head(&repo)?)
 }
 
+/// Restore the visible tree to an earlier commit without rewriting or deleting
+/// Git history. With no revision, reset to the repository's initial tree.
+pub fn reset(worker: &str, revision: Option<&str>) -> Result<String, String> {
+    let worker = short_worker(worker);
+    safe_component(worker, "worker")?;
+    let repo = canonical_repo(worker);
+    if !repo.exists() {
+        return Err(format!(
+            "knowledge repository for {worker} is not initialized"
+        ));
+    }
+    let _lease = acquire_lease(&worker_dir(worker).join("integrate.lock"))?;
+    let current = head(&repo)?;
+    let target = match revision {
+        Some(value) => {
+            validate_revision(value)?;
+            run_git_owned(
+                &root(),
+                vec![
+                    format!("--git-dir={}", repo.display()),
+                    "rev-parse".into(),
+                    format!("{value}^{{commit}}"),
+                ],
+            )?
+        }
+        None => run_git_owned(
+            &root(),
+            vec![
+                format!("--git-dir={}", repo.display()),
+                "rev-list".into(),
+                "--max-parents=0".into(),
+                "--reverse".into(),
+                "main".into(),
+            ],
+        )?
+        .lines()
+        .next()
+        .ok_or("knowledge repository has no initial commit")?
+        .to_string(),
+    };
+    let current_tree = run_git_owned(
+        &root(),
+        vec![
+            format!("--git-dir={}", repo.display()),
+            "rev-parse".into(),
+            format!("{current}^{{tree}}"),
+        ],
+    )?;
+    let target_tree = run_git_owned(
+        &root(),
+        vec![
+            format!("--git-dir={}", repo.display()),
+            "rev-parse".into(),
+            format!("{target}^{{tree}}"),
+        ],
+    )?;
+    if current_tree == target_tree {
+        return Ok(format!(
+            "knowledge for {worker} already matches {target}; head remains {current}"
+        ));
+    }
+
+    let work = TempTree::new(&worker_dir(worker), "reset")?;
+    clone_at(&repo, &work.path, &current)?;
+    run_git_owned(
+        &work.path,
+        vec![
+            "read-tree".into(),
+            "--reset".into(),
+            "-u".into(),
+            target.clone(),
+        ],
+    )?;
+    run_git(&work.path, &["config", "user.name", "Roster Knowledge"])?;
+    run_git(
+        &work.path,
+        &["config", "user.email", "knowledge@roster.local"],
+    )?;
+    let message = format!(
+        "Reset worker knowledge\n\nRoster-Worker: {worker}\nRoster-Reset-From: {current}\nRoster-Reset-To: {target}"
+    );
+    run_git_owned(&work.path, vec!["commit".into(), "-m".into(), message])?;
+    let commit = run_git(&work.path, &["rev-parse", "HEAD"])?;
+    let incoming_ref = format!(
+        "refs/roster/reset/{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    );
+    run_git_owned(
+        &work.path,
+        vec![
+            "push".into(),
+            "origin".into(),
+            format!("HEAD:{incoming_ref}"),
+        ],
+    )?;
+    if let Err(error) = run_git(&work.path, &["push", "origin", "HEAD:refs/heads/main"]) {
+        return Err(format!(
+            "knowledge reset did not advance main: {error}; candidate is preserved at {incoming_ref}"
+        ));
+    }
+    let _ = run_git_owned(
+        &root(),
+        vec![
+            format!("--git-dir={}", repo.display()),
+            "update-ref".into(),
+            "-d".into(),
+            incoming_ref,
+        ],
+    );
+    crate::journal::append_required(
+        &journal_worker(worker),
+        "",
+        "knowledge-reset",
+        json!({ "from": current, "to": target, "commit": commit }),
+    )?;
+    Ok(format!(
+        "reset {worker} knowledge to {target}; new history-preserving commit {commit}"
+    ))
+}
+
 pub fn log(worker: &str, limit: usize) -> Result<String, String> {
     let worker = short_worker(worker);
     safe_component(worker, "worker")?;
@@ -829,14 +949,7 @@ pub fn log(worker: &str, limit: usize) -> Result<String, String> {
 pub fn show(worker: &str, revision: &str) -> Result<String, String> {
     let worker = short_worker(worker);
     safe_component(worker, "worker")?;
-    if revision.starts_with('-')
-        || revision.is_empty()
-        || !revision.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b'~' | b'^')
-        })
-    {
-        return Err("unsafe knowledge revision".into());
-    }
+    validate_revision(revision)?;
     let repo = canonical_repo(worker);
     run_git_owned(
         &root(),
@@ -849,6 +962,18 @@ pub fn show(worker: &str, revision: &str) -> Result<String, String> {
             "--".into(),
         ],
     )
+}
+
+fn validate_revision(revision: &str) -> Result<(), String> {
+    if revision.starts_with('-')
+        || revision.is_empty()
+        || !revision.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b'~' | b'^')
+        })
+    {
+        return Err("unsafe knowledge revision".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

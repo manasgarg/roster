@@ -43,6 +43,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("created {}", path.display());
     println!("created {}", identity.display());
+    let knowledge_commit = crate::knowledge::initialize(name).map_err(|error| {
+        format!(
+            "worker files were created, but its knowledge repository could not be initialized: {error}"
+        )
+    })?;
+    println!("initialized knowledge at {knowledge_commit}");
     println!("edit them, then run: roster deploy");
     Ok(())
 }

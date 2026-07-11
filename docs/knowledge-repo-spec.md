@@ -54,15 +54,14 @@ The repository separates durable records from their organization:
 
 ```text
 records/                    uniquely named durable notes and syntheses
-proposals/                  uniquely named organization requests from research runs
 organization/               the worker's mutable, browsable view of its knowledge
 ```
 
-The names are illustrative, but these three stable write domains are required.
-Files in `records/` and `proposals/` receive host-allocated, collision-free IDs.
-Their platform-managed storage layout and the top-level domains are never
-reorganized during normal operation. The worker controls the prose and metadata
-inside its records and the internal shape of `organization/`, including:
+The names are illustrative, but these two stable write domains are required.
+Files in `records/` receive host-allocated, collision-free IDs. Their
+platform-managed storage layout and the top-level domains are never reorganized
+during normal operation. The worker controls the prose and metadata inside its
+records and the internal shape of `organization/`, including:
 
 - directory hierarchy;
 - links, tags, and topic structure;
@@ -124,7 +123,7 @@ Append mode is the default for ordinary concurrent work.
 
 A run may:
 
-- create uniquely named files under `records/` and `proposals/`;
+- create uniquely named files under `records/`;
 - freely revise files that it created during the same run;
 - link new notes to existing note IDs;
 - add a correction or superseding note as a new file;
@@ -141,19 +140,18 @@ A run may not:
 The host validates this rule from the Git diff before committing. A violating
 diff is not integrated and remains available for repair.
 
-New record and proposal paths must be collision-free. The host allocates their
-stable IDs; the worker may include a human-readable slug:
+New record paths must be collision-free. The host allocates their stable IDs;
+the worker may include a human-readable slug:
 
 ```text
 records/notes/prompt-caching--n_01JABC.md
 records/notes/sso-support--n_01JDEF.md
-proposals/place--p_01JGHI.yaml
 ```
 
 The unique ID prevents two runs from creating the same path even when they
-choose the same title. A proposal can suggest where a new note belongs, which
-notes should be consolidated, or which index should mention it. It is input to a
-reorganization job, not a mutation of the shared organizational view.
+choose the same title. Tags, links, and other useful organization cues may live
+in the record itself. A reorganization job examines records added since its last
+pass and decides how to incorporate them into the organizational view.
 
 ### Reorganization mode
 
@@ -165,8 +163,6 @@ completed work.
 A reorganization run may:
 
 - modify, rename, or delete paths under `organization/`;
-- consume proposal files that existed at its base commit, without renaming the
-  `proposals/` layout;
 - add new uniquely named records when consolidation produces a new synthesis;
 - have a new record declare that it supersedes an older record, then update the
   organizational pointer;
@@ -181,13 +177,12 @@ and links from runs that started on an older snapshot. Physical deletion is a
 separate owner-only retention or emergency-purge operation.
 
 While the lease is held, append-mode research runs continue normally. Their
-commits add unique paths under `records/` and `proposals/`; the reorganization
-job changes paths under `organization/` and may remove only older proposals that
-were already in its snapshot. It cannot name or consume a proposal created
-concurrently. The two write sets therefore do not overlap. When either commit
-rebases across the other, Git has no shared path to conflict on. Newly proposed
-organization work that was not visible to the reorganization job remains in
-`proposals/` for the next pass.
+commits add unique paths under `records/`; the reorganization job changes paths
+under `organization/`. The two write sets therefore do not overlap. When either
+commit rebases across the other, Git has no shared path to conflict on. Records
+that were not visible to the reorganization job remain unorganized until its
+next pass, but are still durable and directly searchable by stable ID and
+metadata.
 
 This is repository reorganization, not memory promotion. It changes organization
 inside the worker's knowledge repository and does not change identity, purpose,
@@ -247,8 +242,7 @@ Before committing, the trusted host validates at least:
 - file modes are non-executable unless explicitly permitted by policy;
 - individual file and total repository limits are respected;
 - obvious credentials and secrets are rejected;
-- append-mode diffs contain only host-allocated additions under `records/` and
-  `proposals/`;
+- append-mode diffs contain only host-allocated additions under `records/`;
 - reorganization-mode diffs do not rewrite durable records or reserved
   top-level domains.
 
@@ -311,10 +305,10 @@ integrate:   main B → C'
 ```
 
 The same property holds when an append commit crosses a reorganization commit:
-append mode adds unique `records/` and `proposals/` paths, while the sole
-reorganization job owns `organization/` and can consume only proposals from its
-recorded base. Therefore every valid commit rebases without a path conflict as
-long as the single-reorganization lease holds.
+append mode adds unique `records/` paths, while the sole reorganization job owns
+`organization/`. Any records created by the reorganization job also receive
+unique host-allocated IDs. Therefore every valid commit rebases without a path
+conflict as long as the single-reorganization lease holds.
 
 A Git conflict among valid commits indicates a broken invariant, a software
 defect, or repository history created outside this protocol. The system never
@@ -562,8 +556,7 @@ commit, integration state, fetch receipt IDs, and published blob IDs.
 - Every run gets an isolated checkout pinned to a recorded base commit.
 - Boxes cannot mutate Git metadata, refs, hooks, or the canonical repository.
 - Normal concurrent runs cannot modify paths that existed at their base commit.
-- Append jobs write only new host-allocated paths under `records/` and
-  `proposals/`.
+- Append jobs write only new host-allocated paths under `records/`.
 - Only one reorganization writer exists for a worker at a time, and only that
   mode changes existing paths under `organization/`.
 - Append and reorganization write sets remain disjoint, so valid commits rebase
@@ -604,8 +597,8 @@ commit, integration state, fetch receipt IDs, and published blob IDs.
 
 ### 2. Append-mode integration lane
 
-- Create the `records/`, `proposals/`, and `organization/` write domains.
-- Allocate collision-free record and proposal IDs on the host.
+- Create the `records/` and `organization/` write domains.
+- Allocate collision-free record IDs on the host.
 - Enforce unique added paths and add-only diffs for append runs.
 - Serialize rebase/fast-forward integration per worker.
 - Treat any conflict between valid commits as an invariant failure and preserve
@@ -645,8 +638,8 @@ commit, integration state, fetch receipt IDs, and published blob IDs.
 2. Concurrent append-mode runs adding unique notes integrate without conflict or
    lost files.
 3. An append-mode run that modifies an existing file is rejected before commit.
-4. The host never allocates the same record or proposal path to two runs; a
-   manually duplicated ID is rejected during validation.
+4. The host never allocates the same record path to two runs; a manually
+   duplicated ID is rejected during validation.
 5. A worker cannot write another worker's repository or select its base commit.
 6. The box cannot modify `.git`, hooks, refs, or the canonical repository.
 7. A symlink or path escape in a knowledge diff is rejected.

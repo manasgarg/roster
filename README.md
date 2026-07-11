@@ -26,7 +26,9 @@ sessions, per-channel purpose and behavior controls, and scoped worker/channel/
 user memory with governed writes, bounded recall, participant correction, and
 owner inspection (see `docs/memory-spec.md`). Workers also receive isolated
 Git-backed world knowledge and per-run scratch space; valid append-only notes are
-committed by the host on clean exit (see `docs/knowledge-repo-spec.md`).
+committed by the host on clean exit. Governed exact-byte downloads land in
+scratch with durable URL, media type, size, and SHA-256 receipts (see
+`docs/knowledge-repo-spec.md`).
 
 ## Toolchain
 

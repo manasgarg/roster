@@ -14,6 +14,7 @@ mod ca;
 mod cmd;
 mod context;
 mod discord;
+mod fetch;
 mod gate;
 mod journal;
 mod judge;

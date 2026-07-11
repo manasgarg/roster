@@ -45,6 +45,8 @@ pub struct RunRecord {
     pub knowledge: Option<KnowledgeRunRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scratch: Option<ScratchRunRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fetch_receipts: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +81,7 @@ pub fn start(run_id: &str, worker: &str, kind: &str, task_id: Option<&str>) -> R
         exit_code: None,
         knowledge: None,
         scratch: None,
+        fetch_receipts: Vec::new(),
     };
     save(&record)
 }
@@ -141,6 +144,14 @@ pub fn update_scratch(run_id: &str, state: &str, error: Option<&str>) -> Result<
         state: state.into(),
         error: error.map(String::from),
     });
+    save(&record)
+}
+
+pub fn record_fetch_receipt(run_id: &str, receipt_id: &str) -> Result<(), String> {
+    let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
+    if !record.fetch_receipts.iter().any(|value| value == receipt_id) {
+        record.fetch_receipts.push(receipt_id.into());
+    }
     save(&record)
 }
 
@@ -469,5 +480,18 @@ mod tests {
     #[test]
     fn unicode_truncation_is_safe() {
         assert_eq!(one_line("éééé", 3), "éé…");
+    }
+
+    #[test]
+    fn legacy_run_records_default_to_no_fetch_receipts() {
+        let record: RunRecord = serde_json::from_value(serde_json::json!({
+            "id": "run-1",
+            "worker": "yuko",
+            "kind": "task",
+            "state": "done",
+            "started_at": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        assert!(record.fetch_receipts.is_empty());
     }
 }

@@ -370,6 +370,48 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
     Gate::Allow(inject)
 }
 
+/// Apply the same policy, budget, decision logging, and credential-injection
+/// decision used by proxied GET requests to a trusted host-side download. The
+/// caller performs the actual request and must apply the returned headers.
+pub async fn authorize_download(
+    subject: &str,
+    url: &reqwest::Url,
+) -> Result<Vec<(String, String)>, String> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("download URLs cannot contain credentials".into());
+    }
+    let protocol = url.scheme();
+    if !matches!(protocol, "http" | "https") {
+        return Err("download URL must use http or https".into());
+    }
+    let host = url.host_str().ok_or("download URL has no host")?.to_string();
+    let port = url
+        .port_or_known_default()
+        .ok_or("download URL has no known port")?;
+    let mut headers = HashMap::new();
+    headers.insert("accept".into(), "*/*".into());
+    headers.insert("user-agent".into(), "Roster/0.0.1".into());
+    let request = GovernedRequest {
+        worker: Some(subject.to_string()),
+        protocol: protocol.into(),
+        method: "GET".into(),
+        host,
+        port,
+        path: url.path().into(),
+        query: url.query().unwrap_or("").into(),
+        headers,
+        body_size: 0,
+        mcp: None,
+    };
+    match gate(&request, subject).await {
+        Gate::Allow(headers) => Ok(headers),
+        Gate::Deny(response) => Err(format!(
+            "download denied by gateway with status {}",
+            response.status()
+        )),
+    }
+}
+
 /// A decrypted (or plain-http) request: judge, then forward. WebSocket upgrades
 /// are tunneled (see forward_websocket); everything else is a buffered forward
 /// with the response streamed back.

@@ -523,6 +523,12 @@ pub fn cleanup_scratch(storage: &RunStorage, crashed: bool) -> Result<(), String
         crate::runlog::update_scratch(&storage.run_id, "preserved", None)?;
         return Ok(());
     }
+    let _ = fs::remove_dir_all(
+        root()
+            .join("runs")
+            .join(&storage.run_id)
+            .join("fetch-staging"),
+    );
     match fs::remove_dir_all(&storage.scratch) {
         Ok(()) => {
             crate::runlog::update_scratch(&storage.run_id, "cleaned", None)?;

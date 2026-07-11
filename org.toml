@@ -73,6 +73,13 @@ name = "purpose-edit"
 executor = "purpose"
 trust = "gate"
 
+# Download exact source bytes into the active run's temporary scratch space.
+# The executor independently applies normal web-fetch egress policy and budget.
+[[action]]
+name = "fetch-to-scratch"
+executor = "fetch"
+trust = "auto"
+
 # Scoped interaction memory. The note executor applies its own scope/actor checks and may
 # raise worker-wide or inferred writes to a gate regardless of this base trust.
 [[action]]

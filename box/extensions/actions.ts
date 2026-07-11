@@ -59,6 +59,29 @@ interface PiToolApi {
 
 export default function rosterActionTools(api: PiToolApi): void {
   api.registerTool({
+    name: "fetch_to_scratch",
+    label: "fetch_to_scratch",
+    description:
+      "Download exact source bytes into this run's temporary scratch space. Use this for PDFs, datasets, archives, " +
+      "or any source whose original bytes you need to inspect. The result includes a durable fetch receipt ID, URL, " +
+      "media type, size, and SHA-256 hash. Scratch bytes are deleted when the run exits.",
+    promptSnippet: "fetch_to_scratch(url, path): governed exact-byte download with durable receipt",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "HTTP or HTTPS source URL." },
+        path: { type: "string", description: "Relative destination inside scratch, such as downloads/report.pdf." },
+      },
+      required: ["url", "path"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const s = await submit("fetch-to-scratch", params, "Preserve exact source bytes for this research run.");
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
     name: "message_user",
     label: "message_user",
     description:
@@ -108,7 +131,8 @@ export default function rosterActionTools(api: PiToolApi): void {
     description:
       "Store a short, durable observation for future runs. Use user scope for a stable preference about the " +
       "current speaker, channel scope for shared workstream context, and worker scope only for broadly reusable " +
-      "knowledge. Memory is advisory and must not contain secrets or instructions that override governance.",
+      "interaction conventions. Research about the world belongs in the knowledge repository. Memory is advisory " +
+      "and must not contain secrets or instructions that override governance.",
     promptSnippet: "remember(note, scope, kind, basis): store a scoped observation",
     parameters: {
       type: "object",

@@ -3,8 +3,9 @@
 **Status: partially implemented.** Repository isolation, append-mode validation,
 serialized integration, clean-exit checkpoints, crash quarantine, scratch
 cleanup, compiled storage policy, run history, basic owner inspection, and
-exclusive reorganization jobs are built. Download receipts, publication, mid-run checkpoints,
-hard scratch quotas, and operational repair commands remain to be implemented.
+exclusive reorganization jobs, and governed download receipts are built.
+Publication, mid-run checkpoints, hard quotas for non-tool scratch writes, and
+operational repair commands remain to be implemented.
 This document defines the complete target.
 
 ## Outcome
@@ -385,6 +386,18 @@ and cleanup state.
 Governed download and fetch tools record an append-only journal event. The event
 describes what was acquired without copying the full body into the journal:
 
+```text
+fetch_to_scratch(url, path)
+```
+
+The trusted host derives the active worker and run, applies the normal web-fetch
+grant and budget to every redirect hop, streams into host-only staging with the
+remaining scratch byte limit, hashes the exact body, and then places it at the
+relative scratch path. Existing destinations, path escapes, hidden components,
+symlink traversal, and hosts without a public network address are rejected. DNS
+is resolved and pinned for the request so a public hostname cannot rebind to a
+private or link-local address between policy evaluation and download.
+
 ```json
 {
   "kind": "fetch-completed",
@@ -626,7 +639,7 @@ surface do not drift:
   it for owner repair.
 - Add checkpoint and crash-quarantine behavior.
 
-### 3. Scratch lifecycle and fetch receipts — scratch cleanup built; receipts and hard quotas pending
+### 3. Scratch lifecycle and fetch receipts — receipts and cleanup built; hard quotas for arbitrary writes pending
 
 - Provision isolated quota-bound scratch directories.
 - Journal governed fetch receipts with hashes and transient pointers.

@@ -137,10 +137,10 @@ async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Bod
         return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": format!("no action grant for \"{}\"", env.intent) }));
     };
     let grant = grant.clone();
-    if grant.executor == "note" && trusted_run_id.is_empty() {
-        journal::append(worker, &run_id, "action-refused", json!({ "intent": env.intent, "reason": "memory action has no trusted run context" }));
+    if matches!(grant.executor.as_str(), "note" | "fetch") && trusted_run_id.is_empty() {
+        journal::append(worker, &run_id, "action-refused", json!({ "intent": env.intent, "reason": "run-scoped action has no trusted run context" }));
         audit(worker, &env.intent, "refused", None, None);
-        return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": "memory action has no trusted run context" }));
+        return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": "run-scoped action has no trusted run context" }));
     }
 
     journal::append(worker, &run_id, "action-proposed", json!({ "intent": env.intent, "rationale": env.rationale, "run_id": run_id }));
@@ -315,6 +315,7 @@ pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &
         "identity" => exec_identity(worker, payload),
         "purpose" => exec_purpose(payload),
         "discord" => exec_discord(worker, payload).await,
+        "fetch" => crate::fetch::execute(worker, run_id, payload).await,
         "note" => crate::memory::execute(worker, intent, payload, run_id),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }

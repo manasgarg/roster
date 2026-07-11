@@ -1,6 +1,6 @@
 //! `roster queue` — file, list, and inspect tasks for the supervisor to dispatch.
 //!
-//!   roster queue add --worker <name> [--ceiling <m>] [--proactive] "<prompt>"
+//!   roster queue add --worker <name> [--ceiling <m>] [--proactive|--reorganize] "<prompt>"
 //!   roster queue ls
 //!   roster queue show <id>
 
@@ -14,7 +14,9 @@ pub fn run(args: &[String]) -> Result<(), BErr> {
         "ls" | "list" => ls(),
         "show" => show(args.get(1).ok_or("usage: roster queue show <id>")?),
         "requeue" => requeue(args.get(1).ok_or("usage: roster queue requeue <id>")?),
-        other => Err(format!("unknown queue subcommand \"{other}\" (try: add, ls, show, requeue)").into()),
+        other => Err(
+            format!("unknown queue subcommand \"{other}\" (try: add, ls, show, requeue)").into(),
+        ),
     }
 }
 
@@ -35,6 +37,17 @@ fn requeue(id: &str) -> Result<(), BErr> {
             .into());
         }
     }
+    if t.knowledge_mode == "reorganization" {
+        if let Some(active) =
+            queue::active_reorganization(&t.worker).filter(|active| active.id != t.id)
+        {
+            return Err(format!(
+                "worker {} already has reorganization task {} in state {}",
+                t.worker, active.id, active.state
+            )
+            .into());
+        }
+    }
     let prev = t.state.clone();
     t.run_id = None;
     queue::set_state(&mut t, "waiting").map_err(|e| e.to_string())?;
@@ -47,10 +60,15 @@ fn show(id: &str) -> Result<(), BErr> {
     println!("task     {}", t.id);
     println!("worker   {}", t.worker);
     println!("state    {}", t.state);
-    println!("origin   {}{}", t.origin, if t.proactive { " (proactive)" } else { "" });
+    println!(
+        "origin   {}{}",
+        t.origin,
+        if t.proactive { " (proactive)" } else { "" }
+    );
     println!("created  {}", t.created_at);
     println!("updated  {}", t.updated_at);
     println!("ceiling  {} min", t.ceiling_min);
+    println!("knowledge {}", t.knowledge_mode);
     if let Some(run) = &t.run_id {
         println!("run      {run}   (transcript: runs/{run}/stdout.jsonl)");
     }
@@ -59,7 +77,15 @@ fn show(id: &str) -> Result<(), BErr> {
     }
     let gates = crate::gate::pending_for_task(&t.id);
     if !gates.is_empty() {
-        println!("gates    {} pending: {}", gates.len(), gates.iter().map(|g| g.id.as_str()).collect::<Vec<_>>().join(", "));
+        println!(
+            "gates    {} pending: {}",
+            gates.len(),
+            gates
+                .iter()
+                .map(|g| g.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     if !t.context.is_null() {
         println!("context  {}", serde_json::to_string_pretty(&t.context)?);
@@ -69,7 +95,11 @@ fn show(id: &str) -> Result<(), BErr> {
     if let Some(run) = &t.run_id {
         let events = crate::journal::for_run(&t.subject(), run);
         if !events.is_empty() {
-            println!("\njournal (run {run}, {} event{}):", events.len(), if events.len() == 1 { "" } else { "s" });
+            println!(
+                "\njournal (run {run}, {} event{}):",
+                events.len(),
+                if events.len() == 1 { "" } else { "s" }
+            );
             for e in &events {
                 println!(
                     "  {}  {:<16}  {}",
@@ -89,6 +119,7 @@ fn add(args: &[String]) -> Result<(), BErr> {
     let mut worker = String::new();
     let mut ceiling = 30.0;
     let mut proactive = false;
+    let mut reorganize = false;
     let mut repo: Option<String> = None;
     let mut base = "main".to_string();
     let mut rest: Vec<String> = Vec::new();
@@ -100,13 +131,23 @@ fn add(args: &[String]) -> Result<(), BErr> {
                 i += 2;
             }
             "--ceiling" => {
-                ceiling = args.get(i + 1).and_then(|s| s.parse().ok()).ok_or("--ceiling wants a number of minutes")?;
+                ceiling = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or("--ceiling wants a number of minutes")?;
                 i += 2;
             }
             "--repo" => {
                 // Absolute path so the worktree resolves from the supervisor's cwd.
-                let p = args.get(i + 1).cloned().ok_or("--repo wants a git repo path")?;
-                repo = Some(std::fs::canonicalize(&p).map(|c| c.display().to_string()).unwrap_or(p));
+                let p = args
+                    .get(i + 1)
+                    .cloned()
+                    .ok_or("--repo wants a git repo path")?;
+                repo = Some(
+                    std::fs::canonicalize(&p)
+                        .map(|c| c.display().to_string())
+                        .unwrap_or(p),
+                );
                 i += 2;
             }
             "--base" => {
@@ -115,6 +156,10 @@ fn add(args: &[String]) -> Result<(), BErr> {
             }
             "--proactive" => {
                 proactive = true;
+                i += 1;
+            }
+            "--reorganize" => {
+                reorganize = true;
                 i += 1;
             }
             _ => {
@@ -131,9 +176,44 @@ fn add(args: &[String]) -> Result<(), BErr> {
         return Err("queue add needs a prompt".into());
     }
     let base = repo.as_ref().map(|_| base);
-    let kind = if repo.is_some() { "code" } else if proactive { "proactive" } else { "owner-filed" };
-    let t = queue::create(&worker, &prompt, "manual", proactive, ceiling, serde_json::Value::Null, repo, base)
-        .map_err(|e| e.to_string())?;
+    if reorganize {
+        if let Some(active) = queue::active_reorganization(&worker) {
+            return Err(format!(
+                "worker {worker} already has reorganization task {} in state {}",
+                active.id, active.state
+            )
+            .into());
+        }
+        if repo.is_some() {
+            return Err("--reorganize cannot be combined with --repo".into());
+        }
+    }
+    let knowledge_mode = if reorganize {
+        "reorganization"
+    } else {
+        "append"
+    };
+    let kind = if reorganize {
+        "reorganization"
+    } else if repo.is_some() {
+        "code"
+    } else if proactive {
+        "proactive"
+    } else {
+        "owner-filed"
+    };
+    let t = queue::create(
+        &worker,
+        &prompt,
+        "manual",
+        proactive,
+        ceiling,
+        knowledge_mode,
+        serde_json::Value::Null,
+        repo,
+        base,
+    )
+    .map_err(|e| e.to_string())?;
     println!("queued {} for {} ({kind})", t.id, t.worker);
     Ok(())
 }
@@ -148,7 +228,11 @@ fn ls() -> Result<(), BErr> {
         "{:<12}  {:<10}  {:<12}  {:<17}  {:<29}  {:<12}  PROMPT",
         "TASK", "WORKER", "STATE", "UPDATED (UTC)", "RUN", "ORIGIN"
     );
-    tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| b.created_at.cmp(&a.created_at)));
+    tasks.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| b.created_at.cmp(&a.created_at))
+    });
     for t in tasks {
         let prompt = crate::runlog::one_line(&t.prompt, 48);
         let updated = if t.updated_at.len() >= 16 {

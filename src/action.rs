@@ -298,7 +298,7 @@ fn resolve_followup(g: &Gate) {
         g.intent, g.id, outcome
     );
     let context = json!({ "resolved_gate": { "id": g.id, "intent": g.intent, "state": g.state, "result": g.result, "decided_by": g.decided_by, "note": g.decision_note } });
-    let _ = crate::queue::create(&short, &prompt, "continuation", false, 15.0, context, None, None);
+    let _ = crate::queue::create(&short, &prompt, "continuation", false, 15.0, "append", context, None, None);
     journal::append(&g.worker, &g.run_id, "continuation-filed", json!({ "gate_id": g.id, "intent": g.intent }));
 }
 

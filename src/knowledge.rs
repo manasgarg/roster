@@ -6,7 +6,7 @@ use crate::runlog::KnowledgeRunRecord;
 use crate::storage::{KnowledgePolicy, ScratchPolicy};
 use crate::util::root;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -17,7 +17,30 @@ const KNOWLEDGE_MOUNT: &str = "/opt/roster/knowledge";
 const SCRATCH_MOUNT: &str = "/opt/roster/scratch";
 const ALLOWED_EXTENSIONS: &[&str] = &["md", "json", "jsonl", "yaml", "yml", "csv", "txt"];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KnowledgeMode {
+    Append,
+    Reorganization,
+}
+
+impl KnowledgeMode {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "append" => Ok(Self::Append),
+            "reorganization" => Ok(Self::Reorganization),
+            other => Err(format!("unknown knowledge mode \"{other}\"")),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Reorganization => "reorganization",
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Checkout {
     pub worker: String,
     pub run_id: String,
@@ -25,6 +48,7 @@ pub struct Checkout {
     pub base_commit: String,
     pub record_namespace: String,
     pub knowledge_policy: KnowledgePolicy,
+    pub mode: KnowledgeMode,
 }
 
 impl Checkout {
@@ -33,18 +57,33 @@ impl Checkout {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RunStorage {
     pub worker: String,
     pub run_id: String,
     pub scratch: PathBuf,
     pub scratch_policy: ScratchPolicy,
     pub knowledge: Option<Checkout>,
+    _reorganization_lease: Option<Lease>,
 }
 
 impl RunStorage {
     pub fn scratch_mount(&self) -> &'static str {
         SCRATCH_MOUNT
+    }
+}
+
+impl Drop for RunStorage {
+    fn drop(&mut self) {
+        if self._reorganization_lease.is_some() {
+            let _ = crate::journal::append_required(
+                &journal_worker(&self.worker),
+                &self.run_id,
+                "knowledge-reorganization-lease-released",
+                json!({ "implicit": true }),
+            );
+            drop(self._reorganization_lease.take());
+        }
     }
 }
 
@@ -79,6 +118,7 @@ impl From<String> for CheckpointError {
     }
 }
 
+#[derive(Debug)]
 struct Lease {
     path: PathBuf,
 }
@@ -122,21 +162,37 @@ impl Drop for TempTree {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct FileData {
     bytes: Vec<u8>,
 }
 
-pub fn provision(worker: &str, run_id: &str) -> Result<RunStorage, String> {
+struct ValidatedChanges {
+    new_records: BTreeMap<PathBuf, FileData>,
+    organization: Option<BTreeMap<PathBuf, FileData>>,
+    changed_files: usize,
+}
+
+impl ValidatedChanges {
+    fn is_empty(&self) -> bool {
+        self.changed_files == 0
+    }
+}
+
+pub fn provision(worker: &str, run_id: &str, requested_mode: &str) -> Result<RunStorage, String> {
     let worker = short_worker(worker);
     safe_component(worker, "worker")?;
     safe_component(run_id, "run id")?;
+    let mode = KnowledgeMode::parse(requested_mode)?;
     let policy = crate::storage::load(worker);
     let run_dir = root().join("runs").join(run_id);
     let scratch = run_dir.join("scratch");
     fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
 
     if !policy.knowledge.enabled {
+        if mode == KnowledgeMode::Reorganization {
+            return Err("knowledge is disabled; reorganization cannot run".into());
+        }
         crate::runlog::attach_storage(run_id, None)?;
         return Ok(RunStorage {
             worker: worker.into(),
@@ -144,10 +200,26 @@ pub fn provision(worker: &str, run_id: &str) -> Result<RunStorage, String> {
             scratch,
             scratch_policy: policy.scratch,
             knowledge: None,
+            _reorganization_lease: None,
         });
     }
 
     let repo = ensure_repo(worker)?;
+    let reorganization_lease = if mode == KnowledgeMode::Reorganization {
+        Some(acquire_lease(
+            &worker_dir(worker).join("reorganization.lock"),
+        )?)
+    } else {
+        None
+    };
+    // A reorganization snapshots main while holding the integration lane. All
+    // already-running checkpoints drain before this point; later append jobs
+    // may continue because their records/ write set is disjoint.
+    let snapshot_lane = if mode == KnowledgeMode::Reorganization {
+        Some(acquire_lease(&worker_dir(worker).join("integrate.lock"))?)
+    } else {
+        None
+    };
     let base_commit = head(&repo)?;
     let path = run_dir.join("knowledge");
     if path.exists() {
@@ -157,6 +229,7 @@ pub fn provision(worker: &str, run_id: &str) -> Result<RunStorage, String> {
         ));
     }
     clone_at(&repo, &path, &base_commit)?;
+    drop(snapshot_lane);
     fs::remove_dir_all(path.join(".git")).map_err(|error| error.to_string())?;
 
     let record_namespace = format!("n_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
@@ -164,13 +237,21 @@ pub fn provision(worker: &str, run_id: &str) -> Result<RunStorage, String> {
         run_id,
         Some(KnowledgeRunRecord {
             base_commit: base_commit.clone(),
-            mode: "append".into(),
+            mode: mode.as_str().into(),
             record_namespace: record_namespace.clone(),
             state: "active".into(),
             produced_commit: None,
             error: None,
         }),
     )?;
+    if mode == KnowledgeMode::Reorganization {
+        crate::journal::append_required(
+            &journal_worker(worker),
+            run_id,
+            "knowledge-reorganization-lease-acquired",
+            json!({ "base_commit": base_commit }),
+        )?;
+    }
     Ok(RunStorage {
         worker: worker.into(),
         run_id: run_id.into(),
@@ -183,7 +264,9 @@ pub fn provision(worker: &str, run_id: &str) -> Result<RunStorage, String> {
             base_commit,
             record_namespace,
             knowledge_policy: policy.knowledge,
+            mode,
         }),
+        _reorganization_lease: reorganization_lease,
     })
 }
 
@@ -221,13 +304,28 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
     let repo = canonical_repo(&checkout.worker);
     let base = TempTree::new(&worker_dir, "base")?;
     clone_at(&repo, &base.path, &checkout.base_commit)?;
-    let additions = validate_append(
-        &base.path,
-        &checkout.path,
-        &checkout.record_namespace,
-        &checkout.knowledge_policy,
-    )?;
-    if additions.is_empty() {
+    let changes = match checkout.mode {
+        KnowledgeMode::Append => {
+            let new_records = validate_append(
+                &base.path,
+                &checkout.path,
+                &checkout.record_namespace,
+                &checkout.knowledge_policy,
+            )?;
+            ValidatedChanges {
+                changed_files: new_records.len(),
+                new_records,
+                organization: None,
+            }
+        }
+        KnowledgeMode::Reorganization => validate_reorganization(
+            &base.path,
+            &checkout.path,
+            &checkout.record_namespace,
+            &checkout.knowledge_policy,
+        )?,
+    };
+    if changes.is_empty() {
         crate::journal::append_required(
             &journal_worker(&checkout.worker),
             &checkout.run_id,
@@ -245,7 +343,41 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
     let latest = head(&repo)?;
     let integration = TempTree::new(&worker_dir, "integrate")?;
     clone_at(&repo, &integration.path, &latest)?;
-    for (relative, file) in &additions {
+    if let Some(organization) = changes.organization.as_ref() {
+        let base_files = collect_files(&base.path, true)?;
+        let latest_files = collect_files(&integration.path, true)?;
+        let base_organization = files_under(&base_files, "organization");
+        let latest_organization = files_under(&latest_files, "organization");
+        if let Err(error) = durable_paths_unchanged(&base_files, &latest_files) {
+            let pending = worker_dir
+                .join("pending")
+                .join(format!("{}-durable-path-changed", checkout.run_id));
+            integration.preserve(&pending)?;
+            return Err(CheckpointError::needs_merge(format!(
+                "{error}; integration preserved at {}",
+                pending.display()
+            )));
+        }
+        if base_organization != latest_organization {
+            let pending = worker_dir
+                .join("pending")
+                .join(format!("{}-organization-changed", checkout.run_id));
+            integration.preserve(&pending)?;
+            return Err(CheckpointError::needs_merge(format!(
+                "organization changed after the reorganization snapshot; integration preserved at {}",
+                pending.display()
+            )));
+        }
+        let organization_dir = integration.path.join("organization");
+        if organization_dir.exists() {
+            fs::remove_dir_all(&organization_dir).map_err(|error| error.to_string())?;
+        }
+        fs::create_dir_all(&organization_dir).map_err(|error| error.to_string())?;
+        for (relative, file) in organization {
+            write_file(&integration.path, relative, file)?;
+        }
+    }
+    for (relative, file) in &changes.new_records {
         let destination = integration.path.join(relative);
         if destination.exists() {
             let pending = worker_dir
@@ -258,10 +390,7 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
                 pending.display()
             )));
         }
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        fs::write(&destination, &file.bytes).map_err(|error| error.to_string())?;
+        write_file(&integration.path, relative, file)?;
     }
 
     run_git(&integration.path, &["add", "--all"])?;
@@ -280,14 +409,21 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
         .unwrap_or("-");
     let context = crate::memory::load_run_context(&checkout.run_id);
     let channel = context.channel_scope_id().unwrap_or_else(|| "-".into());
+    let subject = if checkout.mode == KnowledgeMode::Reorganization {
+        "Reorganize worker knowledge"
+    } else {
+        "Add worker knowledge"
+    };
     let message = format!(
-        "Add knowledge from run {}\n\nRoster-Worker: {}\nRoster-Run: {}\nRoster-Task: {}\nRoster-Channel: {}\nRoster-Base-Commit: {}\nRoster-Mode: append",
+        "{} from run {}\n\nRoster-Worker: {}\nRoster-Run: {}\nRoster-Task: {}\nRoster-Channel: {}\nRoster-Base-Commit: {}\nRoster-Mode: {}",
+        subject,
         checkout.run_id,
         checkout.worker,
         checkout.run_id,
         task,
         channel,
         checkout.base_commit,
+        checkout.mode.as_str(),
     );
     run_git_owned(
         &integration.path,
@@ -303,7 +439,8 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
             "base_commit": checkout.base_commit,
             "integration_base": latest,
             "candidate_commit": commit,
-            "files": additions.len(),
+            "files": changes.changed_files,
+            "mode": checkout.mode.as_str(),
         }),
     )?;
     let incoming_ref = format!("refs/roster/incoming/{}", checkout.run_id);
@@ -355,13 +492,14 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
         json!({
             "base_commit": checkout.base_commit,
             "commit": commit,
-            "files": additions.len(),
+            "files": changes.changed_files,
+            "mode": checkout.mode.as_str(),
         }),
     )?;
     Ok(Checkpoint {
         state: "integrated",
         commit: Some(commit),
-        files: additions.len(),
+        files: changes.changed_files,
     })
 }
 
@@ -408,6 +546,20 @@ pub fn cleanup_scratch(storage: &RunStorage, crashed: bool) -> Result<(), String
     }
 }
 
+pub fn release_reorganization(storage: &mut RunStorage) -> Result<(), String> {
+    if storage._reorganization_lease.is_none() {
+        return Ok(());
+    }
+    let journal_result = crate::journal::append_required(
+        &journal_worker(&storage.worker),
+        &storage.run_id,
+        "knowledge-reorganization-lease-released",
+        json!({}),
+    );
+    drop(storage._reorganization_lease.take());
+    journal_result
+}
+
 fn validate_append(
     base: &Path,
     checkout: &Path,
@@ -444,6 +596,117 @@ fn validate_append(
         additions.insert(path, file);
     }
     Ok(additions)
+}
+
+fn validate_reorganization(
+    base: &Path,
+    checkout: &Path,
+    namespace: &str,
+    policy: &KnowledgePolicy,
+) -> Result<ValidatedChanges, String> {
+    let base_files = collect_files(base, true)?;
+    let current_files = collect_files(checkout, false)?;
+    enforce_repo_size(&current_files, policy)?;
+
+    durable_paths_unchanged(&base_files, &current_files)?;
+
+    let mut new_records = BTreeMap::new();
+    for (path, file) in &current_files {
+        if is_under(path, "organization") {
+            validate_organization_file(path, &file.bytes, policy)?;
+        } else if is_under(path, "records") {
+            if !base_files.contains_key(path) {
+                validate_new_record(path, &file.bytes, namespace, policy)?;
+                new_records.insert(path.clone(), file.clone());
+            }
+        } else if !base_files.contains_key(path) {
+            return Err(format!(
+                "reorganization may add files only under records/ or organization/: {}",
+                path.display()
+            ));
+        }
+    }
+
+    let base_organization = files_under(&base_files, "organization");
+    let organization = files_under(&current_files, "organization");
+    let organization_changes = changed_file_count(&base_organization, &organization);
+    Ok(ValidatedChanges {
+        changed_files: new_records.len() + organization_changes,
+        new_records,
+        organization: Some(organization),
+    })
+}
+
+fn durable_paths_unchanged(
+    base: &BTreeMap<PathBuf, FileData>,
+    current: &BTreeMap<PathBuf, FileData>,
+) -> Result<(), String> {
+    for (path, original) in base {
+        if is_under(path, "organization") {
+            continue;
+        }
+        let Some(value) = current.get(path) else {
+            return Err(format!(
+                "reorganization cannot delete durable path {}",
+                path.display()
+            ));
+        };
+        if value != original {
+            return Err(format!(
+                "reorganization cannot modify durable path {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn enforce_repo_size(
+    files: &BTreeMap<PathBuf, FileData>,
+    policy: &KnowledgePolicy,
+) -> Result<(), String> {
+    let total: u64 = files.values().map(|file| file.bytes.len() as u64).sum();
+    if total > policy.max_repo_bytes {
+        return Err(format!(
+            "knowledge checkout is {total} bytes, over the {} byte limit",
+            policy.max_repo_bytes
+        ));
+    }
+    Ok(())
+}
+
+fn is_under(path: &Path, domain: &str) -> bool {
+    path.components().next() == Some(Component::Normal(domain.as_ref()))
+}
+
+fn files_under(files: &BTreeMap<PathBuf, FileData>, domain: &str) -> BTreeMap<PathBuf, FileData> {
+    files
+        .iter()
+        .filter(|(path, _)| is_under(path, domain))
+        .map(|(path, file)| (path.clone(), file.clone()))
+        .collect()
+}
+
+fn changed_file_count(
+    before: &BTreeMap<PathBuf, FileData>,
+    after: &BTreeMap<PathBuf, FileData>,
+) -> usize {
+    before
+        .keys()
+        .chain(after.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| before.get(path) != after.get(path))
+        .count()
+}
+
+fn write_file(root: &Path, relative: &Path, file: &FileData) -> Result<(), String> {
+    let destination = root.join(relative);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(destination, &file.bytes).map_err(|error| error.to_string())
 }
 
 fn collect_files(root: &Path, allow_git: bool) -> Result<BTreeMap<PathBuf, FileData>, String> {
@@ -526,17 +789,7 @@ fn validate_new_record(
             path.display()
         ));
     }
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("");
-    if !ALLOWED_EXTENSIONS.contains(&extension) {
-        return Err(format!(
-            "unsupported knowledge extension for {} (allowed: {})",
-            path.display(),
-            ALLOWED_EXTENSIONS.join(", ")
-        ));
-    }
+    validate_text_file(path, bytes, policy)?;
     let stem = path
         .file_stem()
         .and_then(|value| value.to_str())
@@ -556,6 +809,36 @@ fn validate_new_record(
         return Err(format!(
             "record filename must end in --{namespace}_<number>: {}",
             path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_organization_file(
+    path: &Path,
+    bytes: &[u8],
+    policy: &KnowledgePolicy,
+) -> Result<(), String> {
+    validate_relative_path(path)?;
+    if !is_under(path, "organization") || path.components().count() < 2 {
+        return Err(format!(
+            "reorganization files must remain under organization/: {}",
+            path.display()
+        ));
+    }
+    validate_text_file(path, bytes, policy)
+}
+
+fn validate_text_file(path: &Path, bytes: &[u8], policy: &KnowledgePolicy) -> Result<(), String> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    if !ALLOWED_EXTENSIONS.contains(&extension) {
+        return Err(format!(
+            "unsupported knowledge extension for {} (allowed: {})",
+            path.display(),
+            ALLOWED_EXTENSIONS.join(", ")
         ));
     }
     let text = std::str::from_utf8(bytes)
@@ -844,5 +1127,66 @@ mod tests {
             &p
         )
         .is_err());
+    }
+
+    #[test]
+    fn reorganization_changes_only_organization_and_new_records() {
+        let temp =
+            std::env::temp_dir().join(format!("roster-reorganization-{}", uuid::Uuid::new_v4()));
+        let base = temp.join("base");
+        let checkout = temp.join("checkout");
+        for root in [&base, &checkout] {
+            fs::create_dir_all(root.join("records")).unwrap();
+            fs::create_dir_all(root.join("organization")).unwrap();
+            fs::write(root.join("records/source--n_old_01.md"), "source").unwrap();
+            fs::write(root.join("organization/topic.md"), "old pointer").unwrap();
+        }
+        fs::write(checkout.join("organization/topic.md"), "new pointer").unwrap();
+        fs::write(
+            checkout.join("records/synthesis--n_run123_01.md"),
+            "synthesis",
+        )
+        .unwrap();
+
+        let changes = validate_reorganization(&base, &checkout, "n_run123", &policy()).unwrap();
+        assert_eq!(changes.new_records.len(), 1);
+        assert_eq!(changes.changed_files, 2);
+
+        fs::write(checkout.join("records/source--n_old_01.md"), "rewritten").unwrap();
+        assert!(validate_reorganization(&base, &checkout, "n_run123", &policy()).is_err());
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn organization_change_count_includes_deletions() {
+        let before = BTreeMap::from([
+            (
+                PathBuf::from("organization/a.md"),
+                FileData {
+                    bytes: b"a".to_vec(),
+                },
+            ),
+            (
+                PathBuf::from("organization/b.md"),
+                FileData {
+                    bytes: b"b".to_vec(),
+                },
+            ),
+        ]);
+        let after = BTreeMap::from([
+            (
+                PathBuf::from("organization/a.md"),
+                FileData {
+                    bytes: b"changed".to_vec(),
+                },
+            ),
+            (
+                PathBuf::from("organization/c.md"),
+                FileData {
+                    bytes: b"c".to_vec(),
+                },
+            ),
+        ]);
+        assert_eq!(changed_file_count(&before, &after), 3);
     }
 }

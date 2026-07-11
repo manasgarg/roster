@@ -97,7 +97,7 @@ pub fn fire() -> usize {
         };
         let last = state.get(&key(t)).copied().unwrap_or(0);
         if now - last >= interval {
-            match crate::queue::create(&t.worker, &t.prompt, "schedule", true, t.ceiling_min, Value::Null, None, None) {
+            match crate::queue::create(&t.worker, &t.prompt, "schedule", true, t.ceiling_min, "append", Value::Null, None, None) {
                 Ok(task) => {
                     state.insert(key(t), now);
                     fired += 1;

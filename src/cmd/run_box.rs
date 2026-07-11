@@ -30,7 +30,10 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
                 i += 2;
             }
             "--ceiling" => {
-                ceiling_min = args.get(i + 1).and_then(|s| s.parse().ok()).ok_or("--ceiling wants a positive number of minutes")?;
+                ceiling_min = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or("--ceiling wants a positive number of minutes")?;
                 if ceiling_min <= 0.0 {
                     return Err("--ceiling wants a positive number of minutes".into());
                 }
@@ -80,6 +83,7 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
         &run_id,
         None,
         &run_context,
+        "append",
     )
     .await
     {
@@ -89,9 +93,18 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
             return Err(error);
         }
     };
-    println!("box {run_id} ended by {ended_by} (exit code {})", exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()));
+    println!(
+        "box {run_id} ended by {ended_by} (exit code {})",
+        exit_code
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "none".into())
+    );
     println!("outputs: {}", run_dir.display());
-    std::process::exit(if ended_by == "ceiling" { 2 } else { exit_code.unwrap_or(1) });
+    std::process::exit(if ended_by == "ceiling" {
+        2
+    } else {
+        exit_code.unwrap_or(1)
+    });
 }
 
 /// The outcome of one box run, for the supervisor.
@@ -127,8 +140,15 @@ pub async fn dispatch(
     task_id: &str,
     run_id: &str,
     code: Option<&CodeSpec>,
+    knowledge_mode: &str,
 ) -> Result<Outcome, BErr> {
-    let kind = if code.is_some() { "code" } else { "task" };
+    let kind = if knowledge_mode == "reorganization" {
+        "reorganization"
+    } else if code.is_some() {
+        "code"
+    } else {
+        "task"
+    };
     crate::runlog::start(run_id, worker, kind, Some(task_id))?;
     let request = crate::context::ContextRequest {
         run_id: run_id.to_string(),
@@ -154,6 +174,7 @@ pub async fn dispatch(
         run_id,
         code,
         run_context,
+        knowledge_mode,
     )
     .await
     {
@@ -163,7 +184,11 @@ pub async fn dispatch(
             return Err(error);
         }
     };
-    Ok(Outcome { run_id, ended_by, exit_code })
+    Ok(Outcome {
+        run_id,
+        ended_by,
+        exit_code,
+    })
 }
 
 /// The container name for a run — the supervisor checks `docker ps` for this to
@@ -175,7 +200,12 @@ pub fn container_name(run_id: &str) -> String {
 /// Is the box container for this run still alive? (For reclaim/requeue safety.)
 pub fn box_alive(run_id: &str) -> bool {
     std::process::Command::new("docker")
-        .args(["ps", "-q", "--filter", &format!("name={}", container_name(run_id))])
+        .args([
+            "ps",
+            "-q",
+            "--filter",
+            &format!("name={}", container_name(run_id)),
+        ])
         .output()
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false)
@@ -191,7 +221,10 @@ pub fn new_run_id() -> String {
         .take(19)
         .map(|c| if c == 'T' || c == ':' { '-' } else { c })
         .collect::<String>();
-    format!("{stamp}-{}", &uuid::Uuid::new_v4().simple().to_string()[..4])
+    format!(
+        "{stamp}-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..4]
+    )
 }
 
 async fn run_box(
@@ -202,9 +235,17 @@ async fn run_box(
     run_id: &str,
     code: Option<&CodeSpec>,
     run_context: &crate::memory::RunContext,
+    knowledge_mode: &str,
 ) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
-    let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo, storage } =
-        provision_box(worker, run_id, task_id, code, run_context).await?;
+    let Provisioned {
+        mut args,
+        identity_file,
+        container,
+        session_dir,
+        run_dir,
+        repo,
+        mut storage,
+    } = provision_box(worker, run_id, task_id, code, run_context, knowledge_mode).await?;
     args.extend(pi_prefix(&repo, "json", &session_dir)?);
     append_cache_session_id(&mut args, &compiled.cache.route_key);
     if !compiled.system_prompt.is_empty() {
@@ -257,7 +298,7 @@ async fn run_box(
     };
     let _ = stream.await;
     let _ = std::fs::remove_file(&identity_file); // single-use token
-    finalize_storage(&storage, ended_by == "exit" && status.success());
+    finalize_storage(&mut storage, ended_by == "exit" && status.success());
     let _ = crate::runlog::finish(run_id, ended_by, status.code());
 
     Ok((run_id.to_string(), run_dir, ended_by, status.code()))
@@ -299,14 +340,21 @@ pub async fn run_session(
         }
     };
 
-    let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo, storage } =
-        match provision_box(worker, run_id, "", None, &start_context).await {
-            Ok(provisioned) => provisioned,
-            Err(error) => {
-                crate::runlog::fail(run_id);
-                return Err(error);
-            }
-        };
+    let Provisioned {
+        mut args,
+        identity_file,
+        container,
+        session_dir,
+        run_dir,
+        repo,
+        mut storage,
+    } = match provision_box(worker, run_id, "", None, &start_context, "append").await {
+        Ok(provisioned) => provisioned,
+        Err(error) => {
+            crate::runlog::fail(run_id);
+            return Err(error);
+        }
+    };
     args.insert(1, "-i".into()); // keep stdin open for the rpc protocol
     args.extend(pi_prefix(&repo, "rpc", &session_dir)?);
     append_cache_session_id(&mut args, &start.cache.route_key);
@@ -328,7 +376,9 @@ pub async fn run_session(
     let mut stdin = child.stdin.take().ok_or("session box: no stdin")?;
     let stdout = child.stdout.take().ok_or("session box: no stdout")?;
     let mut lines = tokio::io::BufReader::new(stdout).lines();
-    let mut log = tokio::fs::File::create(run_dir.join("stdout.jsonl")).await.ok();
+    let mut log = tokio::fs::File::create(run_dir.join("stdout.jsonl"))
+        .await
+        .ok();
 
     eprintln!("session {run_id} [{worker}] started");
     let idle = Duration::from_secs(idle_secs);
@@ -342,7 +392,9 @@ pub async fn run_session(
         if !busy {
             if let Some(msg) = pending.pop_front() {
                 if let Err(error) = crate::memory::save_run_context(run_id, &msg.context) {
-                    eprintln!("session {run_id}: context save failed; message not delivered: {error}");
+                    eprintln!(
+                        "session {run_id}: context save failed; message not delivered: {error}"
+                    );
                     continue;
                 }
                 let request = crate::context::ContextRequest {
@@ -372,7 +424,9 @@ pub async fn run_session(
                     "message": compiled.input_prompt.unwrap_or_default()
                 })
                 .to_string();
-                if stdin.write_all(line.as_bytes()).await.is_err() || stdin.write_all(b"\n").await.is_err() {
+                if stdin.write_all(line.as_bytes()).await.is_err()
+                    || stdin.write_all(b"\n").await.is_err()
+                {
                     break;
                 }
                 let _ = stdin.flush().await;
@@ -404,8 +458,12 @@ pub async fn run_session(
     docker_kill(&container).await;
     let _ = child.wait().await;
     let _ = std::fs::remove_file(&identity_file); // single-use token
-    finalize_storage(&storage, clean_exit);
-    let _ = crate::runlog::finish(run_id, if clean_exit { "idle" } else { "error" }, if clean_exit { Some(0) } else { None });
+    finalize_storage(&mut storage, clean_exit);
+    let _ = crate::runlog::finish(
+        run_id,
+        if clean_exit { "idle" } else { "error" },
+        if clean_exit { Some(0) } else { None },
+    );
     eprintln!("session {run_id} [{worker}] ended");
     Ok(())
 }
@@ -415,7 +473,13 @@ pub async fn run_session(
 /// The pi command prefix shared by both box modes: node + entry, output mode, no
 /// host extension discovery, Roster's own extensions, and the session dir.
 fn pi_prefix(repo: &Path, mode: &str, session_dir: &Path) -> Result<Vec<String>, BErr> {
-    let mut v = vec!["node".into(), resolve_pi_entry(repo)?, "--mode".into(), mode.into(), "--no-extensions".into()];
+    let mut v = vec![
+        "node".into(),
+        resolve_pi_entry(repo)?,
+        "--mode".into(),
+        mode.into(),
+        "--no-extensions".into(),
+    ];
     for ext in box_extensions(repo) {
         v.push("-e".into());
         v.push(ext);
@@ -454,6 +518,7 @@ async fn provision_box(
     task_id: &str,
     code: Option<&CodeSpec>,
     run_context: &crate::memory::RunContext,
+    knowledge_mode: &str,
 ) -> Result<Provisioned, BErr> {
     ensure_lockdown().await?;
 
@@ -470,7 +535,7 @@ async fn provision_box(
     let pihome = run_dir.join(".pihome");
     std::fs::create_dir_all(&workspace)?;
     std::fs::create_dir_all(&session)?;
-    let storage = crate::knowledge::provision(worker, run_id)?;
+    let storage = crate::knowledge::provision(worker, run_id, knowledge_mode)?;
 
     // Code task: a writable git worktree on a fresh per-run branch.
     let worktree: Option<PathBuf> = match code {
@@ -485,7 +550,9 @@ async fn provision_box(
                 .map(|s| s.success())
                 .unwrap_or(false);
             if !ok {
-                return Err(format!("could not create worktree from {} at {}", cs.repo, cs.base).into());
+                return Err(
+                    format!("could not create worktree from {} at {}", cs.repo, cs.base).into(),
+                );
             }
             Some(wt)
         }
@@ -494,7 +561,10 @@ async fn provision_box(
 
     let has_auth = prepare_pihome(&pihome, &home)?;
     if !has_auth && std::env::var("ANTHROPIC_API_KEY").is_err() {
-        return Err("no model credentials: neither ~/.pi/agent/auth.json nor ANTHROPIC_API_KEY exists".into());
+        return Err(
+            "no model credentials: neither ~/.pi/agent/auth.json nor ANTHROPIC_API_KEY exists"
+                .into(),
+        );
     }
 
     // Un-spoofable identity: mint a token, register it off the box mount.
@@ -503,18 +573,27 @@ async fn provision_box(
     let identity_dir = home.join(".roster/identity");
     std::fs::create_dir_all(&identity_dir)?;
     let identity_file = identity_dir.join(format!("{token}.json"));
-    write_0600(&identity_file, &format!("{}\n", json!({ "subject": subject, "run_id": run_id })))?;
+    write_0600(
+        &identity_file,
+        &format!("{}\n", json!({ "subject": subject, "run_id": run_id })),
+    )?;
 
     let proxy_url = format!("http://{token}@host.docker.internal:{GATEWAY_PORT}");
     let container = container_name(run_id);
     let (uid, gid) = (unsafe { libc_getuid() }, unsafe { libc_getgid() });
 
     let mut args: Vec<String> = vec![
-        "run".into(), "--rm".into(), "--name".into(), container.clone(),
+        "run".into(),
+        "--rm".into(),
+        "--name".into(),
+        container.clone(),
         "--add-host=host.docker.internal:host-gateway".into(),
-        "--network".into(), LOCKDOWN_NETWORK.into(),
-        "-u".into(), format!("{uid}:{gid}"),
-        "-v".into(), format!("{0}:{0}:ro", repo.display()),
+        "--network".into(),
+        LOCKDOWN_NETWORK.into(),
+        "-u".into(),
+        format!("{uid}:{gid}"),
+        "-v".into(),
+        format!("{0}:{0}:ro", repo.display()),
     ];
     // The repo contains gitignored trusted runtime state. Shadow it before
     // overlaying only this run's writable paths and authorized channel.
@@ -525,7 +604,14 @@ async fn provision_box(
         args.push(format!("/dev/null:{}:ro", env_file.display()));
     }
     let mount = |p: &Path| format!("{0}:{0}", p.display());
-    args.extend(["-v".into(), mount(&workspace), "-v".into(), mount(&session), "-v".into(), mount(&pihome)]);
+    args.extend([
+        "-v".into(),
+        mount(&workspace),
+        "-v".into(),
+        mount(&session),
+        "-v".into(),
+        mount(&pihome),
+    ]);
     args.extend([
         "-v".into(),
         format!("{}:{}", storage.scratch.display(), storage.scratch_mount()),
@@ -533,16 +619,17 @@ async fn provision_box(
     if let Some(knowledge) = storage.knowledge.as_ref() {
         args.extend([
             "-v".into(),
-            format!("{}:{}", knowledge.path.display(), knowledge.knowledge_mount()),
+            format!(
+                "{}:{}",
+                knowledge.path.display(),
+                knowledge.knowledge_mount()
+            ),
         ]);
     }
     if let Some(channel) = run_context.channel_id.as_deref() {
         let channel_dir = repo.join("channels").join(channel);
         if channel_dir.is_dir() {
-            args.extend([
-                "-v".into(),
-                format!("{0}:{0}:ro", channel_dir.display()),
-            ]);
+            args.extend(["-v".into(), format!("{0}:{0}:ro", channel_dir.display())]);
         }
     }
     if let Some(wt) = &worktree {
@@ -551,9 +638,15 @@ async fn provision_box(
     args.push("-v".into());
     args.push(format!("{}:{BOX_CA_PATH}:ro", host_ca.display()));
     args.extend(["-e".into(), format!("HOME={}", pihome.display())]);
-    args.extend(["-e".into(), format!("PI_CODING_AGENT_DIR={}", pihome.join("agent").display())]);
+    args.extend([
+        "-e".into(),
+        format!("PI_CODING_AGENT_DIR={}", pihome.join("agent").display()),
+    ]);
     args.extend(["-e".into(), format!("ROSTER_RUN_ID={run_id}")]);
-    args.extend(["-e".into(), format!("ROSTER_SCRATCH_DIR={}", storage.scratch_mount())]);
+    args.extend([
+        "-e".into(),
+        format!("ROSTER_SCRATCH_DIR={}", storage.scratch_mount()),
+    ]);
     if let Some(knowledge) = storage.knowledge.as_ref() {
         args.extend([
             "-e".into(),
@@ -562,6 +655,8 @@ async fn provision_box(
             format!("ROSTER_KNOWLEDGE_BASE={}", knowledge.base_commit),
             "-e".into(),
             format!("ROSTER_RECORD_NAMESPACE={}", knowledge.record_namespace),
+            "-e".into(),
+            format!("ROSTER_KNOWLEDGE_MODE={}", knowledge.mode.as_str()),
         ]);
     }
     if !task_id.is_empty() {
@@ -570,8 +665,17 @@ async fn provision_box(
     for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
         args.extend(["-e".into(), format!("{k}={proxy_url}")]);
     }
-    args.extend(["-e".into(), "NODE_USE_ENV_PROXY=1".into(), "-e".into(), "NO_PROXY=".into()]);
-    for k in ["NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"] {
+    args.extend([
+        "-e".into(),
+        "NODE_USE_ENV_PROXY=1".into(),
+        "-e".into(),
+        "NO_PROXY=".into(),
+    ]);
+    for k in [
+        "NODE_EXTRA_CA_CERTS",
+        "CURL_CA_BUNDLE",
+        "REQUESTS_CA_BUNDLE",
+    ] {
         args.extend(["-e".into(), format!("{k}={BOX_CA_PATH}")]);
     }
     if !has_auth {
@@ -582,10 +686,18 @@ async fn provision_box(
     let cwd = worktree.as_ref().unwrap_or(&workspace);
     args.extend(["-w".into(), cwd.display().to_string(), "roster-box".into()]);
 
-    Ok(Provisioned { args, identity_file, container, session_dir: session, run_dir, repo, storage })
+    Ok(Provisioned {
+        args,
+        identity_file,
+        container,
+        session_dir: session,
+        run_dir,
+        repo,
+        storage,
+    })
 }
 
-fn finalize_storage(storage: &crate::knowledge::RunStorage, clean: bool) {
+fn finalize_storage(storage: &mut crate::knowledge::RunStorage, clean: bool) {
     if let Some(checkout) = storage.knowledge.as_ref() {
         if clean && checkout.knowledge_policy.checkpoint_on_clean_exit {
             match crate::knowledge::checkpoint(checkout) {
@@ -596,7 +708,10 @@ fn finalize_storage(storage: &crate::knowledge::RunStorage, clean: bool) {
                     result.commit.as_deref().unwrap_or("-")
                 ),
                 Ok(_) => {}
-                Err(error) => eprintln!("knowledge {}: checkpoint rejected: {error}", checkout.run_id),
+                Err(error) => eprintln!(
+                    "knowledge {}: checkpoint rejected: {error}",
+                    checkout.run_id
+                ),
             }
         } else if clean {
             let _ = crate::runlog::update_knowledge(
@@ -612,10 +727,26 @@ fn finalize_storage(storage: &crate::knowledge::RunStorage, clean: bool) {
     if let Err(error) = crate::knowledge::cleanup_scratch(storage, !clean) {
         eprintln!("scratch {}: cleanup failed: {error}", storage.run_id);
     }
+    if let Err(error) = crate::knowledge::release_reorganization(storage) {
+        eprintln!(
+            "knowledge {}: could not journal reorganization lease release: {error}",
+            storage.run_id
+        );
+    }
 }
 
 fn append_state_shadows(args: &mut Vec<String>, repo: &Path) {
-    for name in ["runs", "memory", "notes", "journal", "queue", "gates", "channels", "knowledge", "blobs"] {
+    for name in [
+        "runs",
+        "memory",
+        "notes",
+        "journal",
+        "queue",
+        "gates",
+        "channels",
+        "knowledge",
+        "blobs",
+    ] {
         args.extend([
             "--tmpfs".into(),
             format!("{}:rw,noexec,nosuid,nodev", repo.join(name).display()),
@@ -627,7 +758,13 @@ fn append_state_shadows(args: &mut Vec<String>, repo: &Path) {
 
 async fn ensure_lockdown() -> Result<(), BErr> {
     let ok = docker_ok(&["network", "inspect", LOCKDOWN_NETWORK])
-        || docker_ok(&["network", "create", "-o", "com.docker.network.bridge.enable_ip_masquerade=false", LOCKDOWN_NETWORK]);
+        || docker_ok(&[
+            "network",
+            "create",
+            "-o",
+            "com.docker.network.bridge.enable_ip_masquerade=false",
+            LOCKDOWN_NETWORK,
+        ]);
     if !ok {
         return Err(format!("refusing to start the box with open egress: the \"{LOCKDOWN_NETWORK}\" docker network could not be created").into());
     }
@@ -672,8 +809,14 @@ fn prepare_pihome(pihome: &Path, home: &Path) -> Result<bool, BErr> {
     let has_auth = auth_src.exists();
     if has_auth {
         let real: Map<String, Value> = serde_json::from_str(&std::fs::read_to_string(&auth_src)?)?;
-        let sentinel: Map<String, Value> = real.iter().map(|(k, v)| (k.clone(), sentinelize(v))).collect();
-        std::fs::write(agent.join("auth.json"), format!("{}\n", serde_json::to_string_pretty(&sentinel)?))?;
+        let sentinel: Map<String, Value> = real
+            .iter()
+            .map(|(k, v)| (k.clone(), sentinelize(v)))
+            .collect();
+        std::fs::write(
+            agent.join("auth.json"),
+            format!("{}\n", serde_json::to_string_pretty(&sentinel)?),
+        )?;
     }
     // Rebuild settings: only the model selection carries over.
     let host: Map<String, Value> = std::fs::read_to_string(home.join(".pi/agent/settings.json"))
@@ -686,7 +829,10 @@ fn prepare_pihome(pihome: &Path, home: &Path) -> Result<bool, BErr> {
             settings.insert(k.to_string(), v.clone());
         }
     }
-    std::fs::write(agent.join("settings.json"), format!("{}\n", serde_json::to_string_pretty(&settings)?))?;
+    std::fs::write(
+        agent.join("settings.json"),
+        format!("{}\n", serde_json::to_string_pretty(&settings)?),
+    )?;
     Ok(has_auth)
 }
 
@@ -694,7 +840,14 @@ fn sentinelize(entry: &Value) -> Value {
     let mut e = entry.as_object().cloned().unwrap_or_default();
     if let Some(access) = e.get("access").and_then(|v| v.as_str()) {
         let is_jwt = access.split('.').count() == 3;
-        e.insert("access".into(), json!(if is_jwt { sentinel_jwt() } else { SENTINEL.to_string() }));
+        e.insert(
+            "access".into(),
+            json!(if is_jwt {
+                sentinel_jwt()
+            } else {
+                SENTINEL.to_string()
+            }),
+        );
     }
     if e.get("refresh").and_then(|v| v.as_str()).is_some() {
         e.insert("refresh".into(), json!(SENTINEL));
@@ -703,7 +856,10 @@ fn sentinelize(entry: &Value) -> Value {
         e.insert("accountId".into(), json!("roster-sentinel-account"));
     }
     if e.get("expires").and_then(|v| v.as_i64()).is_some() {
-        e.insert("expires".into(), json!(now_ms() + 100 * 365 * 24 * 3600 * 1000));
+        e.insert(
+            "expires".into(),
+            json!(now_ms() + 100 * 365 * 24 * 3600 * 1000),
+        );
     }
     Value::Object(e)
 }
@@ -793,10 +949,18 @@ mod tests {
         let repo = Path::new("/srv/roster");
         let mut args = Vec::new();
         append_state_shadows(&mut args, repo);
-        for name in ["runs", "memory", "notes", "journal", "queue", "gates", "channels", "knowledge", "blobs"] {
-            assert!(args.contains(&format!(
-                "/srv/roster/{name}:rw,noexec,nosuid,nodev"
-            )));
+        for name in [
+            "runs",
+            "memory",
+            "notes",
+            "journal",
+            "queue",
+            "gates",
+            "channels",
+            "knowledge",
+            "blobs",
+        ] {
+            assert!(args.contains(&format!("/srv/roster/{name}:rw,noexec,nosuid,nodev")));
         }
         assert_eq!(args.iter().filter(|arg| *arg == "--tmpfs").count(), 9);
     }
@@ -805,9 +969,6 @@ mod tests {
     fn cache_route_key_becomes_the_pi_session_id() {
         let mut args = vec!["node".into(), "pi".into()];
         append_cache_session_id(&mut args, "roster-pc-abc123");
-        assert_eq!(
-            args,
-            vec!["node", "pi", "--session-id", "roster-pc-abc123"]
-        );
+        assert_eq!(args, vec!["node", "pi", "--session-id", "roster-pc-abc123"]);
     }
 }

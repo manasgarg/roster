@@ -24,7 +24,11 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
     while i < args.len() {
         match args[i].as_str() {
             "--cap" => {
-                cap = args.get(i + 1).and_then(|s| s.parse().ok()).filter(|&n| n >= 1).ok_or("--cap wants a positive integer")?;
+                cap = args
+                    .get(i + 1)
+                    .and_then(|s| s.parse().ok())
+                    .filter(|&n| n >= 1)
+                    .ok_or("--cap wants a positive integer")?;
                 i += 2;
             }
             "--once" => {
@@ -47,7 +51,10 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
         return Ok(());
     }
 
-    eprintln!("roster supervise — dispatching tasks (cap {cap}{})", if once { ", once" } else { "" });
+    eprintln!(
+        "roster supervise — dispatching tasks (cap {cap}{})",
+        if once { ", once" } else { "" }
+    );
     reclaim();
     let mut set: JoinSet<(queue::Task, Result<run_box::Outcome, String>)> = JoinSet::new();
 
@@ -57,12 +64,16 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
 
         // Fill idle slots with the next waiting tasks (each atomically claimed).
         while set.len() < cap {
-            let Some(mut task) = queue::claim_next() else { break };
+            let Some(mut task) = queue::claim_next() else {
+                break;
+            };
             // D6: proactive work is soft-stopped when the worker is over budget;
             // owner-filed/continuation work always runs.
             if task.proactive {
                 let limits = crate::budget::load_budget().limits;
-                if let Some(reason) = ledger::over_any_limit(&task.subject(), &limits, crate::util::now_ms()) {
+                if let Some(reason) =
+                    ledger::over_any_limit(&task.subject(), &limits, crate::util::now_ms())
+                {
                     eprintln!("defer {} (proactive, {reason})", task.id);
                     let _ = queue::set_state(&mut task, "deferred");
                     continue;
@@ -75,7 +86,12 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
             let _ = queue::save(&task);
             let memory_context = task_memory_context(&task);
             let _ = crate::memory::save_run_context(&run_id, &memory_context);
-            eprintln!("dispatch {} [{}] run {run_id} — {}", task.id, task.worker, first_line(&task.prompt));
+            eprintln!(
+                "dispatch {} [{}] run {run_id} — {}",
+                task.id,
+                task.worker,
+                first_line(&task.prompt)
+            );
             let t = task.clone();
             let context_task = crate::context::TaskInput {
                 task_id: Some(task.id.clone()),
@@ -84,7 +100,10 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
                 continuation: task.context.get("resolved_gate").cloned(),
             };
             set.spawn(async move {
-                let code = t.repo.as_ref().map(|r| run_box::CodeSpec { repo: r.clone(), base: t.base.clone().unwrap_or_else(|| "main".into()) });
+                let code = t.repo.as_ref().map(|r| run_box::CodeSpec {
+                    repo: r.clone(),
+                    base: t.base.clone().unwrap_or_else(|| "main".into()),
+                });
                 let out = run_box::dispatch(
                     &t.worker,
                     context_task,
@@ -93,6 +112,7 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
                     &t.id,
                     &run_id,
                     code.as_ref(),
+                    &t.knowledge_mode,
                 )
                 .await
                 .map_err(|e| e.to_string());
@@ -111,10 +131,11 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
         // Wait for a run to finish, but wake at least every POLL_SECS so a task
         // filed while a box is running fills a free slot promptly, instead of
         // waiting for that box to finish.
-        let joined = match tokio::time::timeout(Duration::from_secs(POLL_SECS), set.join_next()).await {
-            Ok(j) => j,
-            Err(_) => continue, // timed out — loop back and re-poll the queue
-        };
+        let joined =
+            match tokio::time::timeout(Duration::from_secs(POLL_SECS), set.join_next()).await {
+                Ok(j) => j,
+                Err(_) => continue, // timed out — loop back and re-poll the queue
+            };
         if let Some(joined) = joined {
             match joined {
                 Ok((task, outcome)) => finalize(task, outcome),
@@ -129,9 +150,16 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
 /// supervisor. If its box container is gone, put it back to `waiting` so it runs
 /// again; if a container is somehow still alive, leave it be (don't double-run).
 fn reclaim() {
-    for mut t in queue::list_all().into_iter().filter(|t| t.state == "running") {
+    for mut t in queue::list_all()
+        .into_iter()
+        .filter(|t| t.state == "running")
+    {
         if t.run_id.as_deref().map(run_box::box_alive).unwrap_or(false) {
-            eprintln!("reclaim: {} still has a live box ({}) — leaving it", t.id, t.run_id.as_deref().unwrap_or(""));
+            eprintln!(
+                "reclaim: {} still has a live box ({}) — leaving it",
+                t.id,
+                t.run_id.as_deref().unwrap_or("")
+            );
         } else if queue::set_state(&mut t, "waiting").is_ok() {
             eprintln!("reclaim: {} → waiting (no live box)", t.id);
         }
@@ -139,13 +167,33 @@ fn reclaim() {
 }
 
 fn task_memory_context(task: &queue::Task) -> crate::memory::RunContext {
-    let d = task.context.get("discord").unwrap_or(&serde_json::Value::Null);
+    let d = task
+        .context
+        .get("discord")
+        .unwrap_or(&serde_json::Value::Null);
     crate::memory::RunContext {
-        provider: if d.is_null() { String::new() } else { "discord".into() },
-        channel_id: d.get("channel_id").and_then(|v| v.as_str()).map(String::from),
-        user_id: d.get("author_id").and_then(|v| v.as_str()).map(String::from),
-        message_id: d.get("message_id").and_then(|v| v.as_str()).map(String::from),
-        role: d.get("role").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        provider: if d.is_null() {
+            String::new()
+        } else {
+            "discord".into()
+        },
+        channel_id: d
+            .get("channel_id")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        user_id: d
+            .get("author_id")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        message_id: d
+            .get("message_id")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        role: d
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         is_dm: d.get("is_dm").and_then(|v| v.as_bool()).unwrap_or(false),
     }
 }

@@ -39,10 +39,17 @@ pub struct Task {
     pub repo: Option<String>,
     #[serde(default)]
     pub base: Option<String>,
+    /// append | reorganization. Code and ordinary research tasks use append.
+    #[serde(default = "default_knowledge_mode")]
+    pub knowledge_mode: String,
 }
 
 fn default_ceiling() -> f64 {
     30.0
+}
+
+fn default_knowledge_mode() -> String {
+    "append".into()
 }
 
 impl Task {
@@ -60,7 +67,23 @@ fn dir(worker: &str) -> PathBuf {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn create(worker: &str, prompt: &str, origin: &str, proactive: bool, ceiling_min: f64, context: Value, repo: Option<String>, base: Option<String>) -> Result<Task, BErr> {
+pub fn create(
+    worker: &str,
+    prompt: &str,
+    origin: &str,
+    proactive: bool,
+    ceiling_min: f64,
+    knowledge_mode: &str,
+    context: Value,
+    repo: Option<String>,
+    base: Option<String>,
+) -> Result<Task, BErr> {
+    if !matches!(knowledge_mode, "append" | "reorganization") {
+        return Err(format!("unknown knowledge mode \"{knowledge_mode}\"").into());
+    }
+    if knowledge_mode == "reorganization" && repo.is_some() {
+        return Err("a knowledge reorganization cannot also be a code task".into());
+    }
     let now = now_rfc3339();
     let t = Task {
         id: new_id(),
@@ -76,9 +99,21 @@ pub fn create(worker: &str, prompt: &str, origin: &str, proactive: bool, ceiling
         context,
         repo,
         base,
+        knowledge_mode: knowledge_mode.into(),
     };
     save(&t)?;
     Ok(t)
+}
+
+pub fn active_reorganization(worker: &str) -> Option<Task> {
+    list_all().into_iter().find(|task| {
+        task.worker == worker
+            && task.knowledge_mode == "reorganization"
+            && matches!(
+                task.state.as_str(),
+                "waiting" | "running" | "deferred" | "needs-review"
+            )
+    })
 }
 
 pub fn save(t: &Task) -> Result<(), BErr> {
@@ -126,9 +161,46 @@ pub fn find(task_id: &str) -> Option<Task> {
 /// The oldest waiting task, atomically claimed by flipping it to `running` so a
 /// concurrent poll won't pick it twice.
 pub fn claim_next() -> Option<Task> {
-    let mut t = list_all().into_iter().find(|t| t.state == "waiting")?;
+    let tasks = list_all();
+    let mut t = tasks
+        .iter()
+        .find(|task| {
+            task.state == "waiting"
+                && !(task.knowledge_mode == "reorganization"
+                    && tasks.iter().any(|other| {
+                        other.worker == task.worker
+                            && other.knowledge_mode == "reorganization"
+                            && other.state == "running"
+                    }))
+        })?
+        .clone();
     if set_state(&mut t, "running").is_err() {
         return None;
     }
     Some(t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_tasks_default_to_append_mode() {
+        let value = serde_json::json!({
+            "id": "t-old",
+            "worker": "yuko",
+            "prompt": "research",
+            "origin": "manual",
+            "proactive": false,
+            "state": "waiting",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "ceiling_min": 30.0,
+            "context": null,
+            "repo": null,
+            "base": null
+        });
+        let task: Task = serde_json::from_value(value).unwrap();
+        assert_eq!(task.knowledge_mode, "append");
+    }
 }

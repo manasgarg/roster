@@ -120,7 +120,7 @@ fn print_help() {
            create <name>               scaffold workers/<name>/worker.toml\n  \
            deploy                      compile org.toml + workers/* → runs/compiled/\n  \
            box [--worker <n>] [--ceiling <m>] \"<prompt>\"   run one pi session in the box\n  \
-           queue [add|ls|show|requeue] file/list/inspect/requeue tasks\n  \
+           queue [add|ls|show|requeue] file/list/inspect tasks; add supports --reorganize\n  \
            supervise [--cap n] [--once]  dispatch queued tasks to the box\n  \
            relay --worker <n> \"<msg>\"    turn an inbound message into a task\n  \
            listen --worker <n>          run the Discord gateway (inbound)\n  \

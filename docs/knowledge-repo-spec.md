@@ -2,8 +2,8 @@
 
 **Status: partially implemented.** Repository isolation, append-mode validation,
 serialized integration, clean-exit checkpoints, crash quarantine, scratch
-cleanup, compiled storage policy, run history, and basic owner inspection are
-built. Download receipts, publication, reorganization jobs, mid-run checkpoints,
+cleanup, compiled storage policy, run history, basic owner inspection, and
+exclusive reorganization jobs are built. Download receipts, publication, mid-run checkpoints,
 hard scratch quotas, and operational repair commands remain to be implemented.
 This document defines the complete target.
 
@@ -164,6 +164,15 @@ Reorganization mode gives one run an exclusive lease over `organization/` for
 the worker's knowledge repository. Before granting the lease, the integrator
 drains commits already queued for that worker so the job starts from the latest
 completed work.
+
+An owner queues the job through the normal task system:
+
+```text
+roster queue add --worker <worker> --reorganize "<organization task>"
+```
+
+The queue rejects a second non-terminal reorganization task for the worker, and
+the runtime lease remains the cross-process enforcement boundary.
 
 A reorganization run may:
 
@@ -629,7 +638,7 @@ surface do not drift:
 - Freeze reviewed bytes across a gate decision.
 - Journal blob IDs, hashes, versions, visibility, and provenance.
 
-### 5. Exclusive reorganization mode
+### 5. Exclusive reorganization mode — built
 
 - Add the per-worker reorganization lease.
 - Drain already queued integrations before taking the reorganization snapshot.

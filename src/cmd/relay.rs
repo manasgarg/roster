@@ -47,7 +47,7 @@ pub fn run(args: &[String]) -> Result<(), BErr> {
          it through your tools — every action stays governed.\n\n--- message ---\n{message}"
     );
     let context = serde_json::json!({ "inbound": { "from": from, "message": message } });
-    let t = queue::create(&worker, &prompt, "event", false, 15.0, context, None, None).map_err(|e| e.to_string())?;
+    let t = queue::create(&worker, &prompt, "event", false, 15.0, "append", context, None, None).map_err(|e| e.to_string())?;
     println!("relayed inbound message from {from} → queued {} for {}", t.id, t.worker);
     Ok(())
 }

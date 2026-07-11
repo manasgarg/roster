@@ -83,6 +83,7 @@ roster runs ls                            # all executions, including Discord se
 roster runs show <run-id>                 # metadata, conversation, journal, memory, files
 roster knowledge yuko                     # print the worker's bare Git repository path
 git -C "$(roster knowledge yuko)" log      # use normal Git commands after discovery
+roster queue add --worker yuko --reorganize "rebuild the topic organization"
 ```
 
 The gateway terminates TLS (with a host-minted CA at `~/.roster/ca/`, whose

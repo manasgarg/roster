@@ -146,6 +146,28 @@ purpose_max_chars = 8000
 briefing_max_chars = 4000
 task_max_chars = 24000
 
+# Durable world knowledge is separate from interaction memory. Worker overrides
+# may only disable features or lower these limits.
+[knowledge]
+enabled = true
+normal_mode = "append"
+max_file_chars = 200000
+max_repo_bytes = 1000000000
+checkpoint_on_clean_exit = true
+reorganization_requires_exclusive_lease = true
+
+[scratch]
+max_bytes = 2000000000
+max_files = 10000
+cleanup_on_exit = true
+cleanup_on_crash = true
+
+[publishing]
+max_blob_bytes = 100000000
+allowed_media_types = ["text/markdown", "text/html", "application/pdf"]
+default_visibility = "private"
+public_requires_gate = true
+
 [budget]
 currencies = ["model_calls", "searches", "fetches", "usd"]
 vars = { price = { search = 0.005 } }

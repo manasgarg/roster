@@ -72,7 +72,7 @@ compiled by `deploy`:
 ```
 docker build -t roster-box box/          # once
 roster create yuko                        # scaffold workers/yuko/worker.toml
-roster deploy                             # compile specs → runs/compiled/{policy,budget,actions,triggers,memory}.json
+roster deploy                             # compile specs → runs/compiled/*.json
 roster serve &                            # the box's only door out (gateway)
 roster box --worker yuko "write pong to answer.txt"
 roster queue ls                           # durable tasks, newest activity first

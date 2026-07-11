@@ -9,6 +9,7 @@ use crate::budget::BudgetPolicy;
 use crate::context::{CompiledContextPolicy, ContextPolicy};
 use crate::memory::{CompiledMemoryPolicy, MemoryPolicy};
 use crate::schema::Policy;
+use crate::storage::{CompiledStoragePolicy, StoragePolicy};
 use crate::util::root;
 use serde_json::{json, Value};
 use std::fs;
@@ -24,8 +25,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut triggers: Vec<Value> = Vec::new();
     let default_memory = memory_policy(org.get("memory"), None)?;
     let default_context = context_policy(org.get("context"), None)?;
+    let default_storage = storage_policy(&org, None)?;
     let mut worker_memory = std::collections::HashMap::new();
     let mut worker_context = std::collections::HashMap::new();
+    let mut worker_storage = std::collections::HashMap::new();
 
     for g in array(&org, "grant") {
         rules.push(with_scope(g, "org"));
@@ -63,6 +66,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             workers.push(name.clone());
             worker_memory.insert(name.clone(), memory_policy(w.get("memory"), Some(&default_memory))?);
             worker_context.insert(name.clone(), context_policy(w.get("context"), Some(&default_context))?);
+            let storage = storage_policy(&w, Some(&default_storage))?;
+            crate::storage::validate_worker_overlay(&default_storage, &storage)
+                .map_err(|error| format!("{name} storage policy is invalid: {error}"))?;
+            worker_storage.insert(name.clone(), storage);
             for g in array(&w, "grant") {
                 rules.push(with_scope(g, &scope));
             }
@@ -99,6 +106,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let action_policy = json!({ "actions": actions, "trust": trust });
     let memory_policy = CompiledMemoryPolicy { default: default_memory, workers: worker_memory };
     let context_policy = CompiledContextPolicy { default: default_context, workers: worker_context };
+    let storage_policy = CompiledStoragePolicy { default: default_storage, workers: worker_storage };
 
     // Validate against the gateway's own types.
     serde_json::from_value::<Policy>(policy.clone()).map_err(|e| format!("compiled policy is invalid: {e}"))?;
@@ -106,6 +114,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     serde_json::from_value::<ActionPolicy>(action_policy.clone()).map_err(|e| format!("compiled actions are invalid: {e}"))?;
     serde_json::to_value(&memory_policy).map_err(|e| format!("compiled memory policy is invalid: {e}"))?;
     serde_json::to_value(&context_policy).map_err(|e| format!("compiled context policy is invalid: {e}"))?;
+    serde_json::to_value(&storage_policy).map_err(|e| format!("compiled storage policy is invalid: {e}"))?;
 
     let out = root.join("runs").join("compiled");
     fs::create_dir_all(&out)?;
@@ -115,6 +124,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(out.join("triggers.json"), format!("{}\n", serde_json::to_string_pretty(&json!({ "triggers": triggers }))?))?;
     fs::write(out.join("memory.json"), format!("{}\n", serde_json::to_string_pretty(&memory_policy)?))?;
     fs::write(out.join("context.json"), format!("{}\n", serde_json::to_string_pretty(&context_policy)?))?;
+    fs::write(out.join("storage.json"), format!("{}\n", serde_json::to_string_pretty(&storage_policy)?))?;
 
     println!(
         "deployed: {} worker(s) [{}], {} rule(s), {} action(s), {} trigger(s), {} limit(s)",
@@ -125,7 +135,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         triggers.len(),
         limits.len()
     );
-    println!("compiled → runs/compiled/{{policy,budget,actions,triggers,memory,context}}.json (the control plane reads these)");
+    println!("compiled → runs/compiled/{{policy,budget,actions,triggers,memory,context,storage}}.json (the control plane reads these)");
     Ok(())
 }
 
@@ -155,6 +165,21 @@ fn memory_policy(value: Option<&toml::Value>, base: Option<&MemoryPolicy>) -> Re
         )
         .into());
     }
+    Ok(policy)
+}
+
+fn storage_policy(value: &toml::Value, base: Option<&StoragePolicy>) -> Result<StoragePolicy, Box<dyn std::error::Error>> {
+    let mut merged = serde_json::to_value(base.cloned().unwrap_or_default())?;
+    let overlay = json!({
+        "knowledge": value.get("knowledge").map(to_json).unwrap_or(json!({})),
+        "scratch": value.get("scratch").map(to_json).unwrap_or(json!({})),
+        "publishing": value.get("publishing").map(to_json).unwrap_or(json!({})),
+    });
+    merge_json(&mut merged, overlay);
+    let policy: StoragePolicy = serde_json::from_value(merged)
+        .map_err(|error| format!("storage policy is invalid: {error}"))?;
+    crate::storage::validate(&policy)
+        .map_err(|error| format!("storage policy is invalid: {error}"))?;
     Ok(policy)
 }
 

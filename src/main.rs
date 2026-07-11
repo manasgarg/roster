@@ -27,6 +27,7 @@ mod runlog;
 mod scope;
 mod schema;
 mod smtp;
+mod storage;
 mod tls;
 mod trigger;
 mod trust;

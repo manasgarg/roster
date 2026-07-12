@@ -5,7 +5,8 @@
 //! acts only on a real gate here, never on the journal. See
 //! docs/supervisor-spec.md.
 
-use crate::util::{now_rfc3339, root};
+use crate::paths;
+use crate::util::now_rfc3339;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -60,11 +61,16 @@ impl Gate {
     }
 }
 
-fn pending_dir() -> PathBuf {
-    root().join("gates").join("pending")
-}
-fn resolved_dir() -> PathBuf {
-    root().join("gates").join("resolved")
+// Gates live under their worker's subtree; scans walk every worker. A worker
+// handle may be a bare name or a subject — paths normalizes.
+fn worker_dirs() -> Vec<PathBuf> {
+    std::fs::read_dir(paths::workers_data_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect()
 }
 
 pub fn new_id() -> String {
@@ -79,9 +85,9 @@ pub fn now() -> String {
 /// removing any stale copy in the other directory (atomic move on transition).
 pub fn save(g: &Gate) -> Result<(), BErr> {
     let (dir, other) = if g.is_terminal() {
-        (resolved_dir(), pending_dir())
+        (paths::worker_gates_resolved_dir(&g.worker), paths::worker_gates_pending_dir(&g.worker))
     } else {
-        (pending_dir(), resolved_dir())
+        (paths::worker_gates_pending_dir(&g.worker), paths::worker_gates_resolved_dir(&g.worker))
     };
     std::fs::create_dir_all(&dir)?;
     let text = format!("{}\n", serde_json::to_string_pretty(g)?);
@@ -96,10 +102,12 @@ pub fn save(g: &Gate) -> Result<(), BErr> {
 }
 
 pub fn load(id: &str) -> Option<Gate> {
-    for dir in [pending_dir(), resolved_dir()] {
-        if let Ok(s) = std::fs::read_to_string(dir.join(format!("{id}.json"))) {
-            if let Ok(g) = serde_json::from_str::<Gate>(&s) {
-                return Some(g);
+    for worker in worker_dirs() {
+        for sub in ["pending", "resolved"] {
+            if let Ok(s) = std::fs::read_to_string(worker.join("gates").join(sub).join(format!("{id}.json"))) {
+                if let Ok(g) = serde_json::from_str::<Gate>(&s) {
+                    return Some(g);
+                }
             }
         }
     }
@@ -120,19 +128,34 @@ fn read_dir(dir: PathBuf) -> Vec<Gate> {
 }
 
 pub fn list_pending() -> Vec<Gate> {
-    read_dir(pending_dir())
+    let mut out: Vec<Gate> = worker_dirs()
+        .into_iter()
+        .flat_map(|w| read_dir(w.join("gates").join("pending")))
+        .collect();
+    out.sort_by(|a, b| a.filed_at.cmp(&b.filed_at));
+    out
 }
 
 pub fn list_all() -> Vec<Gate> {
-    let mut all = read_dir(pending_dir());
-    all.extend(read_dir(resolved_dir()));
+    let mut all: Vec<Gate> = worker_dirs()
+        .into_iter()
+        .flat_map(|w| {
+            let mut gates = read_dir(w.join("gates").join("pending"));
+            gates.extend(read_dir(w.join("gates").join("resolved")));
+            gates
+        })
+        .collect();
     all.sort_by(|a, b| a.filed_at.cmp(&b.filed_at));
     all
 }
 
 /// A worker's own gates (for the run-start briefing and the box's read tool).
+/// Accepts a bare name or a subject — reads that worker's subtree directly.
 pub fn for_worker(worker: &str) -> Vec<Gate> {
-    list_all().into_iter().filter(|g| g.worker == worker).collect()
+    let mut out = read_dir(paths::worker_gates_pending_dir(worker));
+    out.extend(read_dir(paths::worker_gates_resolved_dir(worker)));
+    out.sort_by(|a, b| a.filed_at.cmp(&b.filed_at));
+    out
 }
 
 /// Still-pending gates filed by a given task's run (the supervisor uses this to

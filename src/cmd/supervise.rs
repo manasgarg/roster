@@ -1,9 +1,8 @@
-//! `roster supervise` — the trusted orchestration loop. It dispatches waiting
-//! tasks to the box (bounded concurrency), and when a run ends decides whether
-//! the task is done or needs review (it filed a gate). Sibling to `serve`: both
-//! are trusted Rust sharing the same on-disk state. See docs/supervisor-spec.md.
-//!
-//!   roster supervise [--cap <n>] [--once]
+//! The task-dispatch half of `roster server run`: the trusted orchestration
+//! loop. It dispatches waiting tasks to the box (bounded concurrency), and when
+//! a run ends decides whether the task is done or needs review (it filed a
+//! gate). Runs beside the gateway in the same daemon, sharing the same on-disk
+//! state. See docs/supervisor-spec.md.
 
 use crate::cmd::run_box;
 use crate::{gate, ledger, queue, trigger};
@@ -16,49 +15,24 @@ type BErr = Box<dyn std::error::Error>;
 /// running boxes — the ceiling on dispatch latency.
 const POLL_SECS: u64 = 2;
 
-pub async fn run(args: &[String]) -> Result<(), BErr> {
-    let mut cap = 3usize;
-    let mut once = false;
-    let mut fire_only = false;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--cap" => {
-                cap = args
-                    .get(i + 1)
-                    .and_then(|s| s.parse().ok())
-                    .filter(|&n| n >= 1)
-                    .ok_or("--cap wants a positive integer")?;
-                i += 2;
-            }
-            "--once" => {
-                once = true;
-                i += 1;
-            }
-            // Fire due schedule triggers (file their tasks) and exit — for a cron
-            // driver, or to test triggers without dispatching.
-            "--fire-only" => {
-                fire_only = true;
-                i += 1;
-            }
-            other => return Err(format!("unknown supervise flag \"{other}\"").into()),
-        }
+pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
+    if cap == 0 {
+        return Err("--cap wants a positive integer".into());
     }
-
-    if fire_only {
-        let n = trigger::fire();
-        println!("fired {n} trigger(s)");
-        return Ok(());
-    }
-
-    eprintln!(
-        "roster supervise — dispatching tasks (cap {cap}{})",
-        if once { ", once" } else { "" }
-    );
     reclaim();
     let mut set: JoinSet<(queue::Task, Result<run_box::Outcome, String>)> = JoinSet::new();
 
     loop {
+        // Broken config = no governance guarantees; pause dispatch until it
+        // parses again. The gateway is failing closed in parallel.
+        if let Err(e) = crate::config::snapshot() {
+            eprintln!("dispatch paused — config invalid:\n{e}");
+            if once {
+                return Err("config invalid".into());
+            }
+            tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
+            continue;
+        }
         // Fire any due schedule triggers, which file proactive tasks (§3.5).
         trigger::fire();
 

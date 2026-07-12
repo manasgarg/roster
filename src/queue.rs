@@ -4,7 +4,8 @@
 //! Owned locally (not a GitHub mirror, Q3): core control flow stays off any
 //! external dependency. See docs/supervisor-spec.md.
 
-use crate::util::{now_rfc3339, root};
+use crate::paths;
+use crate::util::now_rfc3339;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -63,7 +64,7 @@ pub fn new_id() -> String {
 }
 
 fn dir(worker: &str) -> PathBuf {
-    root().join("queue").join(worker)
+    paths::worker_queue_dir(worker)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -133,14 +134,14 @@ pub fn set_state(t: &mut Task, state: &str) -> Result<(), BErr> {
 }
 
 pub fn list_all() -> Vec<Task> {
-    let base = root().join("queue");
+    let base = paths::workers_data_dir();
     let mut out: Vec<Task> = std::fs::read_dir(&base)
         .into_iter()
         .flatten()
         .flatten()
         .filter(|e| e.path().is_dir())
         .flat_map(|worker_dir| {
-            std::fs::read_dir(worker_dir.path())
+            std::fs::read_dir(worker_dir.path().join("queue"))
                 .into_iter()
                 .flatten()
                 .flatten()

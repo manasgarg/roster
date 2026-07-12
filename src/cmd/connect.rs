@@ -3,7 +3,7 @@
 //! (providers.json): api-key providers take a key; OAuth providers run
 //! device-code or PKCE. The result lands in the vault; refresh keeps it alive.
 
-use crate::util::{now_ms, root};
+use crate::util::now_ms;
 use base64::Engine;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -12,13 +12,43 @@ use std::time::{Duration, Instant};
 
 type BErr = Box<dyn std::error::Error>;
 
-pub async fn run(args: &[String]) -> Result<(), BErr> {
+/// The provider list for `vault connect --help`: one line per registered
+/// provider and what its login flow will ask of you. Best-effort — outside a
+/// roster root there is no registry, so the help points at where it looks.
+pub fn provider_help() -> String {
+    let Ok(registry) = read_registry() else {
+        return format!(
+            "Provider defaults ship with the binary; overlay them at {}.",
+            crate::paths::providers_file().display()
+        );
+    };
+    let mut names: Vec<&String> = registry.keys().collect();
+    names.sort();
+    let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
+    let mut out = String::from("Providers:\n");
+    for name in names {
+        let p = &registry[name.as_str()];
+        let what = match p["auth"].as_str() {
+            Some("api_key") => "prompts you to paste an API key",
+            Some("smtp") => "prompts for SMTP host, port, username, password (e.g. Mailgun)",
+            Some("discord") => "prompts for a bot token and, optionally, your Discord user id",
+            Some("oauth") => match p["login"]["flow"].as_str() {
+                Some("device_code") => "device-code login: open a URL, enter the shown code, approve",
+                Some("pkce") => "browser login: open the printed URL, authorize, paste the code back",
+                _ => "OAuth login (unrecognized flow)",
+            },
+            _ => "unrecognized auth kind",
+        };
+        out.push_str(&format!("  {name:width$}  {what}\n"));
+    }
+    out.push_str("\nThe credential lands in the vault; tokens are refreshed automatically.");
+    out
+}
+
+pub async fn run(name: &str) -> Result<(), BErr> {
     let registry = read_registry()?;
     let mut available: Vec<String> = registry.keys().cloned().collect();
     available.sort();
-    let name = args
-        .first()
-        .ok_or_else(|| format!("connect needs a provider: roster connect <provider>  (providers: {})", available.join(", ")))?;
     let p = registry
         .get(name)
         .ok_or_else(|| format!("unknown provider \"{name}\" — try one of: {}", available.join(", ")))?;
@@ -269,9 +299,7 @@ fn jwt_claim(jwt: &str, path: &[&str]) -> Option<String> {
 }
 
 fn read_registry() -> Result<serde_json::Map<String, Value>, BErr> {
-    let path = root().join("providers.json");
-    let text = std::fs::read_to_string(&path).map_err(|_| format!("no provider registry at {}", path.display()))?;
-    Ok(serde_json::from_str::<Value>(&text)?.as_object().cloned().ok_or("providers.json is not an object")?)
+    Ok(crate::registry::registry_json())
 }
 
 fn write_vault(name: &str, cred: &Value) -> Result<(), BErr> {

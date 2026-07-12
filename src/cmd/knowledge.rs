@@ -1,13 +1,10 @@
 //! Print the location of a worker's Git-backed world knowledge repository.
 //! Everything after discovery uses the normal Git CLI.
 
-type BErr = Box<dyn std::error::Error>;
+use super::BErr;
 
-pub fn run(args: &[String]) -> Result<(), BErr> {
-    let worker = args.first().ok_or("usage: roster knowledge <worker>")?;
-    if args.len() != 1 {
-        return Err("usage: roster knowledge <worker>".into());
-    }
+pub fn run(worker: &str) -> Result<(), BErr> {
+    super::require_worker(worker)?;
     println!("{}", crate::knowledge::repo_path(worker)?.display());
     Ok(())
 }

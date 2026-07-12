@@ -4,7 +4,7 @@
 //! un-spoofable identity token as proxy creds, and a NAT-disabled network whose
 //! only exit is the gateway. Nothing beyond the ceiling timeout.
 
-use crate::util::{now_ms, root};
+use crate::util::now_ms;
 use base64::Engine;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -19,37 +19,14 @@ const BOX_CA_PATH: &str = "/opt/roster/ca.crt";
 const SENTINEL: &str = "roster-sentinel-no-real-credential-in-box";
 const CONTAINER_TEMP: &str = "/tmp:rw,nosuid,nodev,size=2147483648,mode=1777";
 
-pub async fn run(args: &[String]) -> Result<(), BErr> {
-    let mut worker = "adhoc".to_string();
-    let mut ceiling_min: f64 = 30.0;
-    let mut rest: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--worker" => {
-                worker = args.get(i + 1).cloned().ok_or("--worker wants a name")?;
-                i += 2;
-            }
-            "--ceiling" => {
-                ceiling_min = args
-                    .get(i + 1)
-                    .and_then(|s| s.parse().ok())
-                    .ok_or("--ceiling wants a positive number of minutes")?;
-                if ceiling_min <= 0.0 {
-                    return Err("--ceiling wants a positive number of minutes".into());
-                }
-                i += 2;
-            }
-            _ => {
-                rest.push(args[i].clone());
-                i += 1;
-            }
-        }
+pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<(), BErr> {
+    if ceiling_min <= 0.0 {
+        return Err("--ceiling wants a positive number of minutes".into());
     }
-    let prompt = rest.join(" ");
     if prompt.trim().is_empty() {
-        return Err("box needs a prompt: roster box \"<prompt>\"".into());
+        return Err("agent run needs a prompt".into());
     }
+    let worker = worker.to_string();
 
     let run_id = new_run_id();
     let run_context = crate::memory::RunContext::default();
@@ -524,13 +501,19 @@ async fn provision_box(
     ensure_lockdown().await?;
 
     let home = home_dir();
-    let host_ca = home.join(".roster/ca/ca.crt");
+    let host_ca = crate::paths::ca_dir().join("ca.crt");
     if !host_ca.exists() {
-        return Err(format!("the gateway CA is not present at {} — start the gateway first (roster serve creates it)", host_ca.display()).into());
+        return Err(format!("the gateway CA is not present at {} — start the gateway first (roster server run creates it)", host_ca.display()).into());
     }
 
-    let repo = root();
-    let run_dir = repo.join("runs").join(run_id);
+    // The engine checkout (pi + box extensions) — the ONLY roster-adjacent
+    // directory the box mounts; config/data/state live elsewhere entirely.
+    let repo = crate::config::snapshot()
+        .map_err(|e| format!("config invalid:\n{e}"))?
+        .engine_dir
+        .clone()
+        .ok_or("org.toml needs [engine] dir = \"<path to the roster checkout>\" — the box mounts pi + extensions from there (until they are baked into the box image)")?;
+    let run_dir = crate::paths::run_dir(run_id);
     let workspace = run_dir.join("workspace");
     let session = run_dir.join("session");
     let pihome = run_dir.join(".pihome");
@@ -571,7 +554,7 @@ async fn provision_box(
     // Un-spoofable identity: mint a token, register it off the box mount.
     let subject = format!("org/{worker}");
     let token = uuid::Uuid::new_v4().to_string();
-    let identity_dir = home.join(".roster/identity");
+    let identity_dir = crate::paths::identity_dir();
     std::fs::create_dir_all(&identity_dir)?;
     let identity_file = identity_dir.join(format!("{token}.json"));
     write_0600(
@@ -597,14 +580,6 @@ async fn provision_box(
         format!("{0}:{0}:ro", repo.display()),
     ];
     append_container_temp(&mut args);
-    // The repo contains gitignored trusted runtime state. Shadow it before
-    // overlaying only this run's writable paths and authorized channel.
-    append_state_shadows(&mut args, &repo);
-    let env_file = repo.join(".env");
-    if env_file.exists() {
-        args.push("-v".into());
-        args.push(format!("/dev/null:{}:ro", env_file.display()));
-    }
     let mount = |p: &Path| format!("{0}:{0}", p.display());
     args.extend([
         "-v".into(),
@@ -625,7 +600,7 @@ async fn provision_box(
         ]);
     }
     if let Some(channel) = run_context.channel_id.as_deref() {
-        let channel_dir = repo.join("channels").join(channel);
+        let channel_dir = crate::paths::channel_dir(channel);
         if channel_dir.is_dir() {
             args.extend(["-v".into(), format!("{0}:{0}:ro", channel_dir.display())]);
         }
@@ -727,30 +702,6 @@ fn finalize_storage(storage: &mut crate::knowledge::RunStorage, clean: bool) {
     }
 }
 
-fn append_state_shadows(args: &mut Vec<String>, repo: &Path) {
-    for name in [
-        "runs",
-        "memory",
-        "notes",
-        "journal",
-        "queue",
-        "gates",
-        "channels",
-        "knowledge",
-    ] {
-        // Docker cannot create a nested mountpoint beneath the read-only repo
-        // bind. There is also nothing to hide when this runtime directory does
-        // not exist, so only shadow directories present in the source tree.
-        if !repo.join(name).is_dir() {
-            continue;
-        }
-        args.extend([
-            "--tmpfs".into(),
-            format!("{}:rw,noexec,nosuid,nodev", repo.join(name).display()),
-        ]);
-    }
-}
-
 fn append_container_temp(args: &mut Vec<String>) {
     args.extend(["--tmpfs".into(), CONTAINER_TEMP.into()]);
 }
@@ -777,7 +728,7 @@ async fn ensure_lockdown() -> Result<(), BErr> {
         .map(|r| r.status().is_success())
         .unwrap_or(false);
     if !healthy {
-        return Err(format!("refusing to start the box with open egress: the gateway is not answering on :{GATEWAY_PORT} — start it with: roster serve").into());
+        return Err(format!("refusing to start the box with open egress: the gateway is not answering on :{GATEWAY_PORT} — start it with: roster server run").into());
     }
     Ok(())
 }
@@ -913,7 +864,7 @@ fn box_extensions(repo: &Path) -> Vec<String> {
 /// Owner-controlled worker identity path. Prompt assembly lives in the context
 /// compiler; this helper remains for the identity admin surfaces.
 pub fn identity_path(worker: &str) -> PathBuf {
-    root().join("workers").join(worker).join("identity.md")
+    crate::paths::worker_dir(worker).join("identity.md")
 }
 
 fn home_dir() -> PathBuf {
@@ -944,29 +895,6 @@ unsafe fn libc_getgid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn trusted_runtime_state_is_shadowed_in_the_box() {
-        let repo = std::env::temp_dir().join(format!(
-            "roster-state-shadows-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::create_dir_all(repo.join("runs")).unwrap();
-        std::fs::create_dir_all(repo.join("knowledge")).unwrap();
-        let mut args = Vec::new();
-        append_state_shadows(&mut args, &repo);
-        assert!(args.contains(&format!(
-            "{}:rw,noexec,nosuid,nodev",
-            repo.join("runs").display()
-        )));
-        assert!(args.contains(&format!(
-            "{}:rw,noexec,nosuid,nodev",
-            repo.join("knowledge").display()
-        )));
-        assert!(!args.iter().any(|arg| arg.contains("/memory:")));
-        assert_eq!(args.iter().filter(|arg| *arg == "--tmpfs").count(), 2);
-        let _ = std::fs::remove_dir_all(repo);
-    }
 
     #[test]
     fn container_temp_is_a_bounded_tmpfs() {

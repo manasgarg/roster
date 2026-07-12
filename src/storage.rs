@@ -2,7 +2,6 @@
 //! are enforcement inputs; they are compiled off-box and are never learned from
 //! prompt text.
 
-use crate::util::root;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -45,9 +44,8 @@ pub struct CompiledStoragePolicy {
 }
 
 pub fn load(worker: &str) -> StoragePolicy {
-    let compiled = std::fs::read_to_string(root().join("runs/compiled/storage.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<CompiledStoragePolicy>(&text).ok())
+    let compiled = crate::config::snapshot()
+        .map(|c| c.storage.clone())
         .unwrap_or_default();
     compiled
         .workers

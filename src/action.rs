@@ -9,7 +9,8 @@ use crate::gate::{self, Gate};
 use crate::journal;
 use crate::proxy::Body;
 use crate::trust::{self, TrustRule};
-use crate::util::{now_rfc3339, root};
+use crate::paths;
+use crate::util::now_rfc3339;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{Response, StatusCode};
@@ -71,11 +72,7 @@ pub struct ActionPolicy {
 }
 
 pub fn load_action_policy() -> ActionPolicy {
-    let path = root().join("runs").join("compiled").join("actions.json");
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<ActionPolicy>(&s).ok())
-        .unwrap_or_default()
+    crate::config::snapshot().map(|c| c.actions.clone()).unwrap_or_default()
 }
 
 fn grant_for<'a>(policy: &'a ActionPolicy, worker: &str, intent: &str) -> Option<&'a ActionGrant> {
@@ -343,7 +340,7 @@ async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, Strin
         }
     }
 
-    let path = root().join("runs").join("messages.jsonl");
+    let path = paths::messages_log();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -363,7 +360,7 @@ async fn exec_discord(worker: &str, payload: &Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
         .ok_or("discord-send needs non-empty \"text\"")?;
-    let cred = crate::vault::get_credential("discord").ok_or("no discord credential — run: roster connect discord")?;
+    let cred = crate::vault::get_credential("discord").ok_or("no discord credential — run: roster server vault connect discord")?;
     let token = cred.get("token").and_then(|v| v.as_str()).ok_or("discord credential has no token")?;
     let id = crate::discord::post_message(token, channel, text).await?;
     eprintln!("discord [{worker}] → channel {channel}");
@@ -393,9 +390,9 @@ async fn exec_email(worker: &str, payload: &Value) -> Result<Value, String> {
     // No SMTP configured: fail loudly so an email is never silently dropped. The
     // local sink (a file, no real send) is opt-in for offline testing only.
     if std::env::var("ROSTER_EMAIL_SINK").is_err() {
-        return Err("email not sent: no SMTP configured — run `roster connect smtp` (e.g. your Mailgun SMTP creds)".into());
+        return Err("email not sent: no SMTP configured — run `roster server vault connect smtp` (e.g. your Mailgun SMTP creds)".into());
     }
-    let dir = root().join("runs").join("outbox");
+    let dir = paths::outbox_dir();
     let _ = std::fs::create_dir_all(&dir);
     let file = dir.join(format!("{}-{}.json", now_rfc3339().replace(':', "-"), worker.replace('/', "_")));
     let rendered = json!({ "from": worker, "to": to, "subject": subject, "body": body });
@@ -424,7 +421,7 @@ fn exec_git_pr(worker: &str, run_id: &str, payload: &Value) -> Result<Value, Str
     if run_id.is_empty() {
         return Err("code-change has no run_id — cannot find the worktree".into());
     }
-    let wt = root().join("runs").join(run_id).join("worktree");
+    let wt = paths::run_dir(run_id).join("worktree");
     if !wt.exists() {
         return Err(format!("no worktree at {}", wt.display()));
     }
@@ -546,7 +543,7 @@ fn file_diff(current: &std::path::Path, proposed: &str) -> Option<String> {
 /// The diff the box produced in a run's worktree (for `gates show` on a code
 /// gate — the human reviews the actual change, rendered live, not stored).
 pub fn worktree_diff(run_id: &str) -> Option<String> {
-    let wt = root().join("runs").join(run_id).join("worktree");
+    let wt = paths::run_dir(run_id).join("worktree");
     if !wt.exists() {
         return None;
     }
@@ -572,7 +569,7 @@ fn audit(worker: &str, intent: &str, disposition: &str, gate_id: Option<&str>, r
         "gate_id": gate_id,
         "result": result,
     });
-    let path = root().join("runs").join("decisions.jsonl");
+    let path = paths::decisions_log();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }

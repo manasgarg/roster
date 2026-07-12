@@ -11,11 +11,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn ca_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("ROSTER_CA_DIR") {
-        return PathBuf::from(dir);
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".roster").join("ca")
+    crate::paths::ca_dir()
 }
 
 /// The CA, loaded (or generated) from disk. Holds the PEMs so leaves can be

@@ -4,7 +4,8 @@
 //! org-global scope. See docs/budget-spec.md.
 
 use crate::budget::{Limit, Window};
-use crate::util::{now_ms, now_rfc3339, root};
+use crate::paths;
+use crate::util::{now_ms, now_rfc3339};
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -30,7 +31,12 @@ fn key(scope: &str, currency: &str, window: Window) -> String {
 use crate::scope::applies as scope_applies;
 
 fn usage_path() -> std::path::PathBuf {
-    root().join("runs").join("usage.jsonl")
+    // Unit tests exercise debit(); they must never append to the real audit
+    // log of a deployment on the same machine.
+    #[cfg(test)]
+    return std::env::temp_dir().join(format!("roster-test-usage-{}.jsonl", std::process::id()));
+    #[cfg(not(test))]
+    paths::usage_log()
 }
 
 /// Would this call breach any limit? Checks the CURRENT balance (semantics: the
@@ -109,6 +115,22 @@ pub fn debit(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now:
             let _ = writeln!(f, "{line}");
         }
     }
+}
+
+/// Current balance per limit — for inspection (`server status`, `worker show`).
+/// A fresh CLI process must call `rehydrate()` first.
+pub fn balances(limits: &[Limit], now: i64) -> Vec<(Limit, f64)> {
+    let c = counters().lock().unwrap();
+    limits
+        .iter()
+        .map(|l| {
+            let used = match c.get(&key(&l.scope, &l.currency, l.window)) {
+                Some(ct) if ct.window_start == l.window.start(now) => ct.used,
+                _ => 0.0,
+            };
+            (l.clone(), used)
+        })
+        .collect()
 }
 
 /// Rebuild the in-memory counters from the current window's usage on boot, so a

@@ -35,13 +35,12 @@ container `/tmp` that disappears with the container (see
 The language boundary is the trust boundary (see D20 in the handoff):
 
 - **The whole trusted host-side is Rust** — one `roster` binary (crate at the
-  repo root) with subcommands: `serve` (the gateway — TLS termination, judge,
-  vault, refresh, and the action host), `supervise` (the orchestration loop),
-  `queue` / `runs` / `gates` / `relay` (task queue, execution history,
-  approval desk, inbound edge),
-  `listen` / `channel` / `memory` (Discord and interaction-memory control),
-  `knowledge` (world-knowledge history), plus
-  `create` / `deploy` / `box` / `connect` / `vault-sync`. `cargo build`, `cargo test`.
+  repo root) whose command grammar is the product thesis (see
+  `docs/cli.md`): `roster server …` (the owned machinery — the daemon,
+  `validate`, the approval desk, channels, the vault), `roster worker …` (the
+  governed identities — lifecycle, trust, memory, knowledge, tasks), and
+  `roster agent …` (the rented intelligence — run sessions, inspect what they
+  saw). `cargo build`, `cargo test`.
 - **TypeScript lives only inside the untrusted box** — pi (the engine,
   vendored) and its extensions (`box/extensions/`: web search/fetch, and the
   action tools). They reach the Rust side across the container contract, a
@@ -52,15 +51,16 @@ The language boundary is the trust boundary (see D20 in the handoff):
 
 ## Layout
 
-```
-Cargo.toml src/   the trusted host-side control plane (Rust): the `roster` binary
-box/              Dockerfile + extensions/ for the locked-down container (roster-box)
-providers.json    provider registry (login/refresh/inject), read by CLI + gateway
-org.toml          OWNER-ONLY: shared grants, actions, trust, caps + metering
-workers/<name>/   OWNER-ONLY worker specs (worker.toml) overlaying org.toml
-docs/             design docs, the implementation handoff, per-increment specs
-runs/  queue/  gates/  journal/  channels/  memory/  knowledge/  runtime state (all gitignored)
-```
+This repo is only the platform: `src/` (the `roster` binary), `box/`
+(Dockerfile + extensions for the locked-down container), `docs/`. **No config
+or state lives with the code.** The deployment follows the XDG base dirs —
+config in `~/.config/roster` (org.toml, workers/), durable data in
+`~/.local/share/roster` (vault, per-worker footprints, audit records), and
+prunable state in `~/.local/state/roster` (runs, locks) — with `ROSTER_ROOT`
+as a self-contained override. Every path is minted in `src/paths.rs`; the
+full tree and migration steps are in `docs/layout.md`. There is no deploy
+step: config loads live, validates on every read, and fails closed when
+broken.
 
 The Rust modules under `src/`: the serve path (`proxy`, `tls`, `ca`, `judge`),
 credentials (`vault`, `providers`, `registry`), budgets (`budget`, `ledger`,
@@ -72,46 +72,56 @@ credentials (`vault`, `providers`, `registry`), budgets (`budget`, `ledger`,
 Build the binary once (`cargo build`; `roster` = `target/debug/roster`), and
 `npm install` to provide pi to the box. Run from the repo root (config and
 `node_modules` resolve relative to it). Config is authored as TOML specs and
-compiled by `deploy`:
+compiled by `server deploy`:
 
 ```
-docker build -t roster-box box/          # once
-roster create yuko                        # scaffold workers/yuko/worker.toml
-roster deploy                             # compile specs → runs/compiled/*.json
-roster serve &                            # the box's only door out (gateway)
-roster box --worker yuko "write pong to answer.txt"
-roster queue ls                           # durable tasks, newest activity first
-roster runs ls                            # all executions, including Discord sessions
-roster runs show <run-id>                 # metadata, conversation, journal, memory, files
-roster knowledge yuko                     # print the worker's bare Git repository path
-git -C "$(roster knowledge yuko)" log      # use normal Git commands after discovery
-roster queue add --worker yuko --reorganize "rebuild the topic organization"
+docker build -t roster-box box/            # once
+roster init                                # create the config/data/state roots
+roster worker init yuko                    # scaffold ~/.config/roster/workers/yuko/
+roster server validate                     # parse + check all config (loads live)
+roster server run &                        # gateway + task dispatch + channel listeners
+roster server status                       # is it up, does config parse, what's pending
+roster agent run -w yuko "write pong to answer.txt"
+roster worker ls                           # the fleet at a glance
+roster worker task ls                      # durable tasks, newest activity first
+roster agent ls                            # all executions, including Discord sessions
+roster agent show <run-id>                 # metadata, conversation, journal, memory, files
+roster worker knowledge yuko               # print the worker's bare Git repository path
+git -C "$(roster worker knowledge yuko)" log   # use normal Git commands after discovery
+roster worker task add yuko --reorganize "rebuild the topic organization"
 ```
 
-The gateway terminates TLS (with a host-minted CA at `~/.roster/ca/`, whose
+A worker opts into Discord with a `[channels] discord = "<vault credential>"`
+entry in its `worker.toml`; `server run` starts one supervised listener per
+entry (`--no-listen` skips them — no more bogus-token tricks to avoid
+double-connecting a bot during tests).
+
+The gateway terminates TLS (with a host-minted CA under the data root, whose
 private key never enters the box) so it sees the full request — method,
 path, headers, body, and any MCP tool call — and judges it against the
 compiled policy. Rules and budget limits carry a **scope** (`org` =
 fleet-wide, `org/<name>` = one worker), applied to the call's subject by
-ancestor match. Outputs land in `runs/<run-id>/workspace/`; every decision is
-a JSON line in `runs/decisions.jsonl` with sensitive header values redacted.
+ancestor match. Outputs land in the state root under `runs/<run-id>/workspace/`; every
+decision is a JSON line in the data root's `audit/decisions.jsonl` with
+sensitive header values redacted.
 
 The box holds **no real credential** — only a sentinel. The gateway keeps
-the real model key in a vault at `~/.roster/vault/` (off the box mount) and
+the real model key in the vault (data root; never mounted into the box) and
 injects it in transit when a policy rule says so:
 
 ```
-roster connect openai-codex   # log in via the provider's own flow, write the vault
-roster vault-sync             # or: import an existing pi login
+roster server vault connect openai-codex   # log in via the provider's own flow
+roster server vault sync                   # or: import an existing pi login
+roster server vault ls                     # names and types only, never values
 ```
 
-`connect` runs the provider's login (device-code, PKCE, or an API key) and
-writes the credential to the vault; the set of providers and how to inject
-each lives in `providers.json` (shared by `connect` and the gateway). So the
+`vault connect` runs the provider's login (device-code, PKCE, or an API key) and
+writes the credential to the vault; provider defaults (login flow, refresh,
+injection) ship inside the binary, overridable at `~/.config/roster/providers.toml`. So the
 model key is never inside the container; a rule with `"inject"`
 swaps the box's sentinel for the real token on the way to the model host,
 and a missing credential fails closed (deny). The gateway also **refreshes**
 expired OAuth tokens itself (owning the provider constants in
 `src/providers.rs` — no dependency on the engine's code), so
-injected credentials stay live; every refresh is logged to
-`runs/credentials.jsonl`. See docs/injection-spec.md.
+injected credentials stay live; every refresh is logged to the audit
+record. See docs/injection-spec.md.

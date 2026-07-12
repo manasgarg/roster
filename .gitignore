@@ -7,14 +7,5 @@ target/
 .env
 .env.*
 
-# runtime state — never commit
-runs/
-mailbox/
-gates/
-reviews/
-channels/
-journal/
-queue/
-notes/
-memory/
-knowledge/
+# No config or runtime state lives in this repo — the deployment follows the
+# XDG base dirs (see docs/layout.md). ROSTER_ROOT gives a self-contained root.

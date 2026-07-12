@@ -83,7 +83,7 @@ fn org_scope() -> String {
     "org".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Policy {
     pub rules: Vec<Rule>,
 }

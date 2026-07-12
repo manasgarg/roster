@@ -1,10 +1,11 @@
 //! The worker journal — the shared, append-only timeline every actor writes to
 //! (box, gateway, approval desk, executors). One file per worker,
-//! `journal/<subject>/events.jsonl`. It is the worker's *view* of its own
+//! `state/workers/<name>/journal/events.jsonl`. It is the worker's *view* of its own
 //! history and gate state (see docs/supervisor-spec.md, "Visibility"); it is
 //! never an enforcement input — the authoritative state is the gates/ store.
 
-use crate::util::{now_rfc3339, root};
+use crate::paths;
+use crate::util::now_rfc3339;
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -12,7 +13,7 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 
 fn path(worker: &str) -> PathBuf {
-    root().join("journal").join(worker).join("events.jsonl")
+    paths::worker_journal_file(worker)
 }
 
 /// Append one event to a worker's timeline, tagged with the run it belongs to
@@ -77,7 +78,7 @@ pub fn run_workers() -> HashMap<String, String> {
         }
     }
     let mut paths = Vec::new();
-    files(&root().join("journal"), &mut paths);
+    files(&crate::paths::workers_data_dir(), &mut paths);
     let mut out = HashMap::new();
     for path in paths {
         let text = std::fs::read_to_string(path).unwrap_or_default();

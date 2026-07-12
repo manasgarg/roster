@@ -1,9 +1,11 @@
-//! `roster listen --worker <name>` — run the Discord gateway client (inbound).
-//! Dials out to Discord with the bot token from the vault, discovers the channels
-//! it can see, and turns messages into content tasks for the worker.
+//! The channel-listener half of `roster server run`: the Discord gateway
+//! client (inbound). Dials out to Discord with the worker's bot token from the
+//! vault, discovers the channels it can see, and turns messages into content
+//! tasks or warm-session turns for the worker.
 
 use crate::discord;
-use crate::util::{now_rfc3339, root};
+use crate::paths;
+use crate::util::now_rfc3339;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -11,29 +13,34 @@ use std::path::{Path, PathBuf};
 
 type BErr = Box<dyn std::error::Error>;
 
-pub async fn run(args: &[String]) -> Result<(), BErr> {
-    let mut worker = String::new();
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--worker" => {
-                worker = args.get(i + 1).cloned().ok_or("--worker wants a name")?;
-                i += 2;
-            }
-            other => return Err(format!("unknown listen flag \"{other}\"").into()),
-        }
-    }
-    if worker.is_empty() {
-        return Err("listen needs --worker <name>".into());
-    }
-    let _listener_lock = ListenerLock::acquire(&worker)?;
+/// Run the inbound Discord gateway for one worker until it exits. The lock
+/// guarantees one listener per worker across processes (a second `server run`
+/// must not double-connect the bot and double-file tasks).
+pub async fn listen_worker(worker: &str, credential: &str) -> Result<(), BErr> {
+    let _listener_lock = ListenerLock::acquire(worker)?;
 
-    let cred = crate::vault::get_credential("discord").ok_or("no discord credential — run: roster connect discord")?;
+    let cred = crate::vault::get_credential(credential)
+        .ok_or_else(|| format!("no \"{credential}\" credential in the vault — run: roster server vault connect discord"))?;
     let token = cred.get("token").and_then(|v| v.as_str()).ok_or("discord credential has no token")?.to_string();
 
-    eprintln!("roster listen — connecting the Discord gateway for {worker}");
-    discord::run_gateway(&worker, &token).await;
+    eprintln!("listener {worker}: connecting the Discord gateway");
+    discord::run_gateway(worker, &token).await;
     Ok(())
+}
+
+/// The listener locks currently held (worker, pid, since, alive) — for status.
+pub fn active_listeners() -> Vec<(String, u32, String, bool)> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(paths::locks_dir()) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            if let Some(record) = read_lock(&entry.path()) {
+                let alive = process_alive(record.pid);
+                out.push((record.worker, record.pid, record.started_at, alive));
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,8 +61,7 @@ impl ListenerLock {
         if worker.is_empty() || !worker.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
             return Err(format!("invalid worker name \"{worker}\"").into());
         }
-        let path = root().join("runs/listeners").join(format!("{worker}.lock"));
-        Self::acquire_path(worker, path)
+        Self::acquire_path(worker, paths::worker_listener_lock(worker))
     }
 
     fn acquire_path(worker: &str, path: PathBuf) -> Result<Self, BErr> {

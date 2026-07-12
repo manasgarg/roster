@@ -1,7 +1,8 @@
 //! Durable run manifests plus discovery of legacy run directories.
 
 use crate::queue;
-use crate::util::{now_rfc3339, root};
+use crate::paths;
+use crate::util::now_rfc3339;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -54,7 +55,7 @@ pub struct RunSummary {
 }
 
 fn record_path(run_id: &str) -> PathBuf {
-    root().join("runs").join(run_id).join("run.json")
+    paths::run_dir(run_id).join("run.json")
 }
 
 pub fn start(run_id: &str, worker: &str, kind: &str, task_id: Option<&str>) -> Result<(), String> {
@@ -147,7 +148,7 @@ pub fn list() -> Vec<RunSummary> {
         .filter_map(|task| task.run_id.as_ref().map(|id| (id.clone(), task.clone())))
         .collect();
     let journal_workers = crate::journal::run_workers();
-    let base = root().join("runs");
+    let base = paths::runs_dir();
     let mut runs: Vec<RunSummary> = std::fs::read_dir(base)
         .into_iter()
         .flatten()

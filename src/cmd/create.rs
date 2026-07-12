@@ -1,10 +1,9 @@
-//! `roster create <name>` — scaffold a minimal worker spec.
+//! `roster worker init <name>` — scaffold a minimal worker spec.
 
-use crate::util::root;
+use crate::paths;
 use std::fs;
 
-pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let name = args.first().ok_or("create needs a worker name: roster create <name>")?;
+pub fn run(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let ok = !name.is_empty()
         && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         && name.as_bytes()[0] != b'-';
@@ -12,7 +11,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("worker name must be lowercase letters/numbers/hyphens: \"{name}\"").into());
     }
 
-    let dir = root().join("workers").join(name);
+    let dir = paths::worker_dir(name);
     let path = dir.join("worker.toml");
     if path.exists() {
         return Err(format!("worker \"{name}\" already exists at {}", path.display()).into());
@@ -49,6 +48,6 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         )
     })?;
     println!("initialized knowledge at {knowledge_commit}");
-    println!("edit them, then run: roster deploy");
+    println!("edit them, then run: roster server deploy");
     Ok(())
 }

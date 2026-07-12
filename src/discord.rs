@@ -3,7 +3,8 @@
 //! vault); the box never does. Base URL is overridable via DISCORD_API_BASE so
 //! the outbound executor can be tested against a mock.
 
-use crate::util::{now_rfc3339, root};
+use crate::paths;
+use crate::util::now_rfc3339;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -804,7 +805,7 @@ impl Default for ChannelSettings {
 }
 
 fn settings_path() -> PathBuf {
-    root().join("channels").join("settings.json")
+    paths::channels_dir().join("settings.json")
 }
 
 fn load_settings() -> HashMap<String, ChannelSettings> {
@@ -812,7 +813,7 @@ fn load_settings() -> HashMap<String, ChannelSettings> {
         return s;
     }
     // Migrate a legacy trust.json (bool map), if present.
-    std::fs::read_to_string(root().join("channels").join("trust.json"))
+    std::fs::read_to_string(paths::channels_dir().join("trust.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<HashMap<String, bool>>(&s).ok())
         .map(|m| {
@@ -923,7 +924,7 @@ pub fn channel_settings_all() -> HashMap<String, ChannelSettings> {
 // ── channel store (history + uploads), under the read-only repo mount ─────────
 
 fn channel_dir(channel_id: &str) -> PathBuf {
-    root().join("channels").join(channel_id)
+    paths::channel_dir(channel_id)
 }
 
 /// A channel's purpose file (channels/<id>/purpose.md) — the worker's role in

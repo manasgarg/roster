@@ -4,7 +4,8 @@
 //! worker/channel/user from the run context and owns the JSONL event log. Memories
 //! are advisory prompt data, never authorization inputs.
 
-use crate::util::{now_rfc3339, root};
+use crate::paths;
+use crate::util::now_rfc3339;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -206,10 +207,8 @@ pub struct CompiledMemoryPolicy {
 }
 
 pub fn load_policy(worker: &str) -> MemoryPolicy {
-    let path = root().join("runs/compiled/memory.json");
-    let compiled = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<CompiledMemoryPolicy>(&s).ok())
+    let compiled = crate::config::snapshot()
+        .map(|c| c.memory.clone())
         .unwrap_or_default();
     compiled
         .workers
@@ -246,26 +245,22 @@ fn short_worker(worker: &str) -> &str {
 }
 
 fn memory_path(worker: &str) -> PathBuf {
-    root()
-        .join("memory")
-        .join(format!("{}.jsonl", short_worker(worker)))
+    paths::worker_memory_file(worker)
 }
 
 /// Memory used to live under `notes/`. Read the old event log as well so an
 /// upgrade does not lose conversational continuity. All new writes go to
 /// `memory/`; an owner-requested compaction finishes the physical migration.
 fn legacy_notes_path(worker: &str) -> PathBuf {
-    root()
-        .join("notes")
-        .join(format!("{}.jsonl", short_worker(worker)))
+    paths::worker_notes_legacy_file(worker)
 }
 
 fn run_context_path(run_id: &str) -> PathBuf {
-    root().join("runs").join(run_id).join("memory-context.json")
+    paths::run_dir(run_id).join("memory-context.json")
 }
 
 fn recall_trace_path(run_id: &str) -> PathBuf {
-    root().join("runs").join(run_id).join("memory-recall.jsonl")
+    paths::run_dir(run_id).join("memory-recall.jsonl")
 }
 
 fn write_lock() -> &'static Mutex<()> {

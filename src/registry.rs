@@ -1,11 +1,14 @@
-//! The provider registry (providers.json), shared with the CLI's `connect`.
-//! The gateway reads the fields it needs — refresh constants + the inject spec.
-//! (login-flow fields are the CLI's; serde ignores them here.) See
-//! docs/injection-spec.md.
+//! The provider registry. Defaults for known providers ship inside the binary
+//! (src/providers.default.json); the owner can override or add providers in
+//! `<config>/providers.toml` — a top-level table per provider, replacing the
+//! default entry wholesale. Shared by `vault connect` and the gateway
+//! (refresh constants + the inject spec). See docs/injection-spec.md.
 
-use crate::util::root;
+use crate::paths;
 use serde::Deserialize;
-use std::collections::HashMap;
+use serde_json::Value;
+
+const DEFAULT_REGISTRY: &str = include_str!("providers.default.json");
 
 // The gateway declares only the fields it uses (refresh + inject); serde
 // ignores the rest (auth, login), which belong to the CLI's `connect`.
@@ -31,20 +34,29 @@ pub struct InjectHeader {
     pub value: String,
 }
 
-/// Look up a provider by name. Read fresh so owner edits are live.
-pub fn provider(name: &str) -> Option<Provider> {
-    let text = std::fs::read_to_string(root().join("providers.json")).ok()?;
-    let map: HashMap<String, Provider> = serde_json::from_str(&text).ok()?;
-    map.get(name).cloned()
+/// Defaults overlaid with the owner\'s providers.toml (read fresh, so edits
+/// are live). Per-provider replace, not deep merge.
+pub fn registry_json() -> serde_json::Map<String, Value> {
+    let mut map = serde_json::from_str::<Value>(DEFAULT_REGISTRY)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    if let Ok(text) = std::fs::read_to_string(paths::providers_file()) {
+        match toml::from_str::<toml::Value>(&text).map(|v| serde_json::to_value(v).unwrap_or(Value::Null)) {
+            Ok(Value::Object(overlay)) => {
+                for (name, provider) in overlay {
+                    map.insert(name, provider);
+                }
+            }
+            _ => eprintln!("providers.toml is invalid — using built-in defaults only"),
+        }
+    }
+    map
 }
 
-/// The names of all registered providers (for `connect` help), sorted.
-pub fn provider_names() -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_to_string(root().join("providers.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&s).ok())
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default();
-    names.sort();
-    names
+/// Look up a provider by name.
+pub fn provider(name: &str) -> Option<Provider> {
+    registry_json()
+        .get(name)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
 }

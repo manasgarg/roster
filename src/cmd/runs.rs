@@ -1,49 +1,33 @@
-//! `roster runs` — inspect every execution, including warm Discord sessions
-//! that intentionally bypass the durable task queue.
+//! `roster agent` inspection — every execution, including warm Discord
+//! sessions that intentionally bypass the durable task queue.
 
+use super::BErr;
 use crate::{context as context_compiler, journal, memory, queue, runlog};
 
-type BErr = Box<dyn std::error::Error>;
-
-pub fn run(args: &[String]) -> Result<(), BErr> {
-    match args.first().map(String::as_str).unwrap_or("ls") {
-        "ls" | "list" => ls(&args[1..]),
-        "show" => show(&args[1..]),
-        "context" => context(&args[1..]),
-        other => Err(format!("unknown runs subcommand \"{other}\" (try: ls, show, context)").into()),
-    }
-}
-
-fn ls(args: &[String]) -> Result<(), BErr> {
-    let mut limit = 20usize;
-    let mut worker: Option<&str> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--limit" => {
-                limit = args
-                    .get(i + 1)
-                    .and_then(|s| s.parse().ok())
-                    .filter(|n| *n > 0)
-                    .ok_or("--limit wants a positive integer")?;
-                i += 2;
-            }
-            "--worker" => {
-                worker = Some(
-                    args.get(i + 1)
-                        .map(String::as_str)
-                        .ok_or("--worker wants a name")?,
-                );
-                i += 2;
-            }
-            other => return Err(format!("unknown runs ls flag \"{other}\"").into()),
-        }
+pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
+    if limit == 0 {
+        return Err("--limit wants a positive integer".into());
     }
     let runs: Vec<_> = runlog::list()
         .into_iter()
         .filter(|run| worker.map(|w| run.worker == w).unwrap_or(true))
         .take(limit)
         .collect();
+    if json {
+        let rows: Vec<serde_json::Value> = runs
+            .iter()
+            .map(|run| {
+                serde_json::json!({
+                    "id": run.id, "worker": run.worker, "kind": run.kind,
+                    "state": run.state, "started_at": run.started_at,
+                    "ended_at": run.ended_at, "task_id": run.task_id,
+                    "channel_id": run.channel_id,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
     if runs.is_empty() {
         println!("no runs found");
         return Ok(());
@@ -72,13 +56,7 @@ fn ls(args: &[String]) -> Result<(), BErr> {
     Ok(())
 }
 
-fn show(args: &[String]) -> Result<(), BErr> {
-    let id = args
-        .first()
-        .ok_or("usage: roster runs show <run-id-or-prefix>")?;
-    if args.len() > 1 {
-        return Err("usage: roster runs show <run-id-or-prefix>".into());
-    }
+pub fn show(id: &str) -> Result<(), BErr> {
     let run = runlog::resolve(id).map_err(|e| -> BErr { e.into() })?;
     println!("run       {}", run.id);
     println!("worker    {}", run.worker);
@@ -239,7 +217,7 @@ fn show(args: &[String]) -> Result<(), BErr> {
                 if blocks.is_empty() { "-" } else { &blocks }
             );
         }
-        println!("  exact prompts: roster runs context {}", run.id);
+        println!("  exact prompts: roster agent context {}", run.id);
     }
 
     let files = runlog::files(&run.run_dir);
@@ -252,15 +230,7 @@ fn show(args: &[String]) -> Result<(), BErr> {
     Ok(())
 }
 
-fn context(args: &[String]) -> Result<(), BErr> {
-    let id = args
-        .first()
-        .ok_or("usage: roster runs context <run-id-or-prefix> [--all]")?;
-    let all = match args.get(1).map(String::as_str) {
-        None => false,
-        Some("--all") if args.len() == 2 => true,
-        _ => return Err("usage: roster runs context <run-id-or-prefix> [--all]".into()),
-    };
+pub fn context(id: &str, all: bool) -> Result<(), BErr> {
     let run = runlog::resolve(id).map_err(|error| -> BErr { error.into() })?;
     let mut events: Vec<_> = context_compiler::trace_events(&run.id)
         .into_iter()
@@ -316,6 +286,20 @@ fn context(args: &[String]) -> Result<(), BErr> {
         if !input.is_empty() {
             println!("\n--- input ---\n{input}");
         }
+    }
+    Ok(())
+}
+
+/// The memory recall trace for one session (was: `roster memory explain`).
+pub fn recall(id: &str) -> Result<(), BErr> {
+    let run = runlog::resolve(id).map_err(|e| -> BErr { e.into() })?;
+    let trace = memory::recall_trace(&run.id);
+    if trace.is_empty() {
+        println!("no memory recall trace for run {}", run.id);
+        return Ok(());
+    }
+    for event in trace {
+        println!("{}", serde_json::to_string_pretty(&event)?);
     }
     Ok(())
 }

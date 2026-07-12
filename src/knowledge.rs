@@ -4,7 +4,7 @@
 
 use crate::runlog::KnowledgeRunRecord;
 use crate::storage::KnowledgePolicy;
-use crate::util::root;
+use crate::paths;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -175,8 +175,13 @@ pub fn provision(worker: &str, run_id: &str, requested_mode: &str) -> Result<Run
     safe_component(worker, "worker")?;
     safe_component(run_id, "run id")?;
     let mode = KnowledgeMode::parse(requested_mode)?;
+    // A worker may not have its repository yet (fresh init, restored export,
+    // or a spec added by hand) — initialization is idempotent.
+    if !repo_path(worker)?.exists() {
+        initialize(worker)?;
+    }
     let policy = crate::storage::load(worker);
-    let run_dir = root().join("runs").join(run_id);
+    let run_dir = paths::run_dir(run_id);
 
     if !policy.knowledge.enabled {
         if mode == KnowledgeMode::Reorganization {
@@ -462,7 +467,7 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
         )));
     }
     let _ = run_git_owned(
-        &root(),
+        std::path::Path::new("."),
         vec![
             format!("--git-dir={}", repo.display()),
             "update-ref".into(),
@@ -870,7 +875,7 @@ fn ensure_repo(worker: &str) -> Result<PathBuf, String> {
         ));
     }
     run_git_owned(
-        &root(),
+        std::path::Path::new("."),
         vec![
             "init".into(),
             "--bare".into(),
@@ -933,7 +938,7 @@ fn clone_repo(repo: &Path, destination: &Path) -> Result<(), String> {
         fs::remove_dir_all(destination).map_err(|error| error.to_string())?;
     }
     run_git_owned(
-        &root(),
+        std::path::Path::new("."),
         vec![
             "clone".into(),
             "--quiet".into(),
@@ -977,7 +982,7 @@ fn run_git_owned(cwd: &Path, args: Vec<String>) -> Result<String, String> {
 
 fn head(repo: &Path) -> Result<String, String> {
     run_git_owned(
-        &root(),
+        std::path::Path::new("."),
         vec![
             format!("--git-dir={}", repo.display()),
             "rev-parse".into(),
@@ -995,7 +1000,7 @@ fn journal_worker(worker: &str) -> String {
 }
 
 fn worker_dir(worker: &str) -> PathBuf {
-    root().join("knowledge").join(short_worker(worker))
+    paths::worker_knowledge_dir(worker)
 }
 
 fn canonical_repo(worker: &str) -> PathBuf {

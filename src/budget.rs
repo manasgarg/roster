@@ -3,7 +3,6 @@
 //! logs spend; enforcement (limits + ledger) is B2. See docs/budget-spec.md.
 
 use crate::schema::GovernedRequest;
-use crate::util::root;
 use cel_interpreter::{Context, Program, Value as Cel};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -79,11 +78,7 @@ impl Window {
 /// Read `policies/budget.json` fresh each call (owner edits are live). Absent or
 /// unparseable ⇒ no meters (no spend recorded; the judge still governs).
 pub fn load_budget() -> BudgetPolicy {
-    let path = root().join("runs").join("compiled").join("budget.json");
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<BudgetPolicy>(&s).ok())
-        .unwrap_or_default()
+    crate::config::snapshot().map(|c| c.budget.clone()).unwrap_or_default()
 }
 
 fn eval(program_src: &str, ctx: &Context) -> Option<Cel> {

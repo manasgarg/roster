@@ -4,7 +4,8 @@
 //! from worker.toml `[[trigger]]` into runs/compiled/triggers.json; last-fired
 //! times persist in queue/.trigger-state.json so a restart doesn't double-fire.
 
-use crate::util::{now_ms, root};
+use crate::paths;
+use crate::util::now_ms;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -25,18 +26,14 @@ fn default_ceiling() -> f64 {
     20.0
 }
 
-#[derive(Debug, Deserialize)]
-struct TriggerFile {
-    #[serde(default)]
-    triggers: Vec<Trigger>,
-}
-
 pub fn load() -> Vec<Trigger> {
-    let path = root().join("runs").join("compiled").join("triggers.json");
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<TriggerFile>(&s).ok())
-        .map(|f| f.triggers)
+    crate::config::snapshot()
+        .map(|c| {
+            c.triggers
+                .iter()
+                .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -56,7 +53,7 @@ pub fn parse_interval(s: &str) -> Option<i64> {
 }
 
 fn state_path() -> PathBuf {
-    root().join("queue").join(".trigger-state.json")
+    paths::trigger_state_file()
 }
 
 fn load_state() -> HashMap<String, i64> {

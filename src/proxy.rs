@@ -7,7 +7,8 @@
 use crate::ca::Ca;
 use crate::judge::judge;
 use crate::schema::{GovernedRequest, Mcp, Policy, Verdict};
-use crate::util::{now_rfc3339, root};
+use crate::paths;
+use crate::util::now_rfc3339;
 use crate::vault;
 use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
@@ -46,11 +47,10 @@ const SENSITIVE: [&str; 5] = [
 /// Read the policy fresh each decision so owner edits are live. Fail closed: an
 /// unparseable policy denies everything (empty rule list).
 fn load_policy() -> Policy {
-    let path = root().join("runs").join("compiled").join("policy.json");
-    match std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<Policy>(&s).ok()) {
-        Some(p) => p,
-        None => {
-            eprintln!("gateway: no compiled policy at {} — denying all (run: roster deploy)", path.display());
+    match crate::config::snapshot() {
+        Ok(c) => c.policy.clone(),
+        Err(e) => {
+            eprintln!("gateway: INVALID CONFIG — denying all until it parses\n{e}");
             Policy::empty()
         }
     }
@@ -111,7 +111,7 @@ fn record(
         dec["note"] = json!(n);
     }
 
-    let path = root().join("runs").join("decisions.jsonl");
+    let path = paths::decisions_log();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -180,7 +180,7 @@ fn empty() -> Body {
 
 /// Resolve the call's subject and run from the CONNECT's Proxy-Authorization. The
 /// trusted runner sets `HTTP(S)_PROXY=http://<token>@…` and registers
-/// `~/.roster/identity/<token>.json = {subject}` (off the box mount), so the box
+/// `<state>/identity/<token>.json = {subject}` (never mounted into the box), so the box
 /// can present only its own random token — it can't claim another worker's
 /// identity. Unknown/absent ⇒ "org" (host-side tools with no creds).
 fn resolve_identity(proxy_auth: Option<&hyper::header::HeaderValue>) -> (String, String) {
@@ -201,8 +201,7 @@ fn resolve_identity(proxy_auth: Option<&hyper::header::HeaderValue>) -> (String,
     if token.is_empty() {
         return default();
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let path = std::path::Path::new(&home).join(".roster").join("identity").join(format!("{token}.json"));
+    let path = crate::paths::identity_dir().join(format!("{token}.json"));
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())

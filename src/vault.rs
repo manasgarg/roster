@@ -1,12 +1,13 @@
 //! The vault + injection (ports `src/vault.ts`). Credentials live at
-//! `~/.roster/vault/<name>.json` (override `ROSTER_VAULT_DIR`), off the box.
+//! `<data>/vault/<name>.json` (override `ROSTER_VAULT_DIR`), never mounted.
 //! `get_fresh_credential` refreshes an expired OAuth token before returning it
 //! (single-flight per credential, atomic write, audit to runs/credentials.jsonl,
 //! fail-closed). See docs/rust-port.md (P3).
 
 use crate::providers;
 use crate::proxy::BErr;
-use crate::util::{now_ms, root};
+use crate::paths;
+use crate::util::now_ms;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -21,11 +22,7 @@ pub type Credential = Map<String, Value>;
 const REFRESH_SKEW_MS: i64 = 60_000;
 
 pub fn vault_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("ROSTER_VAULT_DIR") {
-        return PathBuf::from(dir);
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".roster").join("vault")
+    crate::paths::vault_dir()
 }
 
 pub fn get_credential(name: &str) -> Option<Credential> {
@@ -101,7 +98,7 @@ fn write_credential(name: &str, cred: &Credential) -> Result<(), BErr> {
 }
 
 fn log_refresh(event: Value) {
-    let path = root().join("runs").join("credentials.jsonl");
+    let path = paths::credentials_log();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }

@@ -1,26 +1,24 @@
-//! `roster gates` — the approval desk. A human lists pending gates, inspects the
-//! exact payload that would go out, and approves or denies. No model at the edge
-//! (D12/§3.9): a person decides. Approve executes the gate idempotently; deny
-//! records the refusal. Both append to the worker's journal and the audit log.
+//! `roster server gates` — the approval desk. A human lists pending gates,
+//! inspects the exact payload that would go out, and approves or denies. No
+//! model at the edge (D12/§3.9): a person decides. Approve executes the gate
+//! idempotently; deny records the refusal. Both append to the worker's journal
+//! and the audit log.
 
+use super::BErr;
 use crate::action;
 use crate::gate;
 
-type BErr = Box<dyn std::error::Error>;
-
-pub async fn run(args: &[String]) -> Result<(), BErr> {
-    let sub = args.first().map(String::as_str).unwrap_or("ls");
-    match sub {
-        "ls" | "list" => ls(),
-        "show" => show(args.get(1).ok_or("usage: roster gates show <id>")?),
-        "approve" => approve(args.get(1).ok_or("usage: roster gates approve <id> [note]")?, args.get(2).map(String::as_str)).await,
-        "deny" => deny(args.get(1).ok_or("usage: roster gates deny <id> [note]")?, args.get(2).map(String::as_str)),
-        other => Err(format!("unknown gates subcommand \"{other}\" (try: ls, show, approve, deny)").into()),
-    }
+fn resolve(id_or_prefix: &str) -> Result<String, BErr> {
+    let all = gate::list_all();
+    super::resolve_prefix("gate", id_or_prefix, all.iter().map(|g| g.id.as_str()))
 }
 
-fn ls() -> Result<(), BErr> {
+pub fn ls(json: bool) -> Result<(), BErr> {
     let pending = gate::list_pending();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&pending)?);
+        return Ok(());
+    }
     if pending.is_empty() {
         println!("no pending gates");
         return Ok(());
@@ -29,12 +27,13 @@ fn ls() -> Result<(), BErr> {
     for g in pending {
         println!("{:<12}  {:<10}  {:<16}  {}", g.id, g.worker, g.intent, g.filed_at);
     }
-    println!("\napprove: roster gates approve <id>   deny: roster gates deny <id> \"reason\"");
+    println!("\napprove: roster server gates approve <id>   deny: roster server gates deny <id> \"reason\"");
     Ok(())
 }
 
-fn show(id: &str) -> Result<(), BErr> {
-    let g = gate::load(id).ok_or_else(|| format!("no such gate {id}"))?;
+pub fn show(id: &str) -> Result<(), BErr> {
+    let id = resolve(id)?;
+    let g = gate::load(&id).ok_or_else(|| format!("no such gate {id}"))?;
     println!("gate     {}", g.id);
     println!("worker   {}", g.worker);
     println!("intent   {}   (executor: {})", g.intent, g.executor);
@@ -82,9 +81,10 @@ fn show(id: &str) -> Result<(), BErr> {
     Ok(())
 }
 
-async fn approve(id: &str, note: Option<&str>) -> Result<(), BErr> {
+pub async fn approve(id: &str, note: Option<&str>) -> Result<(), BErr> {
+    let id = resolve(id)?;
     let who = std::env::var("USER").unwrap_or_else(|_| "owner".into());
-    match action::execute_gate(id, &who, note).await {
+    match action::execute_gate(&id, &who, note).await {
         Ok(g) => {
             println!("approved and executed {} ({})", g.id, g.intent);
             if let Some(r) = &g.result {
@@ -96,9 +96,10 @@ async fn approve(id: &str, note: Option<&str>) -> Result<(), BErr> {
     }
 }
 
-fn deny(id: &str, note: Option<&str>) -> Result<(), BErr> {
+pub fn deny(id: &str, note: Option<&str>) -> Result<(), BErr> {
+    let id = resolve(id)?;
     let who = std::env::var("USER").unwrap_or_else(|_| "owner".into());
-    let g = action::deny_gate(id, &who, note)?;
+    let g = action::deny_gate(&id, &who, note)?;
     println!("denied {} ({})", g.id, g.intent);
     Ok(())
 }

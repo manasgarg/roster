@@ -738,6 +738,12 @@ fn append_state_shadows(args: &mut Vec<String>, repo: &Path) {
         "channels",
         "knowledge",
     ] {
+        // Docker cannot create a nested mountpoint beneath the read-only repo
+        // bind. There is also nothing to hide when this runtime directory does
+        // not exist, so only shadow directories present in the source tree.
+        if !repo.join(name).is_dir() {
+            continue;
+        }
         args.extend([
             "--tmpfs".into(),
             format!("{}:rw,noexec,nosuid,nodev", repo.join(name).display()),
@@ -941,22 +947,25 @@ mod tests {
 
     #[test]
     fn trusted_runtime_state_is_shadowed_in_the_box() {
-        let repo = Path::new("/srv/roster");
+        let repo = std::env::temp_dir().join(format!(
+            "roster-state-shadows-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(repo.join("runs")).unwrap();
+        std::fs::create_dir_all(repo.join("knowledge")).unwrap();
         let mut args = Vec::new();
-        append_state_shadows(&mut args, repo);
-        for name in [
-            "runs",
-            "memory",
-            "notes",
-            "journal",
-            "queue",
-            "gates",
-            "channels",
-            "knowledge",
-        ] {
-            assert!(args.contains(&format!("/srv/roster/{name}:rw,noexec,nosuid,nodev")));
-        }
-        assert_eq!(args.iter().filter(|arg| *arg == "--tmpfs").count(), 8);
+        append_state_shadows(&mut args, &repo);
+        assert!(args.contains(&format!(
+            "{}:rw,noexec,nosuid,nodev",
+            repo.join("runs").display()
+        )));
+        assert!(args.contains(&format!(
+            "{}:rw,noexec,nosuid,nodev",
+            repo.join("knowledge").display()
+        )));
+        assert!(!args.iter().any(|arg| arg.contains("/memory:")));
+        assert_eq!(args.iter().filter(|arg| *arg == "--tmpfs").count(), 2);
+        let _ = std::fs::remove_dir_all(repo);
     }
 
     #[test]

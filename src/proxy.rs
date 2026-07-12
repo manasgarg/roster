@@ -44,7 +44,7 @@ const SENSITIVE: [&str; 5] = [
 
 // ── paths & config ──────────────────────────────────────────────────────────
 
-/// Read the policy fresh each decision so owner edits are live. Fail closed: an
+/// Read the policy fresh each decision so admin edits are live. Fail closed: an
 /// unparseable policy denies everything (empty rule list).
 fn load_policy() -> Policy {
     match crate::config::snapshot() {

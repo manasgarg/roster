@@ -57,7 +57,7 @@ pub fn org_file() -> PathBuf {
     config_root().join("org.toml")
 }
 
-/// Owner overlay on the provider registry shipped in the binary.
+/// Admin overlay on the provider registry shipped in the binary.
 pub fn providers_file() -> PathBuf {
     config_root().join("providers.toml")
 }

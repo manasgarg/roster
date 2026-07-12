@@ -269,6 +269,6 @@ pub fn trust(name: &str, json: bool) -> Result<(), BErr> {
             println!("  rule: {}{preds}{after}  (scope {})", rule["level"].as_str().unwrap_or("?"), rule["scope"].as_str().unwrap_or("?"));
         }
     }
-    println!("\npromotion is owner-only: rules live in org.toml / worker.toml; a denial revokes earned auto");
+    println!("\npromotion is admin-only: rules live in org.toml / worker.toml; a denial revokes earned auto");
     Ok(())
 }

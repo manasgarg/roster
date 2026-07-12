@@ -4,7 +4,7 @@
 use super::BErr;
 use crate::paths;
 
-const STARTER_ORG: &str = r#"# Roster org config — OWNER-ONLY. Applies to every worker (scope "org");
+const STARTER_ORG: &str = r#"# Roster org config — ADMIN-ONLY. Applies to every worker (scope "org");
 # per-worker overlays live in workers/<name>/worker.toml. Config loads live:
 # check edits with `roster server validate`.
 

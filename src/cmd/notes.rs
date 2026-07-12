@@ -1,4 +1,4 @@
-//! `roster worker memory` — owner/admin inspection and repair of scoped
+//! `roster worker memory` — admin inspection and repair of scoped
 //! interaction memory. (Module name is the legacy storage name; the physical
 //! `notes/` → `memory/` migration finishes via `compact`.)
 

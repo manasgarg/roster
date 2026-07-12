@@ -1,4 +1,4 @@
-//! Metering: map each governed call to a spend vector across owner-defined
+//! Metering: map each governed call to a spend vector across admin-defined
 //! currencies, via CEL expressions over the call context. B1 — computes and
 //! logs spend; enforcement (limits + ledger) is B2. See docs/budget-spec.md.
 
@@ -75,7 +75,7 @@ impl Window {
     }
 }
 
-/// Read `policies/budget.json` fresh each call (owner edits are live). Absent or
+/// Read the budget config fresh each call (admin edits are live). Absent or
 /// unparseable ⇒ no meters (no spend recorded; the judge still governs).
 pub fn load_budget() -> BudgetPolicy {
     crate::config::snapshot().map(|c| c.budget.clone()).unwrap_or_default()

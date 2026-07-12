@@ -1,7 +1,7 @@
 //! Actions — the box proposes a consequential action by POSTing an envelope to
 //! the gateway's action host (`actions.roster.internal`). The gateway attributes
 //! it to the worker (identity token on the CONNECT, un-spoofable), checks the
-//! owner's action grants + the trust ladder, and either executes it now (auto)
+//! admin's action grants + the trust ladder, and either executes it now (auto)
 //! or files a durable gate. Executors run trusted-side and hold the real
 //! credentials the box never sees. See docs/supervisor-spec.md.
 
@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// TLS-terminated POST the gateway handles internally instead of forwarding.
 pub const ACTION_HOST: &str = "actions.roster.internal";
 
-// ── the envelope + owner policy ──────────────────────────────────────────────
+// ── the envelope + admin policy ──────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct Envelope {
@@ -47,7 +47,7 @@ fn gate_default() -> String {
     "gate".to_string()
 }
 
-/// An owner-declared action a worker may propose (compiled from `[[action]]`).
+/// An admin-declared action a worker may propose (compiled from `[[action]]`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ActionGrant {
     #[serde(default = "org_scope")]
@@ -317,8 +317,8 @@ pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &
     }
 }
 
-/// Deliver a note from the worker to its owner: a Discord DM when a bot token +
-/// owner id are configured, else the local inbox. The bot token stays in the
+/// Deliver a note from the worker to its lead: a Discord DM when a bot token +
+/// lead id are configured, else the local inbox. The bot token stays in the
 /// vault; the box never holds it.
 async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, String> {
     let text = payload.get("text").and_then(|v| v.as_str()).ok_or("message-user needs a \"text\" field")?;
@@ -330,7 +330,7 @@ async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, Strin
             match crate::discord::open_dm(token, owner).await {
                 Ok(dm) => match crate::discord::post_message(token, &dm, text).await {
                     Ok(_) => {
-                        eprintln!("message-user [{worker}] → owner DM");
+                        eprintln!("message-user [{worker}] → lead DM");
                         return Ok(json!({ "delivered": "discord-dm" }));
                     }
                     Err(e) => eprintln!("message-user: DM post failed ({e}); using inbox"),

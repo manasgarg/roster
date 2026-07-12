@@ -1,6 +1,6 @@
 # On-disk layout (v3 — XDG, 2026-07-12)
 
-**Status: implemented; migration is manual (owner-run, below).** Roster is a
+**Status: implemented; migration is manual (admin-run, below).** Roster is a
 general-purpose control plane: the code checkout contains **no config and no
 state**, and there is **no deploy step** — config is read live from disk,
 validated on every load, and a broken edit fails closed (the gateway denies,

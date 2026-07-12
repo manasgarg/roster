@@ -4,7 +4,7 @@
 //! still the payoff of one language, one schema (D20): what validates is
 //! literally what runs.
 //!
-//! Consumers call `snapshot()` (mtime-fingerprint cache, so owner edits are
+//! Consumers call `snapshot()` (mtime-fingerprint cache, so admin edits are
 //! live). Invalid config fails closed: the gateway denies, dispatch pauses,
 //! `server run` refuses to boot — and `roster server validate` prints every
 //! error. `load()` is side-effect free.
@@ -216,7 +216,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
 }
 
 /// The cached view. Reloads when any config file's fingerprint changes, so
-/// owner edits are live without a restart. On invalid config returns Err —
+/// admin edits are live without a restart. On invalid config returns Err —
 /// callers fail closed.
 pub fn snapshot() -> Result<Arc<Loaded>, String> {
     static CACHE: OnceLock<Mutex<Option<(String, Arc<Loaded>)>>> = OnceLock::new();

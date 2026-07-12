@@ -1,6 +1,6 @@
 //! The trust ladder: per `(worker, intent)`, decide whether a proposed action
 //! runs automatically or waits for a human. T0 (the default) gates every
-//! irreversible; the owner promotes an intent to `auto`, optionally narrowed by
+//! irreversible; the admin promotes an intent to `auto`, optionally narrowed by
 //! a predicate over the action payload (e.g. recipient `*@ourco.com`). Trust is
 //! earned upward and revocable. See docs/supervisor-spec.md.
 
@@ -29,7 +29,7 @@ pub struct TrustRule {
     pub after: Option<u32>,
 }
 
-/// The trust level for this proposal: the first applicable owner rule decides,
+/// The trust level for this proposal: the first applicable admin rule decides,
 /// else the action grant's default (T0 = "gate"). `executed`/`denied` are this
 /// (worker, intent)'s gate history, for the "earned" ladder — auto once enough
 /// have been approved with no reversal (a denial resets the privilege).

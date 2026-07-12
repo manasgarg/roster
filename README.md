@@ -24,7 +24,7 @@ schedule triggers, continuations, and the code-task worktree→gated-PR flow
 (see `docs/supervisor-spec.md`). Discord channels now have warm conversation
 sessions, per-channel purpose and behavior controls, and scoped worker/channel/
 user memory with governed writes, bounded recall, participant correction, and
-owner inspection (see `docs/memory-spec.md`). Workers also receive isolated
+admin inspection (see `docs/memory-spec.md`). Workers also receive isolated
 Git-backed world knowledge; valid append-only notes are committed by the host on
 clean exit. Disposable downloads and working files use a private, bounded
 container `/tmp` that disappears with the container (see

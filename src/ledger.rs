@@ -67,7 +67,7 @@ pub fn check(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now:
 
 /// Is the subject already at/over any limit that applies to it (any currency)?
 /// The supervisor uses this for D6's soft stop: proactive work is skipped when
-/// the worker is tapped out; owner/chat work is never checked here.
+/// the worker is tapped out; admin-filed/chat work is never checked here.
 pub fn over_any_limit(subject: &str, limits: &[Limit], now: i64) -> Option<String> {
     let c = counters().lock().unwrap();
     for limit in limits {

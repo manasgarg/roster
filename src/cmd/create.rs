@@ -19,24 +19,21 @@ pub fn run(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&dir)?;
     fs::write(
         &path,
-        format!("# Worker spec — OWNER-ONLY. Overlays org.toml at scope \"org/{name}\".\nname = \"{name}\"\n"),
+        format!("# Worker spec — ADMIN-ONLY. Overlays org.toml at scope \"org/{name}\".\nname = \"{name}\"\n"),
     )?;
 
-    // A starter identity — the worker's fixed self, read into every run.
-    // Owner-authored; the worker can only propose changes (admin-gated, D10).
-    // Channel-specific purpose lives per channel (channels/<id>/purpose.md).
+    // A deliberately minimal identity: a name, and the fact of being a digital
+    // worker. Everything else is shaped later — by the admin editing this file,
+    // or by the worker proposing changes (gated, D10). Operating principles
+    // live in the runtime policy, not here.
     let identity = dir.join("identity.md");
     fs::write(
         &identity,
         format!(
-            "# Identity — {name}\n\n\
-             You are {name}, a digital worker for your owner. This is your fixed identity and\n\
-             standing rules — the same in every channel; it leads every task you run.\n\n\
-             ## Who you are\n\n\
-             <Persona, tone, and what you're generally for.>\n\n\
-             ## Standing rules\n\n\
-             - Prefer proposing over acting; consequential actions are reviewed.\n\
-             - <Add rules specific to this worker.>\n"
+            "# {name}\n\n\
+             Your name is {name}. You're a digital worker — a colleague made of software,\n\
+             not a human. That's all that's fixed about you. The rest of who you are\n\
+             takes shape through the work you do and the people you do it with.\n"
         ),
     )?;
 

@@ -216,7 +216,7 @@ enum TaskCmd {
         /// Wall-clock ceiling in minutes
         #[arg(long, default_value_t = 30.0)]
         ceiling: f64,
-        /// Budget-gated at dispatch; owner-filed work always runs
+        /// Budget-gated at dispatch; admin-filed work always runs
         #[arg(long)]
         proactive: bool,
         /// Exclusive knowledge reorganization

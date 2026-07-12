@@ -1,5 +1,5 @@
 //! The provider registry. Defaults for known providers ship inside the binary
-//! (src/providers.default.json); the owner can override or add providers in
+//! (src/providers.default.json); the admin can override or add providers in
 //! `<config>/providers.toml` — a top-level table per provider, replacing the
 //! default entry wholesale. Shared by `vault connect` and the gateway
 //! (refresh constants + the inject spec). See docs/injection-spec.md.
@@ -34,7 +34,7 @@ pub struct InjectHeader {
     pub value: String,
 }
 
-/// Defaults overlaid with the owner\'s providers.toml (read fresh, so edits
+/// Defaults overlaid with the admin\'s providers.toml (read fresh, so edits
 /// are live). Per-provider replace, not deep merge.
 pub fn registry_json() -> serde_json::Map<String, Value> {
     let mut map = serde_json::from_str::<Value>(DEFAULT_REGISTRY)

@@ -1,4 +1,4 @@
-//! Owner-controlled policy for the worker knowledge repository. These settings
+//! Admin-controlled policy for the worker knowledge repository. These settings
 //! are enforcement inputs; they are compiled off-box and are never learned from
 //! prompt text.
 
@@ -68,7 +68,7 @@ pub fn validate(policy: &StoragePolicy) -> Result<(), String> {
 }
 
 /// A worker overlay may reduce capabilities and quotas but cannot broaden the
-/// fleet policy authored by the owner.
+/// fleet policy authored by the admin.
 pub fn validate_worker_overlay(base: &StoragePolicy, worker: &StoragePolicy) -> Result<(), String> {
     validate(worker)?;
     if worker.knowledge.enabled && !base.knowledge.enabled {

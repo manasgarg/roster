@@ -83,7 +83,7 @@ pub fn show(id: &str) -> Result<(), BErr> {
 
 pub async fn approve(id: &str, note: Option<&str>) -> Result<(), BErr> {
     let id = resolve(id)?;
-    let who = std::env::var("USER").unwrap_or_else(|_| "owner".into());
+    let who = std::env::var("USER").unwrap_or_else(|_| "admin".into());
     match action::execute_gate(&id, &who, note).await {
         Ok(g) => {
             println!("approved and executed {} ({})", g.id, g.intent);
@@ -98,7 +98,7 @@ pub async fn approve(id: &str, note: Option<&str>) -> Result<(), BErr> {
 
 pub fn deny(id: &str, note: Option<&str>) -> Result<(), BErr> {
     let id = resolve(id)?;
-    let who = std::env::var("USER").unwrap_or_else(|_| "owner".into());
+    let who = std::env::var("USER").unwrap_or_else(|_| "admin".into());
     let g = action::deny_gate(&id, &who, note)?;
     println!("denied {} ({})", g.id, g.intent);
     Ok(())

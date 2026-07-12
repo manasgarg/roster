@@ -250,7 +250,7 @@ fn memory_path(worker: &str) -> PathBuf {
 
 /// Memory used to live under `notes/`. Read the old event log as well so an
 /// upgrade does not lose conversational continuity. All new writes go to
-/// `memory/`; an owner-requested compaction finishes the physical migration.
+/// `memory/`; an admin-requested compaction finishes the physical migration.
 fn legacy_notes_path(worker: &str) -> PathBuf {
     paths::worker_notes_legacy_file(worker)
 }

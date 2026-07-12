@@ -20,7 +20,7 @@ pub struct Task {
     pub prompt: String,
     /// manual | schedule | continuation | event
     pub origin: String,
-    /// Proactive work is budget-gated at dispatch (D6); owner/chat always runs.
+    /// Proactive work is budget-gated at dispatch (D6); admin/chat always runs.
     #[serde(default)]
     pub proactive: bool,
     /// waiting | running | needs-review | done | failed

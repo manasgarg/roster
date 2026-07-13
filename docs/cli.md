@@ -32,6 +32,10 @@ init              create the config/data/state roots (XDG; idempotent)
 server start      [--cap N] [--once] [--no-listen] [--addr HOST:PORT]
 server status     [--json]
 server validate   parse + check all config, print every error
+server connect    [<service>] [--worker W].. [--org] [--as NAME]
+                    one-step service connection: login → vault → scaffold
+                    connections/<name>.toml (bare: the catalog); docs/connections.md
+server connections [--json]   the inventory: scope, hosts, env, active/disabled
 server gates      ls [--json] | show <id> | approve <id> [note] | deny <id> [note]
 server channel    ls [--json] | show <id> | trust <id> | untrust <id>
                   | set <id> <key> <value>

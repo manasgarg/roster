@@ -6,33 +6,16 @@
 //!   roster worker …   the governed identities: lifecycle, trust, memory, work, sessions
 
 mod action;
-mod budget;
-mod ca;
-mod cmd;
+mod channel;
+mod cli;
 mod config;
-mod context;
-mod discord;
-mod gate;
-mod journal;
-mod judge;
-mod knowledge;
-mod ledger;
-mod memory;
+mod credential;
+mod gateway;
 mod paths;
-mod providers;
-mod proxy;
-mod queue;
-mod registry;
-mod runlog;
-mod scope;
-mod schema;
-mod smtp;
-mod storage;
-mod tls;
-mod trigger;
-mod trust;
+mod run;
 mod util;
-mod vault;
+mod work;
+mod worker;
 
 use clap::{Parser, Subcommand};
 
@@ -160,7 +143,7 @@ enum ChannelCmd {
 #[derive(Subcommand)]
 enum VaultCmd {
     /// Create a credential via a provider's login flow
-    #[command(after_help = cmd::connect::provider_help())]
+    #[command(after_help = credential::connect::provider_help())]
     Connect {
         provider: String,
     },
@@ -377,60 +360,60 @@ async fn main() {
 
     let cli = Cli::parse();
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
-        Cmd::Init => cmd::init::run(),
+        Cmd::Init => cli::init::run(),
         Cmd::Server(cmd) => match cmd {
             ServerCmd::Start {
                 cap,
                 no_listen,
                 once,
                 addr,
-            } => cmd::server::run(cap, once, no_listen, &addr).await,
-            ServerCmd::Status { json } => cmd::server::status(json).await,
-            ServerCmd::Validate => cmd::server::validate(),
+            } => cli::server::run(cap, once, no_listen, &addr).await,
+            ServerCmd::Status { json } => cli::server::status(json).await,
+            ServerCmd::Validate => cli::server::validate(),
             ServerCmd::Gates(cmd) => match cmd {
-                GatesCmd::Ls { json } => cmd::gates::ls(json),
-                GatesCmd::Show { id } => cmd::gates::show(&id),
-                GatesCmd::Approve { id, note } => cmd::gates::approve(&id, note.as_deref()).await,
-                GatesCmd::Deny { id, note } => cmd::gates::deny(&id, note.as_deref()),
+                GatesCmd::Ls { json } => cli::gates::ls(json),
+                GatesCmd::Show { id } => cli::gates::show(&id),
+                GatesCmd::Approve { id, note } => cli::gates::approve(&id, note.as_deref()).await,
+                GatesCmd::Deny { id, note } => cli::gates::deny(&id, note.as_deref()),
             },
             ServerCmd::Channel(cmd) => match cmd {
-                ChannelCmd::Ls { json } => cmd::channel::ls(json),
-                ChannelCmd::Show { channel_id } => cmd::channel::show(&channel_id),
-                ChannelCmd::Trust { channel_id } => cmd::channel::set_trust(&channel_id, true),
-                ChannelCmd::Untrust { channel_id } => cmd::channel::set_trust(&channel_id, false),
+                ChannelCmd::Ls { json } => cli::channel::ls(json),
+                ChannelCmd::Show { channel_id } => cli::channel::show(&channel_id),
+                ChannelCmd::Trust { channel_id } => cli::channel::set_trust(&channel_id, true),
+                ChannelCmd::Untrust { channel_id } => cli::channel::set_trust(&channel_id, false),
                 ChannelCmd::Set {
                     channel_id,
                     key,
                     value,
-                } => cmd::channel::set(&channel_id, &key, &value),
+                } => cli::channel::set(&channel_id, &key, &value),
             },
             ServerCmd::Vault(cmd) => match cmd {
-                VaultCmd::Connect { provider } => cmd::connect::run(&provider).await,
-                VaultCmd::Sync => cmd::vault_sync::run(),
-                VaultCmd::Ls { json } => cmd::vault_sync::ls(json),
+                VaultCmd::Connect { provider } => credential::connect::run(&provider).await,
+                VaultCmd::Sync => cli::vault::run(),
+                VaultCmd::Ls { json } => cli::vault::ls(json),
             },
             ServerCmd::Runs(cmd) => match cmd {
                 RunsCmd::Ls {
                     worker,
                     limit,
                     json,
-                } => cmd::runs::ls(worker.as_deref(), limit, json),
-                RunsCmd::Show { run } => cmd::runs::show(&run),
-                RunsCmd::Context { run, all } => cmd::runs::context(&run, all),
-                RunsCmd::Recall { run } => cmd::runs::recall(&run),
+                } => cli::runs::ls(worker.as_deref(), limit, json),
+                RunsCmd::Show { run } => cli::runs::show(&run),
+                RunsCmd::Context { run, all } => cli::runs::context(&run, all),
+                RunsCmd::Recall { run } => cli::runs::recall(&run),
             },
         },
         Cmd::Worker(cmd) => match cmd {
-            WorkerCmd::Init { name } => cmd::create::run(&name),
-            WorkerCmd::Ls { json } => cmd::worker::ls(json),
-            WorkerCmd::Show { name, json } => cmd::worker::show(&name, json),
-            WorkerCmd::Trust { name, json } => cmd::worker::trust(&name, json),
+            WorkerCmd::Init { name } => cli::create::run(&name),
+            WorkerCmd::Ls { json } => cli::worker::ls(json),
+            WorkerCmd::Show { name, json } => cli::worker::show(&name, json),
+            WorkerCmd::Trust { name, json } => cli::worker::trust(&name, json),
             WorkerCmd::Run {
                 name,
                 ceiling,
                 prompt,
-            } => cmd::run_box::run_once(&name, ceiling, prompt.join(" ")).await,
-            WorkerCmd::Chat { name, idle } => cmd::session::chat(&name, idle).await,
+            } => run::boxed::run_once(&name, ceiling, prompt.join(" ")).await,
+            WorkerCmd::Chat { name, idle } => run::session::chat(&name, idle).await,
             WorkerCmd::Task(cmd) => match cmd {
                 TaskCmd::Add {
                     worker,
@@ -440,7 +423,7 @@ async fn main() {
                     repo,
                     base,
                     prompt,
-                } => cmd::queue::add(
+                } => cli::task::add(
                     &worker,
                     ceiling,
                     proactive,
@@ -453,31 +436,31 @@ async fn main() {
                     worker,
                     from,
                     message,
-                } => cmd::relay::run(&worker, from.as_deref(), message.join(" ")),
-                TaskCmd::Ls { json } => cmd::queue::ls(json),
-                TaskCmd::Show { id } => cmd::queue::show(&id),
-                TaskCmd::Requeue { id } => cmd::queue::requeue(&id),
+                } => channel::relay::run(&worker, from.as_deref(), message.join(" ")),
+                TaskCmd::Ls { json } => cli::task::ls(json),
+                TaskCmd::Show { id } => cli::task::show(&id),
+                TaskCmd::Requeue { id } => cli::task::requeue(&id),
             },
             WorkerCmd::Memory(cmd) => match cmd {
                 MemoryCmd::Ls {
                     worker,
                     scope,
                     scope_id,
-                } => cmd::notes::ls(&worker, scope.as_deref(), scope_id.as_deref()),
-                MemoryCmd::Show { worker, id } => cmd::notes::show(&worker, &id),
+                } => cli::memory::ls(&worker, scope.as_deref(), scope_id.as_deref()),
+                MemoryCmd::Show { worker, id } => cli::memory::show(&worker, &id),
                 MemoryCmd::Correct {
                     worker,
                     id,
                     replacement,
-                } => cmd::notes::correct(&worker, &id, &replacement.join(" ")),
-                MemoryCmd::Rm { worker, id } => cmd::notes::mutate("forget", &worker, &id),
-                MemoryCmd::Pin { worker, id } => cmd::notes::mutate("pin", &worker, &id),
-                MemoryCmd::Unpin { worker, id } => cmd::notes::mutate("unpin", &worker, &id),
-                MemoryCmd::Disable { worker, id } => cmd::notes::mutate("disable", &worker, &id),
-                MemoryCmd::Enable { worker, id } => cmd::notes::mutate("enable", &worker, &id),
-                MemoryCmd::Compact { worker } => cmd::notes::compact(&worker),
+                } => cli::memory::correct(&worker, &id, &replacement.join(" ")),
+                MemoryCmd::Rm { worker, id } => cli::memory::mutate("forget", &worker, &id),
+                MemoryCmd::Pin { worker, id } => cli::memory::mutate("pin", &worker, &id),
+                MemoryCmd::Unpin { worker, id } => cli::memory::mutate("unpin", &worker, &id),
+                MemoryCmd::Disable { worker, id } => cli::memory::mutate("disable", &worker, &id),
+                MemoryCmd::Enable { worker, id } => cli::memory::mutate("enable", &worker, &id),
+                MemoryCmd::Compact { worker } => cli::memory::compact(&worker),
             },
-            WorkerCmd::Knowledge { name } => cmd::knowledge::run(&name),
+            WorkerCmd::Knowledge { name } => cli::knowledge::run(&name),
         },
     };
 

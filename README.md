@@ -61,10 +61,13 @@ full tree and migration steps are in `docs/layout.md`. There is no deploy
 step: config loads live, validates on every read, and fails closed when
 broken.
 
-The Rust modules under `src/`: the serve path (`proxy`, `tls`, `ca`, `judge`),
-credentials (`vault`, `providers`, `registry`), budgets (`budget`, `ledger`,
-`scope`), the supervisor/governance layer (`action`, `gate`, `trust`, `queue`,
-`trigger`, `journal`, `memory`), the schema, and the subcommands in `src/cmd/`.
+The Rust modules under `src/` map to functional blocks: `gateway/` (the
+enforcement pipe: proxy, tls, ca, judge, schema, scope, budget, ledger),
+`credential/` (vault, connect, providers, registry), `action/` (proposals,
+gates, trust, executors), `work/` (queue, triggers, dispatch), `run/` (box
+provisioning, sessions, run manifests), `worker/` (context, memory, knowledge,
+journal), `channel/` (discord, listeners, relay), and `cli/` (thin command
+handlers; the clap grammar is in `main.rs`).
 
 ## Run
 

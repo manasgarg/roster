@@ -10,12 +10,12 @@
 //! error. `load()` is side-effect free.
 
 use crate::action::ActionPolicy;
-use crate::budget::BudgetPolicy;
-use crate::context::{CompiledContextPolicy, ContextPolicy};
-use crate::memory::{CompiledMemoryPolicy, MemoryPolicy};
+use crate::gateway::budget::BudgetPolicy;
+use crate::worker::context::{CompiledContextPolicy, ContextPolicy};
+use crate::worker::memory::{CompiledMemoryPolicy, MemoryPolicy};
 use crate::paths;
-use crate::schema::Policy;
-use crate::storage::{CompiledStoragePolicy, StoragePolicy};
+use crate::gateway::schema::Policy;
+use crate::worker::storage::{CompiledStoragePolicy, StoragePolicy};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -134,7 +134,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                 Err(e) => errors.push(format!("{name} [context]: {e}")),
             }
             match storage_policy(&w, Some(&default_storage)) {
-                Ok(storage) => match crate::storage::validate_worker_overlay(&default_storage, &storage) {
+                Ok(storage) => match crate::worker::storage::validate_worker_overlay(&default_storage, &storage) {
                     Ok(()) => {
                         worker_storage.insert(name.clone(), storage);
                     }
@@ -300,11 +300,11 @@ fn memory_policy(value: Option<&toml::Value>, base: Option<&MemoryPolicy>) -> Re
     if let Some(kind) = policy
         .allowed_kinds
         .iter()
-        .find(|kind| !crate::memory::SUPPORTED_MEMORY_KINDS.contains(&kind.as_str()))
+        .find(|kind| !crate::worker::memory::SUPPORTED_MEMORY_KINDS.contains(&kind.as_str()))
     {
         return Err(format!(
             "memory policy kind \"{kind}\" is not interaction memory; supported kinds are {}",
-            crate::memory::SUPPORTED_MEMORY_KINDS.join(", ")
+            crate::worker::memory::SUPPORTED_MEMORY_KINDS.join(", ")
         )
         .into());
     }
@@ -318,7 +318,7 @@ fn storage_policy(value: &toml::Value, base: Option<&StoragePolicy>) -> Result<S
     });
     merge_json(&mut merged, overlay);
     let policy: StoragePolicy = serde_json::from_value(merged).map_err(|error| format!("storage policy is invalid: {error}"))?;
-    crate::storage::validate(&policy).map_err(|error| format!("storage policy is invalid: {error}"))?;
+    crate::worker::storage::validate(&policy).map_err(|error| format!("storage policy is invalid: {error}"))?;
     Ok(policy)
 }
 

@@ -224,7 +224,16 @@ async fn run_box(
         run_dir,
         repo,
         mut storage,
-    } = provision_box(worker, run_id, task_id, code, run_context, knowledge_mode).await?;
+    } = provision_box(
+        worker,
+        run_id,
+        task_id,
+        code,
+        run_context,
+        knowledge_mode,
+        Some(ceiling_min),
+    )
+    .await?;
     args.extend(pi_prefix(&repo, "json", &session_dir)?);
     append_cache_session_id(&mut args, &compiled.cache.route_key);
     if !compiled.system_prompt.is_empty() {
@@ -327,7 +336,7 @@ pub async fn run_session(
         run_dir,
         repo,
         mut storage,
-    } = match provision_box(worker, run_id, "", None, &start_context, "append").await {
+    } = match provision_box(worker, run_id, "", None, &start_context, "append", None).await {
         Ok(provisioned) => provisioned,
         Err(error) => {
             crate::runlog::fail(run_id);
@@ -498,6 +507,7 @@ async fn provision_box(
     code: Option<&CodeSpec>,
     run_context: &crate::memory::RunContext,
     knowledge_mode: &str,
+    ceiling_min: Option<f64>,
 ) -> Result<Provisioned, BErr> {
     ensure_lockdown().await?;
 
@@ -618,6 +628,10 @@ async fn provision_box(
     ]);
     args.extend(["-e".into(), format!("ROSTER_RUN_ID={run_id}")]);
     args.extend(["-e".into(), "TMPDIR=/tmp".into()]);
+    // Sessions have no wall clock — only task runs get a ceiling to pace against.
+    if let Some(min) = ceiling_min {
+        args.extend(["-e".into(), format!("ROSTER_CEILING_MIN={min}")]);
+    }
     if let Some(knowledge) = storage.knowledge.as_ref() {
         args.extend([
             "-e".into(),

@@ -3,7 +3,7 @@
  *
  * These tools never perform the action. They submit a typed envelope to the
  * gateway (the box's only trusted route), which attributes it to this worker,
- * checks the owner's action grants + trust ladder, and either runs it now (auto)
+ * checks the admin's action grants + trust ladder, and either runs it now (auto)
  * or files a durable gate for a human. So `send_email` doesn't send — it asks;
  * the trusted side sends, holding a credential the box never sees.
  *
@@ -62,12 +62,12 @@ export default function rosterActionTools(api: PiToolApi): void {
     name: "message_user",
     label: "message_user",
     description:
-      "Send a short note to your owner (status update, question, finding). Delivered to their inbox. " +
+      "Send a short note to your lead (status update, question, finding). Delivered to their inbox. " +
       "Use it to report progress or surface something that needs their attention.",
-    promptSnippet: "message_user(text): notify the owner",
+    promptSnippet: "message_user(text): notify your lead",
     parameters: {
       type: "object",
-      properties: { text: { type: "string", description: "The message to the owner." } },
+      properties: { text: { type: "string", description: "The message to your lead." } },
       required: ["text"],
       additionalProperties: false,
     },
@@ -83,7 +83,7 @@ export default function rosterActionTools(api: PiToolApi): void {
     description:
       "Propose the code changes you've made in this working copy as a pull request. Make and save all your " +
       "file edits FIRST, then call this once. It does NOT commit or push directly — it submits the change for " +
-      "the owner's review; on approval the trusted side commits your working tree, pushes the branch, and opens the PR.",
+      "your lead's review; on approval the trusted side commits your working tree, pushes the branch, and opens the PR.",
     promptSnippet: "propose_changes(title, body, message): open a PR from your edits (requires approval)",
     parameters: {
       type: "object",
@@ -303,7 +303,7 @@ export default function rosterActionTools(api: PiToolApi): void {
     label: "send_email",
     description:
       "Propose sending an email. This does NOT send immediately — it submits the message for governance. " +
-      "Depending on policy it may be sent automatically or held for the owner's approval. Compose the full, final message.",
+      "Depending on policy it may be sent automatically or held for your lead's approval. Compose the full, final message.",
     promptSnippet: "send_email(to, subject, body): propose an email (may require approval)",
     parameters: {
       type: "object",
@@ -311,7 +311,7 @@ export default function rosterActionTools(api: PiToolApi): void {
         to: { type: "array", items: { type: "string" }, minItems: 1, description: "Recipient email addresses." },
         subject: { type: "string", description: "Subject line." },
         body: { type: "string", description: "The full email body." },
-        rationale: { type: "string", description: "Why you're sending this — shown to the owner at the approval step." },
+        rationale: { type: "string", description: "Why you're sending this — shown to your lead at the approval step." },
       },
       required: ["to", "subject", "body"],
       additionalProperties: false,

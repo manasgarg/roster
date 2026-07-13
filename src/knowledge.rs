@@ -175,11 +175,6 @@ pub fn provision(worker: &str, run_id: &str, requested_mode: &str) -> Result<Run
     safe_component(worker, "worker")?;
     safe_component(run_id, "run id")?;
     let mode = KnowledgeMode::parse(requested_mode)?;
-    // A worker may not have its repository yet (fresh init, restored export,
-    // or a spec added by hand) — initialization is idempotent.
-    if !repo_path(worker)?.exists() {
-        initialize(worker)?;
-    }
     let policy = crate::storage::load(worker);
     let run_dir = paths::run_dir(run_id);
 
@@ -1031,7 +1026,7 @@ pub fn repo_path(worker: &str) -> Result<PathBuf, String> {
     let repo = canonical_repo(worker);
     if !repo.exists() {
         return Err(format!(
-            "knowledge repository for {worker} is not initialized; create or deploy the worker first"
+            "knowledge repository for {worker} is not initialized; create the worker first: roster worker init {worker}"
         ));
     }
     Ok(repo)

@@ -1,4 +1,4 @@
-//! `roster agent chat <worker>` — an interactive warm session: run one rpc box
+//! `roster worker chat <name>` — an interactive warm session: run one rpc box
 //! and feed it messages from stdin, one per line. For working with (and
 //! testing) the multi-message session without a channel in front.
 

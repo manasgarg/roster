@@ -2,9 +2,8 @@
 //! boundary is the trust boundary; TS lives only in the box). The command
 //! grammar is the product thesis — rented intelligence, owned governance:
 //!
-//!   roster server …   the owned machinery: daemon, config, desk, channels, vault
-//!   roster worker …   the governed identities: lifecycle, trust, memory, work
-//!   roster agent …    the rented intelligence: run sessions, inspect them
+//!   roster server …   the owned machinery: daemon, config, desk, channels, vault, run log
+//!   roster worker …   the governed identities: lifecycle, trust, memory, work, sessions
 
 mod action;
 mod budget;
@@ -60,15 +59,13 @@ enum Cmd {
     /// The governed identities: lifecycle, trust, memory, knowledge, work
     #[command(subcommand)]
     Worker(WorkerCmd),
-    /// The rented intelligence: run sessions, inspect what they saw
-    #[command(subcommand)]
-    Agent(AgentCmd),
 }
 
 #[derive(Subcommand)]
 enum ServerCmd {
     /// Run the daemon in the foreground: gateway, task dispatch, channel listeners
-    Run {
+    #[command(alias = "run")]
+    Start {
         /// Max concurrent boxes
         #[arg(long, default_value_t = 3)]
         cap: usize,
@@ -99,6 +96,9 @@ enum ServerCmd {
     /// Credentials — held on the host, injected in transit; workers never see keys
     #[command(subcommand)]
     Vault(VaultCmd),
+    /// The run log: every session, whoever it was attributed to
+    #[command(subcommand)]
+    Runs(RunsCmd),
 }
 
 #[derive(Subcommand)]
@@ -195,6 +195,22 @@ enum WorkerCmd {
         name: String,
         #[arg(long)]
         json: bool,
+    },
+    /// One governed session, now, bypassing the queue
+    Run {
+        name: String,
+        /// Wall-clock ceiling in minutes
+        #[arg(long, default_value_t = 30.0)]
+        ceiling: f64,
+        #[arg(required = true, value_name = "PROMPT")]
+        prompt: Vec<String>,
+    },
+    /// Interactive warm session fed from stdin, one message per turn
+    Chat {
+        name: String,
+        /// End after this much quiet, in seconds
+        #[arg(long, default_value_t = 20)]
+        idle: u64,
     },
     /// Its durable work: add, relay, ls, show, requeue
     #[command(subcommand)]
@@ -310,25 +326,7 @@ enum MemoryCmd {
 }
 
 #[derive(Subcommand)]
-enum AgentCmd {
-    /// One governed session, now, bypassing the queue
-    Run {
-        /// Attribute the run to a worker
-        #[arg(long, short = 'w', default_value = "adhoc")]
-        worker: String,
-        /// Wall-clock ceiling in minutes
-        #[arg(long, default_value_t = 30.0)]
-        ceiling: f64,
-        #[arg(required = true, value_name = "PROMPT")]
-        prompt: Vec<String>,
-    },
-    /// Interactive warm session fed from stdin, one message per turn
-    Chat {
-        worker: String,
-        /// End after this much quiet, in seconds
-        #[arg(long, default_value_t = 20)]
-        idle: u64,
-    },
+enum RunsCmd {
     /// List past sessions, whoever they were attributed to
     Ls {
         #[arg(long)]
@@ -381,7 +379,7 @@ async fn main() {
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
         Cmd::Init => cmd::init::run(),
         Cmd::Server(cmd) => match cmd {
-            ServerCmd::Run {
+            ServerCmd::Start {
                 cap,
                 no_listen,
                 once,
@@ -411,12 +409,28 @@ async fn main() {
                 VaultCmd::Sync => cmd::vault_sync::run(),
                 VaultCmd::Ls { json } => cmd::vault_sync::ls(json),
             },
+            ServerCmd::Runs(cmd) => match cmd {
+                RunsCmd::Ls {
+                    worker,
+                    limit,
+                    json,
+                } => cmd::runs::ls(worker.as_deref(), limit, json),
+                RunsCmd::Show { run } => cmd::runs::show(&run),
+                RunsCmd::Context { run, all } => cmd::runs::context(&run, all),
+                RunsCmd::Recall { run } => cmd::runs::recall(&run),
+            },
         },
         Cmd::Worker(cmd) => match cmd {
             WorkerCmd::Init { name } => cmd::create::run(&name),
             WorkerCmd::Ls { json } => cmd::worker::ls(json),
             WorkerCmd::Show { name, json } => cmd::worker::show(&name, json),
             WorkerCmd::Trust { name, json } => cmd::worker::trust(&name, json),
+            WorkerCmd::Run {
+                name,
+                ceiling,
+                prompt,
+            } => cmd::run_box::run_once(&name, ceiling, prompt.join(" ")).await,
+            WorkerCmd::Chat { name, idle } => cmd::session::chat(&name, idle).await,
             WorkerCmd::Task(cmd) => match cmd {
                 TaskCmd::Add {
                     worker,
@@ -465,22 +479,6 @@ async fn main() {
             },
             WorkerCmd::Knowledge { name } => cmd::knowledge::run(&name),
         },
-        Cmd::Agent(cmd) => match cmd {
-            AgentCmd::Run {
-                worker,
-                ceiling,
-                prompt,
-            } => cmd::run_box::run_once(&worker, ceiling, prompt.join(" ")).await,
-            AgentCmd::Chat { worker, idle } => cmd::session::chat(&worker, idle).await,
-            AgentCmd::Ls {
-                worker,
-                limit,
-                json,
-            } => cmd::runs::ls(worker.as_deref(), limit, json),
-            AgentCmd::Show { run } => cmd::runs::show(&run),
-            AgentCmd::Context { run, all } => cmd::runs::context(&run, all),
-            AgentCmd::Recall { run } => cmd::runs::recall(&run),
-        },
     };
 
     if let Err(e) = result {
@@ -492,9 +490,9 @@ async fn main() {
 /// Where each pre-clap command lives now. Kept until the muscle memory fades.
 fn legacy_pointer(first: &str) -> Option<&'static str> {
     Some(match first {
-        "serve" => "roster server run",
-        "supervise" => "roster server run  (the daemons merged; --cap and --once moved there)",
-        "listen" => "roster server run  (listeners start for every worker with a [channels] entry)",
+        "serve" => "roster server start",
+        "supervise" => "roster server start  (the daemons merged; --cap and --once moved there)",
+        "listen" => "roster server start  (listeners start for every worker with a [channels] entry)",
         "deploy" => "roster server validate  (config now loads live — there is no deploy step)",
         "gates" => "roster server gates <ls|show|approve|deny>",
         "channel" => "roster server channel <ls|show|trust|untrust|set>",
@@ -505,9 +503,12 @@ fn legacy_pointer(first: &str) -> Option<&'static str> {
         "relay" => "roster worker task relay <worker> \"<message>\"",
         "memory" | "notes" => "roster worker memory <ls|show|correct|rm|…> <worker>",
         "knowledge" => "roster worker knowledge <name>",
-        "box" => "roster agent run [--worker <name>] \"<prompt>\"",
-        "session" => "roster agent chat <worker>",
-        "runs" => "roster agent <ls|show|context|recall>",
+        "box" => "roster worker run <name> \"<prompt>\"",
+        "session" => "roster worker chat <name>",
+        "runs" => "roster server runs <ls|show|context|recall>",
+        "agent" => {
+            "roster worker <run|chat>, roster server runs  (sessions belong to workers; the log to the server)"
+        }
         _ => return None,
     })
 }

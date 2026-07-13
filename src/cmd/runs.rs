@@ -1,4 +1,4 @@
-//! `roster agent` inspection — every execution, including warm Discord
+//! `roster server runs` inspection — every execution, including warm Discord
 //! sessions that intentionally bypass the durable task queue.
 
 use super::BErr;
@@ -217,7 +217,7 @@ pub fn show(id: &str) -> Result<(), BErr> {
                 if blocks.is_empty() { "-" } else { &blocks }
             );
         }
-        println!("  exact prompts: roster agent context {}", run.id);
+        println!("  exact prompts: roster server runs context {}", run.id);
     }
 
     let files = runlog::files(&run.run_dir);

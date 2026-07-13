@@ -560,14 +560,6 @@ fn memory_block(notes: &[MemoryNote]) -> Result<CompiledBlock, String> {
 }
 
 fn read_identity(worker: &str) -> Result<Option<(String, String)>, String> {
-    if worker == "adhoc" {
-        for path in [identity_path(worker), legacy_charter_path(worker)] {
-            if let Some(text) = read_optional_text(&path)? {
-                return Ok(Some((text, path.display().to_string())));
-            }
-        }
-        return Ok(None);
-    }
     let worker_dir = paths::worker_dir(worker);
     for path in [identity_path(worker), legacy_charter_path(worker)] {
         if let Some(text) = read_optional_text(&path)? {
@@ -579,7 +571,9 @@ fn read_identity(worker: &str) -> Result<Option<(String, String)>, String> {
             "worker {worker} has no readable non-empty identity.md (or legacy charter.md)"
         ))
     } else {
-        Err(format!("unknown worker {worker}"))
+        Err(format!(
+            "unknown worker {worker}; create it with: roster worker init {worker}"
+        ))
     }
 }
 

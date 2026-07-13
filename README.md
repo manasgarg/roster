@@ -37,10 +37,9 @@ The language boundary is the trust boundary (see D20 in the handoff):
 - **The whole trusted host-side is Rust** — one `roster` binary (crate at the
   repo root) whose command grammar is the product thesis (see
   `docs/cli.md`): `roster server …` (the owned machinery — the daemon,
-  `validate`, the approval desk, channels, the vault), `roster worker …` (the
-  governed identities — lifecycle, trust, memory, knowledge, tasks), and
-  `roster agent …` (the rented intelligence — run sessions, inspect what they
-  saw). `cargo build`, `cargo test`.
+  `validate`, the approval desk, channels, the vault, the run log) and
+  `roster worker …` (the governed identities — lifecycle, trust, memory,
+  knowledge, tasks, and running sessions as one). `cargo build`, `cargo test`.
 - **TypeScript lives only inside the untrusted box** — pi (the engine,
   vendored) and its extensions (`box/extensions/`: web search/fetch, and the
   action tools). They reach the Rust side across the container contract, a
@@ -72,27 +71,27 @@ credentials (`vault`, `providers`, `registry`), budgets (`budget`, `ledger`,
 Build the binary once (`cargo build`; `roster` = `target/debug/roster`), and
 `npm install` to provide pi to the box. Run from the repo root (config and
 `node_modules` resolve relative to it). Config is authored as TOML specs and
-compiled by `server deploy`:
+loads live — no deploy step:
 
 ```
 docker build -t roster-box box/            # once
 roster init                                # create the config/data/state roots
 roster worker init yuko                    # scaffold ~/.config/roster/workers/yuko/
 roster server validate                     # parse + check all config (loads live)
-roster server run &                        # gateway + task dispatch + channel listeners
+roster server start &                      # gateway + task dispatch + channel listeners
 roster server status                       # is it up, does config parse, what's pending
-roster agent run -w yuko "write pong to answer.txt"
+roster worker run yuko "write pong to answer.txt"
 roster worker ls                           # the fleet at a glance
 roster worker task ls                      # durable tasks, newest activity first
-roster agent ls                            # all executions, including Discord sessions
-roster agent show <run-id>                 # metadata, conversation, journal, memory, files
+roster server runs ls                      # all executions, including Discord sessions
+roster server runs show <run-id>           # metadata, conversation, journal, memory, files
 roster worker knowledge yuko               # print the worker's bare Git repository path
 git -C "$(roster worker knowledge yuko)" log   # use normal Git commands after discovery
 roster worker task add yuko --reorganize "rebuild the topic organization"
 ```
 
 A worker opts into Discord with a `[channels] discord = "<vault credential>"`
-entry in its `worker.toml`; `server run` starts one supervised listener per
+entry in its `worker.toml`; `server start` runs one supervised listener per
 entry (`--no-listen` skips them — no more bogus-token tricks to avoid
 double-connecting a bot during tests).
 

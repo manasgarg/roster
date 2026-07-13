@@ -4,7 +4,7 @@
 general-purpose control plane: the code checkout contains **no config and no
 state**, and there is **no deploy step** — config is read live from disk,
 validated on every load, and a broken edit fails closed (the gateway denies,
-dispatch pauses, `server run` refuses to boot). Every path is minted in
+dispatch pauses, `server start` refuses to boot). Every path is minted in
 `src/paths.rs`.
 
 The deployment follows the XDG Base Directory standard:
@@ -104,6 +104,6 @@ rmdir queue journal/org journal notes gates knowledge channels ~/.roster
 ```
 
 Then `roster init` (fills in anything missing, e.g. `state/locks`),
-`roster server validate`, and `roster server run`. If a future deployment has
+`roster server validate`, and `roster server start`. If a future deployment has
 gates from several workers, split `gates/{pending,resolved}/*.json` by each
 file's `"worker"` field into the matching worker subtree.

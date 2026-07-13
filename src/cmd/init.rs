@@ -51,7 +51,7 @@ pub fn run() -> Result<(), BErr> {
         println!("created {:<15} {}", "org.toml", org.display());
     }
     println!(
-        "\nnext: edit {} (set [engine] dir), then\n  roster worker init <name>\n  roster server validate\n  roster server run",
+        "\nnext: edit {} (set [engine] dir), then\n  roster worker init <name>\n  roster server validate\n  roster server start",
         org.display()
     );
     println!(

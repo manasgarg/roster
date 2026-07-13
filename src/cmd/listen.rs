@@ -1,4 +1,4 @@
-//! The channel-listener half of `roster server run`: the Discord gateway
+//! The channel-listener half of `roster server start`: the Discord gateway
 //! client (inbound). Dials out to Discord with the worker's bot token from the
 //! vault, discovers the channels it can see, and turns messages into content
 //! tasks or warm-session turns for the worker.
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 type BErr = Box<dyn std::error::Error>;
 
 /// Run the inbound Discord gateway for one worker until it exits. The lock
-/// guarantees one listener per worker across processes (a second `server run`
+/// guarantees one listener per worker across processes (a second `server start`
 /// must not double-connect the bot and double-file tasks).
 pub async fn listen_worker(worker: &str, credential: &str) -> Result<(), BErr> {
     let _listener_lock = ListenerLock::acquire(worker)?;

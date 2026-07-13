@@ -1,4 +1,4 @@
-//! The task-dispatch half of `roster server run`: the trusted orchestration
+//! The task-dispatch half of `roster server start`: the trusted orchestration
 //! loop. It dispatches waiting tasks to the box (bounded concurrency), and when
 //! a run ends decides whether the task is done or needs review (it filed a
 //! gate). Runs beside the gateway in the same daemon, sharing the same on-disk

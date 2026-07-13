@@ -1,14 +1,21 @@
-# The CLI (v2, 2026-07-12)
+# The CLI (v2.1, 2026-07-13)
 
-**Status: implemented.** The `roster` binary's grammar is three groups that
+**Status: implemented.** The `roster` binary's grammar is two groups that
 mirror the product thesis — *rented intelligence, owned governance*:
 
 - **`roster server …`** — the owned machinery: the daemon, config validation,
-  the approval desk, channel edges, the credential vault.
+  the approval desk, channel edges, the credential vault, and the run log
+  (every session, whoever ran it).
 - **`roster worker …`** — the governed identities: lifecycle, trust, memory,
-  knowledge, and each worker's durable task queue.
-- **`roster agent …`** — the rented intelligence: run a governed engine
-  session directly, and inspect what past sessions did and saw.
+  knowledge, each worker's durable task queue — and running sessions as one,
+  directly or interactively.
+
+(v2 had a third group, `roster agent …`. It folded into the other two on
+2026-07-13: sessions belong to workers, the audit log to the server. Every run
+is now attributed to a real, spec'd worker — the implicit `adhoc`
+pseudo-worker is gone; make a scratch worker if you want one. `run` is always
+the verb "execute now" — `server start` runs the daemon, `worker run` runs a
+session — and `runs` is always the noun, the records.)
 
 Parsing is clap (derive). `roster help <cmd…>`, `-h/--help` on every node,
 `-V/--version` prints the release plus the git build hash (so a stale running
@@ -22,7 +29,7 @@ gates, runs) accept any unique prefix. `ls`/`show`/`status` commands take
 ```
 init              create the config/data/state roots (XDG; idempotent)
 
-server run        [--cap N] [--once] [--no-listen] [--addr HOST:PORT]
+server start      [--cap N] [--once] [--no-listen] [--addr HOST:PORT]
 server status     [--json]
 server validate   parse + check all config, print every error
 server gates      ls [--json] | show <id> | approve <id> [note] | deny <id> [note]
@@ -31,11 +38,15 @@ server channel    ls [--json] | show <id> | trust <id> | untrust <id>
                     keys: mode, memory, memory-inferred, memory-kinds,
                           memory-retention, memory-notes, memory-chars
 server vault      connect <provider> | sync | ls [--json]
+server runs       ls [--worker W] [--limit N] [--json]
+                  | show <run> | context <run> [--all] | recall <run>
 
 worker init       <name>
 worker ls         [--json]
 worker show       <name> [--json]
 worker trust      <name> [--json]
+worker run        <name> [--ceiling M] "<prompt>"
+worker chat       <name> [--idle SECS]
 worker task       add <worker> [--ceiling M] [--proactive|--reorganize]
                       [--repo P --base R] "<prompt>"
                   | relay <worker> [--from WHO] "<message>"
@@ -44,18 +55,12 @@ worker memory     ls <worker> [--scope S] [--scope-id ID] | show <worker> <id>
                   | correct <worker> <id> "<replacement>"
                   | rm|pin|unpin|disable|enable <worker> <id> | compact <worker>
 worker knowledge  <name>
-
-agent run         [-w WORKER] [--ceiling M] "<prompt>"
-agent chat        <worker> [--idle SECS]
-agent ls          [--worker W] [--limit N] [--json]
-agent show        <run>
-agent context     <run> [--all]
-agent recall      <run>
 ```
 
 ## One daemon
 
-`server run` merged the three pre-v2 daemons (`serve`, `supervise`, `listen`):
+`server start` (alias: `server run`) merged the three pre-v2 daemons
+(`serve`, `supervise`, `listen`):
 the gateway accept loop, the task-dispatch loop, and one Discord listener per
 worker run as supervised siblings in a single process — one thing to start,
 one thing to restart after a rebuild. Listeners restart with backoff on
@@ -82,7 +87,7 @@ merged), so silent translation could misparse.
 
 | old | new |
 |---|---|
-| `serve` / `supervise` / `listen --worker W` | `server run` |
+| `serve` / `supervise` / `listen --worker W` | `server start` |
 | `deploy` | `server validate` (config loads live — no deploy step) |
 | `gates …` | `server gates …` |
 | `channel …` (incl. `memory-*` subcommands) | `server channel …` / `channel set` |
@@ -91,11 +96,11 @@ merged), so silent translation could misparse.
 | `queue add --worker W "p"` | `worker task add W "p"` |
 | `relay --worker W "m"` | `worker task relay W "m"` |
 | `memory <sub> --worker W` (and `notes`) | `worker memory <sub> W` |
-| `memory explain <run>` | `agent recall <run>` |
+| `memory explain <run>` | `server runs recall <run>` |
 | `knowledge W` | `worker knowledge W` |
-| `box [--worker W] "p"` | `agent run [-w W] "p"` |
-| `session --worker W` | `agent chat W` |
-| `runs ls\|show\|context` | `agent ls\|show\|context` |
+| `box [--worker W] "p"` / `agent run [-w W] "p"` | `worker run W "p"` (worker now required) |
+| `session --worker W` / `agent chat W` | `worker chat W` |
+| `runs …` / `agent ls\|show\|context\|recall` | `server runs ls\|show\|context\|recall` |
 
 New in v2 (no old equivalent): `server status`, `server vault ls`,
 `worker ls`, `worker show`, `worker trust`.

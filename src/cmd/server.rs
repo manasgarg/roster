@@ -1,4 +1,4 @@
-//! `roster server run` — the one daemon: the governed-egress gateway, the
+//! `roster server start` — the one daemon: the governed-egress gateway, the
 //! task-dispatch loop, and the channel listeners, supervised siblings in one
 //! process (one thing to start, one thing to restart after a rebuild). And
 //! `roster server status` — health, computed, never model-written.
@@ -108,10 +108,10 @@ pub fn validate() -> Result<(), BErr> {
             );
             match &c.engine_dir {
                 Some(dir) if !dir.join("box").is_dir() => {
-                    println!("warning: [engine] dir {} has no box/ — agent runs will fail", dir.display())
+                    println!("warning: [engine] dir {} has no box/ — sessions will fail", dir.display())
                 }
                 Some(_) => {}
-                None => println!("note: [engine] dir is unset — agent runs need it until pi is baked into the box image"),
+                None => println!("note: [engine] dir is unset — sessions need it until pi is baked into the box image"),
             }
             Ok(())
         }
@@ -180,7 +180,7 @@ pub async fn status(json: bool) -> Result<(), BErr> {
         if gateway_up {
             format!("up on :{GATEWAY_PORT}")
         } else {
-            format!("DOWN (nothing on :{GATEWAY_PORT}) — run: roster server run")
+            format!("DOWN (nothing on :{GATEWAY_PORT}) — run: roster server start")
         }
     );
     println!("config     {config}");

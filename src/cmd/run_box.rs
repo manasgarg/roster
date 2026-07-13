@@ -1,4 +1,4 @@
-//! `roster box` — run one pi session in the locked-down container. Port of the
+//! `roster worker run` — run one pi session in the locked-down container. Port of the
 //! TS box runner + lockdown. The box gets: the repo read-only, a writable
 //! workspace/session/HOME, a SENTINEL credential (never the real key), an
 //! un-spoofable identity token as proxy creds, and a NAT-disabled network whose
@@ -24,8 +24,9 @@ pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<
         return Err("--ceiling wants a positive number of minutes".into());
     }
     if prompt.trim().is_empty() {
-        return Err("agent run needs a prompt".into());
+        return Err("worker run needs a prompt".into());
     }
+    super::require_worker(worker)?;
     let worker = worker.to_string();
 
     let run_id = new_run_id();
@@ -503,7 +504,7 @@ async fn provision_box(
     let home = home_dir();
     let host_ca = crate::paths::ca_dir().join("ca.crt");
     if !host_ca.exists() {
-        return Err(format!("the gateway CA is not present at {} — start the gateway first (roster server run creates it)", host_ca.display()).into());
+        return Err(format!("the gateway CA is not present at {} — start the gateway first (roster server start creates it)", host_ca.display()).into());
     }
 
     // The engine checkout (pi + box extensions) — the ONLY roster-adjacent
@@ -728,7 +729,7 @@ async fn ensure_lockdown() -> Result<(), BErr> {
         .map(|r| r.status().is_success())
         .unwrap_or(false);
     if !healthy {
-        return Err(format!("refusing to start the box with open egress: the gateway is not answering on :{GATEWAY_PORT} — start it with: roster server run").into());
+        return Err(format!("refusing to start the box with open egress: the gateway is not answering on :{GATEWAY_PORT} — start it with: roster server start").into());
     }
     Ok(())
 }

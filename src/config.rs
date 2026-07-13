@@ -6,7 +6,7 @@
 //!
 //! Consumers call `snapshot()` (mtime-fingerprint cache, so admin edits are
 //! live). Invalid config fails closed: the gateway denies, dispatch pauses,
-//! `server run` refuses to boot — and `roster server validate` prints every
+//! `server start` refuses to boot — and `roster server validate` prints every
 //! error. `load()` is side-effect free.
 
 use crate::action::ActionPolicy;
@@ -28,7 +28,7 @@ pub struct Loaded {
     pub memory: CompiledMemoryPolicy,
     pub context: CompiledContextPolicy,
     pub storage: CompiledStoragePolicy,
-    /// (worker, vault credential) — `server run` starts one listener each.
+    /// (worker, vault credential) — `server start` starts one listener each.
     pub listeners: Vec<(String, String)>,
     pub workers: Vec<String>,
     /// The platform checkout the box mounts (`[engine] dir` in org.toml) —

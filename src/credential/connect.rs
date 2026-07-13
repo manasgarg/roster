@@ -45,6 +45,14 @@ pub fn provider_help() -> String {
     out
 }
 
+/// `vault connect` with no provider: list what's available and how each
+/// login flow works, then point at the usage.
+pub fn list() -> Result<(), BErr> {
+    println!("{}", provider_help());
+    println!("\nusage: roster server vault connect <provider>");
+    Ok(())
+}
+
 pub async fn run(name: &str) -> Result<(), BErr> {
     let registry = read_registry()?;
     let mut available: Vec<String> = registry.keys().cloned().collect();

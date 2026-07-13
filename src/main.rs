@@ -142,10 +142,10 @@ enum ChannelCmd {
 
 #[derive(Subcommand)]
 enum VaultCmd {
-    /// Create a credential via a provider's login flow
+    /// Create a credential via a provider's login flow (no argument: list providers)
     #[command(after_help = credential::connect::provider_help())]
     Connect {
-        provider: String,
+        provider: Option<String>,
     },
     /// Import an existing pi login into the vault
     Sync,
@@ -388,7 +388,10 @@ async fn main() {
                 } => cli::channel::set(&channel_id, &key, &value),
             },
             ServerCmd::Vault(cmd) => match cmd {
-                VaultCmd::Connect { provider } => credential::connect::run(&provider).await,
+                VaultCmd::Connect { provider } => match provider {
+                    Some(provider) => credential::connect::run(&provider).await,
+                    None => credential::connect::list(),
+                },
                 VaultCmd::Sync => cli::vault::run(),
                 VaultCmd::Ls { json } => cli::vault::ls(json),
             },

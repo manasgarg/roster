@@ -1,5 +1,14 @@
 # The capable box (spec, 2026-07-13)
 
+**Status: increments 1–4 implemented and conformance-verified 2026-07-13**
+(e52da21 bundle+DNS, 4cc86e7 verdicts, 6a3ea9d toolbelt, 2df6631 expose).
+Remaining: 2b (bake pi into the image, retire `[engine] dir`). Conformance:
+curl/python/node/gh all reached an allowed host through the gateway (gh got a
+real GitHub 401 for a dummy token — proxy, bundle TLS, and policy all held);
+an ungranted POST returned 403 with `x-roster-verdict: deny`; a raw socket to
+1.1.1.1:443 timed out; in-box DNS fails fast; the env held zero
+secret-looking vars; every probe appears attributed in decisions.jsonl.
+
 **Principle.** Capability and authority live in different layers. Inside the
 box, pi should have every tool a competent worker needs, and every byte it
 sends should reach the gateway *by convention* — inherited env vars, one trust

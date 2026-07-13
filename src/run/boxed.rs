@@ -16,6 +16,7 @@ type BErr = Box<dyn std::error::Error>;
 const LOCKDOWN_NETWORK: &str = "roster-locked";
 const GATEWAY_PORT: u16 = 7300;
 const BOX_CA_PATH: &str = "/opt/roster/ca.crt";
+const BOX_CA_BUNDLE_PATH: &str = "/opt/roster/ca-bundle.crt";
 const SENTINEL: &str = "roster-sentinel-no-real-credential-in-box";
 const CONTAINER_TEMP: &str = "/tmp:rw,nosuid,nodev,size=2147483648,mode=1777";
 
@@ -516,6 +517,10 @@ async fn provision_box(
     if !host_ca.exists() {
         return Err(format!("the gateway CA is not present at {} — start the gateway first (roster server start creates it)", host_ca.display()).into());
     }
+    // The combined trust bundle (system roots + roster CA) every TLS stack in
+    // the box is pointed at. Ensured here too, so a CLI run works even if the
+    // daemon predates the bundle.
+    let host_bundle = crate::gateway::ca::ensure_bundle().map_err(|e| e.to_string())?;
 
     // The engine checkout (pi + box extensions) — the ONLY roster-adjacent
     // directory the box mounts; config/data/state live elsewhere entirely.
@@ -585,6 +590,12 @@ async fn provision_box(
         "--add-host=host.docker.internal:host-gateway".into(),
         "--network".into(),
         LOCKDOWN_NETWORK.into(),
+        // Proxied clients hand hostnames to CONNECT — the box needs no DNS.
+        // A blackhole resolver closes the DNS-exfiltration side door Docker's
+        // embedded resolver would otherwise leave open (it forwards via the
+        // host daemon). host.docker.internal is an /etc/hosts entry, unaffected.
+        "--dns".into(),
+        "127.0.0.1".into(),
         "-u".into(),
         format!("{uid}:{gid}"),
         "-v".into(),
@@ -621,6 +632,8 @@ async fn provision_box(
     }
     args.push("-v".into());
     args.push(format!("{}:{BOX_CA_PATH}:ro", host_ca.display()));
+    args.push("-v".into());
+    args.push(format!("{}:{BOX_CA_BUNDLE_PATH}:ro", host_bundle.display()));
     args.extend(["-e".into(), format!("HOME={}", pihome.display())]);
     args.extend([
         "-e".into(),
@@ -656,12 +669,19 @@ async fn provision_box(
         "-e".into(),
         "NO_PROXY=".into(),
     ]);
+    // Trust for terminated TLS, per ecosystem. NODE_EXTRA_CA_CERTS is additive
+    // (Node keeps its built-in roots), so the bare CA suffices; everything else
+    // REPLACES default roots and gets the combined bundle — Go and OpenSSL
+    // tools (SSL_CERT_FILE), curl, Python requests/pip, git.
+    args.extend(["-e".into(), format!("NODE_EXTRA_CA_CERTS={BOX_CA_PATH}")]);
     for k in [
-        "NODE_EXTRA_CA_CERTS",
+        "SSL_CERT_FILE",
         "CURL_CA_BUNDLE",
         "REQUESTS_CA_BUNDLE",
+        "GIT_SSL_CAINFO",
+        "PIP_CERT",
     ] {
-        args.extend(["-e".into(), format!("{k}={BOX_CA_PATH}")]);
+        args.extend(["-e".into(), format!("{k}={BOX_CA_BUNDLE_PATH}")]);
     }
     if !has_auth {
         if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {

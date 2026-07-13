@@ -47,7 +47,7 @@ pub fn state_root() -> PathBuf {
 
 /// A worker handle may arrive as a bare name ("yuko") or a subject
 /// ("org/yuko"); directories are keyed by the bare name.
-fn short_worker(worker: &str) -> &str {
+pub fn short_worker(worker: &str) -> &str {
     worker.rsplit('/').next().unwrap_or(worker)
 }
 

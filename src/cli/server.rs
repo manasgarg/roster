@@ -59,7 +59,7 @@ pub fn validate() -> Result<(), BErr> {
     match crate::config::load() {
         Ok(c) => {
             println!(
-                "config valid: {} worker(s) [{}], {} grant(s), {} action(s), {} trust rule(s), {} limit(s), {} trigger(s), {} listener(s)",
+                "config valid: {} worker(s) [{}], {} grant(s), {} action(s), {} trust rule(s), {} limit(s), {} trigger(s), {} listener(s), {} exposure(s)",
                 c.workers.len(),
                 c.workers.join(", "),
                 c.policy.rules.len(),
@@ -68,6 +68,7 @@ pub fn validate() -> Result<(), BErr> {
                 c.budget.limits.len(),
                 c.triggers.len(),
                 c.listeners.len(),
+                c.exposes.len(),
             );
             match &c.engine_dir {
                 Some(dir) if !dir.join("box").is_dir() => {

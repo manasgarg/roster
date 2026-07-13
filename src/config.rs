@@ -20,6 +20,16 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
+#[derive(Clone, Debug)]
+pub struct Expose {
+    /// "org" or "org/<worker>" — which workers see this env var.
+    pub scope: String,
+    /// Vault credential name (must exist — fail closed, like listeners).
+    pub credential: String,
+    /// The env var set in the box (to the sentinel, never the real value).
+    pub env: String,
+}
+
 pub struct Loaded {
     pub policy: Policy,
     pub budget: BudgetPolicy,
@@ -30,6 +40,10 @@ pub struct Loaded {
     pub storage: CompiledStoragePolicy,
     /// (worker, vault credential) — `server start` starts one listener each.
     pub listeners: Vec<(String, String)>,
+    /// `[[expose]]` — env vars set in the box to the sentinel; the gateway's
+    /// per-grant injection swaps in the real credential in transit, only on
+    /// requests the grant's scope allows. Leaking the box env leaks nothing.
+    pub exposes: Vec<Expose>,
     pub workers: Vec<String>,
     /// The platform checkout the box mounts (`[engine] dir` in org.toml) —
     /// needed until pi + the extensions are baked into the box image.
@@ -55,6 +69,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
     let mut trust: Vec<Value> = Vec::new();
     let mut triggers: Vec<Value> = Vec::new();
     let mut listeners: Vec<(String, String)> = Vec::new();
+    let mut exposes: Vec<Expose> = Vec::new();
     let mut workers: Vec<String> = Vec::new();
 
     let default_memory = memory_policy(org.get("memory"), None).unwrap_or_else(|e| {
@@ -85,6 +100,9 @@ pub fn load() -> Result<Loaded, Vec<String>> {
     let org_budget = org.get("budget");
     for l in org_budget.map(|b| array(b, "limit")).unwrap_or_default() {
         limits.push(with_scope(l, "org"));
+    }
+    for e in array(&org, "expose") {
+        parse_expose(e, "org", "org.toml", &mut exposes, &mut errors);
     }
 
     let engine_dir = org
@@ -164,6 +182,9 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                     limits.push(with_scope(l, &scope));
                 }
             }
+            for e in array(&w, "expose") {
+                parse_expose(e, &scope, &name, &mut exposes, &mut errors);
+            }
             // [channels] — which vault credential this worker's inbound edge
             // uses. Two workers on one credential would double-file every
             // message, so that is a validation error, not a runtime surprise.
@@ -198,6 +219,8 @@ pub fn load() -> Result<Loaded, Vec<String>> {
     );
     let actions = parse::<ActionPolicy>(&mut errors, "actions/trust", json!({ "actions": actions, "trust": trust }));
 
+    validate_exposes(&exposes, |name| crate::credential::vault::get_credential(name).is_some(), &mut errors);
+
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -210,9 +233,59 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         context: CompiledContextPolicy { default: default_context, workers: worker_context },
         storage: CompiledStoragePolicy { default: default_storage, workers: worker_storage },
         listeners,
+        exposes,
         workers,
         engine_dir,
     })
+}
+
+/// The env vars provisioning owns — an `[[expose]]` may not overwrite the
+/// box's wiring (proxy, trust, identity), only add credential placeholders.
+const RESERVED_ENV: &[&str] = &[
+    "HOME", "TMPDIR", "PI_CODING_AGENT_DIR", "ANTHROPIC_API_KEY",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY",
+    "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "CURL_CA_BUNDLE",
+    "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO", "PIP_CERT",
+];
+
+fn parse_expose(v: &toml::Value, scope: &str, source: &str, exposes: &mut Vec<Expose>, errors: &mut Vec<String>) {
+    let field = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    match (field("credential"), field("env")) {
+        (Some(credential), Some(env)) => exposes.push(Expose { scope: scope.to_string(), credential, env }),
+        _ => errors.push(format!("{source} [[expose]]: needs string fields \"credential\" and \"env\"")),
+    }
+}
+
+/// Every exposure must name a real credential (fail closed, like listener
+/// credentials), a well-formed env name outside the reserved wiring, and no
+/// two exposures that could reach the same worker may claim one env name.
+fn validate_exposes(exposes: &[Expose], credential_exists: impl Fn(&str) -> bool, errors: &mut Vec<String>) {
+    for (i, e) in exposes.iter().enumerate() {
+        let well_formed = !e.env.is_empty()
+            && !e.env.as_bytes()[0].is_ascii_digit()
+            && e.env.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+        if !well_formed {
+            errors.push(format!("[[expose]] env \"{}\": use UPPER_SNAKE_CASE", e.env));
+        }
+        if RESERVED_ENV.contains(&e.env.as_str()) || e.env.starts_with("ROSTER_") {
+            errors.push(format!("[[expose]] env \"{}\" is reserved box wiring", e.env));
+        }
+        if !credential_exists(&e.credential) {
+            errors.push(format!(
+                "[[expose]] {}: no \"{}\" credential in the vault — run: roster server vault connect",
+                e.env, e.credential
+            ));
+        }
+        for other in &exposes[i + 1..] {
+            let overlap = e.scope == other.scope || e.scope == "org" || other.scope == "org";
+            if e.env == other.env && overlap {
+                errors.push(format!(
+                    "[[expose]] env \"{}\" claimed twice for overlapping scopes {} and {}",
+                    e.env, e.scope, other.scope
+                ));
+            }
+        }
+    }
 }
 
 /// The cached view. Reloads when any config file's fingerprint changes, so
@@ -360,4 +433,42 @@ fn with_scope(v: &toml::Value, scope: &str) -> Value {
         obj.insert("scope".to_string(), json!(scope));
     }
     j
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expose(scope: &str, credential: &str, env: &str) -> Expose {
+        Expose { scope: scope.into(), credential: credential.into(), env: env.into() }
+    }
+
+    #[test]
+    fn expose_validation_catches_each_failure_mode() {
+        let vault = |name: &str| name == "github";
+
+        // Well-formed, distinct workers sharing an env name: fine.
+        let mut errors = Vec::new();
+        let ok = [expose("org/a", "github", "GH_TOKEN"), expose("org/b", "github", "GH_TOKEN")];
+        validate_exposes(&ok, vault, &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        // Reserved wiring, bad shape, unknown credential, org-scope duplicate.
+        let mut errors = Vec::new();
+        let bad = [
+            expose("org", "github", "HTTP_PROXY"),
+            expose("org", "github", "ROSTER_X"),
+            expose("org", "github", "lower"),
+            expose("org", "nope", "A_TOKEN"),
+            expose("org", "github", "B_TOKEN"),
+            expose("org/a", "github", "B_TOKEN"),
+        ];
+        validate_exposes(&bad, vault, &mut errors);
+        assert_eq!(errors.len(), 5, "{errors:?}");
+        assert!(errors.iter().any(|e| e.contains("reserved") && e.contains("HTTP_PROXY")));
+        assert!(errors.iter().any(|e| e.contains("reserved") && e.contains("ROSTER_X")));
+        assert!(errors.iter().any(|e| e.contains("UPPER_SNAKE_CASE")));
+        assert!(errors.iter().any(|e| e.contains("no \"nope\" credential")));
+        assert!(errors.iter().any(|e| e.contains("claimed twice")));
+    }
 }

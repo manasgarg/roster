@@ -522,10 +522,11 @@ async fn provision_box(
     // daemon predates the bundle.
     let host_bundle = crate::gateway::ca::ensure_bundle().map_err(|e| e.to_string())?;
 
+    let config = crate::config::snapshot().map_err(|e| format!("config invalid:\n{e}"))?;
+
     // The engine checkout (pi + box extensions) — the ONLY roster-adjacent
     // directory the box mounts; config/data/state live elsewhere entirely.
-    let repo = crate::config::snapshot()
-        .map_err(|e| format!("config invalid:\n{e}"))?
+    let repo = config
         .engine_dir
         .clone()
         .ok_or("org.toml needs [engine] dir = \"<path to the roster checkout>\" — the box mounts pi + extensions from there (until they are baked into the box image)")?;
@@ -644,6 +645,15 @@ async fn provision_box(
     // Sessions have no wall clock — only task runs get a ceiling to pace against.
     if let Some(min) = ceiling_min {
         args.extend(["-e".into(), format!("ROSTER_CEILING_MIN={min}")]);
+    }
+    // [[expose]] — credential env vars, set to the SENTINEL. The gateway's
+    // per-grant injection swaps in the real value in transit, only where that
+    // grant's scope allows; the box env never holds a secret.
+    let subject = format!("org/{}", crate::paths::short_worker(worker));
+    for e in &config.exposes {
+        if crate::gateway::scope::applies(&e.scope, &subject) {
+            args.extend(["-e".into(), format!("{}={SENTINEL}", e.env)]);
+        }
     }
     if let Some(knowledge) = storage.knowledge.as_ref() {
         args.extend([

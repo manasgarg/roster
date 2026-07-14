@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 100" width="300" height="100" role="img" aria-label="impyard">
+  <title>impyard</title>
+  <!-- icon (for light backgrounds) -->
+  <g transform="translate(8,15) scale(0.70)">
+    <path d="M22 30 L44 50 L22 70" fill="none" stroke="#8C8375" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M52 40 L48 27 L58 37 Z" fill="#A82468"/>
+    <path d="M74 40 L78 27 L68 37 Z" fill="#A82468"/>
+    <rect x="52" y="40" width="24" height="34" rx="4" fill="#CE2F7F"/>
+  </g>
+  <!-- wordmark -->
+  <text x="88" y="51" dominant-baseline="central" font-family="'JetBrains Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,monospace" font-size="40" font-weight="600" letter-spacing="-1" fill="#241C15">impyard</text>
+</svg>

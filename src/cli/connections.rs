@@ -32,7 +32,9 @@ pub async fn connect(
         crate::credential::connect::store(&service, &cred)?;
         println!("\nconnected: \"{service}\" credential in the vault (channel infrastructure — never exposed to boxes)");
         if matches!(auth, "discord" | "slack") {
-            println!("bind an imp to it: [channels] {auth} = \"{service}\" in imps/<name>/imp.toml");
+            println!(
+                "bind an imp to it: [channels] {auth} = \"{service}\" in imps/<name>/imp.toml"
+            );
         }
         return Ok(());
     }
@@ -63,7 +65,13 @@ pub async fn connect(
         if answer.trim() == "org" {
             None
         } else {
-            Some(answer.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            Some(
+                answer
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            )
         }
     };
     if let Some(list) = &scope_imps {
@@ -96,17 +104,29 @@ pub async fn connect(
         std::fs::create_dir_all(&dir)?;
         let hosts: Vec<String> = meta["hosts"]
             .as_array()
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default();
         let env = meta["env"].as_str().unwrap_or("SERVICE_TOKEN");
         let scope_line = match &scope_imps {
             None => "scope = \"org\"".to_string(),
             Some(list) => format!(
                 "imps = [{}]",
-                list.iter().map(|w| format!("\"{w}\"")).collect::<Vec<_>>().join(", ")
+                list.iter()
+                    .map(|w| format!("\"{w}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         };
-        let hosts_line = hosts.iter().map(|h| format!("\"{h}\"")).collect::<Vec<_>>().join(", ");
+        let hosts_line = hosts
+            .iter()
+            .map(|h| format!("\"{h}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
         std::fs::write(
             &path,
             format!(
@@ -149,7 +169,11 @@ pub async fn connect(
             for e in &errors {
                 eprintln!("config: {e}");
             }
-            return Err(format!("{} config error(s) — the connection is stored but config needs fixing", errors.len()).into());
+            return Err(format!(
+                "{} config error(s) — the connection is stored but config needs fixing",
+                errors.len()
+            )
+            .into());
         }
     }
     Ok(())
@@ -167,8 +191,15 @@ fn catalog(registry: &serde_json::Map<String, Value>) -> Result<(), BErr> {
     let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
     for n in names {
         let meta = &registry[n.as_str()]["connection"];
-        let hosts: Vec<&str> = meta["hosts"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-        println!("  {n:width$}  {} → {}", hosts.join(", "), meta["env"].as_str().unwrap_or("?"));
+        let hosts: Vec<&str> = meta["hosts"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        println!(
+            "  {n:width$}  {} → {}",
+            hosts.join(", "),
+            meta["env"].as_str().unwrap_or("?")
+        );
     }
     println!("\nChannels (discord, slack, smtp) stay infrastructure: impyard server vault connect");
     println!("<provider>, then bind in imp.toml. Custom services: add [<name>] with auth/inject");
@@ -198,7 +229,10 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         println!("no connections — see the catalog: impyard server connect");
         return Ok(());
     }
-    println!("{:<14} {:<10} {:<18} {:<24} {:<14} STATE", "CONNECTION", "PROVIDER", "SCOPE", "HOSTS", "ENV");
+    println!(
+        "{:<14} {:<10} {:<18} {:<24} {:<14} STATE",
+        "CONNECTION", "PROVIDER", "SCOPE", "HOSTS", "ENV"
+    );
     for conn in &c.connections {
         let scope = match &conn.imps {
             None => "org".to_string(),
@@ -211,7 +245,11 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             scope,
             conn.hosts.join(","),
             conn.env,
-            if conn.enabled { "active" } else { "DISABLED (no secret)" }
+            if conn.enabled {
+                "active"
+            } else {
+                "DISABLED (no secret)"
+            }
         );
     }
     Ok(())

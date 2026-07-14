@@ -10,7 +10,8 @@ use std::path::Path;
 pub fn run() -> Result<(), BErr> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     let src = Path::new(&home).join(".pi/agent/auth.json");
-    let text = fs::read_to_string(&src).map_err(|_| format!("no pi auth to sync from at {}", src.display()))?;
+    let text = fs::read_to_string(&src)
+        .map_err(|_| format!("no pi auth to sync from at {}", src.display()))?;
     let auth: Value = serde_json::from_str(&text)?;
     let entries = auth.as_object().ok_or("pi auth.json is not an object")?;
 
@@ -28,7 +29,10 @@ pub fn run() -> Result<(), BErr> {
         names.push(name.clone());
     }
     println!("vault synced from pi auth: {}", names.join(", "));
-    println!("(stored at {} — off the box mount; the gateway injects these in transit)", vault.display());
+    println!(
+        "(stored at {} — off the box mount; the gateway injects these in transit)",
+        vault.display()
+    );
     Ok(())
 }
 
@@ -42,7 +46,10 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
             let kind = fs::read_to_string(&path)
                 .ok()
                 .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -72,7 +79,9 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         return Ok(());
     }
     if rows.is_empty() {
-        println!("the vault is empty — create a credential: impyard server vault connect <provider>");
+        println!(
+            "the vault is empty — create a credential: impyard server vault connect <provider>"
+        );
         return Ok(());
     }
     println!("{:<16}  {:<10}  UPDATED (UTC)", "CREDENTIAL", "TYPE");

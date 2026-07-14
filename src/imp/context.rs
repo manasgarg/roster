@@ -477,10 +477,7 @@ fn build_briefing(request: &ContextRequest, max_chars: usize) -> Option<Compiled
     }
     let subject = format!(
         "org/{}",
-        request
-            .imp
-            .strip_prefix("org/")
-            .unwrap_or(&request.imp)
+        request.imp.strip_prefix("org/").unwrap_or(&request.imp)
     );
     let mut open = crate::action::gate::for_imp(&subject)
         .into_iter()
@@ -787,7 +784,9 @@ fn box_image_id() -> &'static str {
 fn engine_fingerprint() -> String {
     let mut digest = Sha256::new();
     digest.update(b"pi-only-v1\0");
-    let engine_dir = crate::config::snapshot().ok().and_then(|c| c.engine_dir.clone());
+    let engine_dir = crate::config::snapshot()
+        .ok()
+        .and_then(|c| c.engine_dir.clone());
     match engine_dir {
         // Baked engine: the image id pins pi, the extensions, and the wrapper.
         None => digest.update(box_image_id().as_bytes()),

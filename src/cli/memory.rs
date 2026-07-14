@@ -2,8 +2,8 @@
 //! interaction memory. (Module name is the legacy storage name; the physical
 //! `notes/` → `memory/` migration finishes via `compact`.)
 
-use crate::util::BErr;
 use crate::imp::memory::{self, MemoryScope};
+use crate::util::BErr;
 
 pub fn compact(imp: &str) -> Result<(), BErr> {
     crate::imp::require_imp(imp)?;
@@ -19,7 +19,9 @@ pub fn ls(imp: &str, scope: Option<&str>, scope_id: Option<&str>) -> Result<(), 
         Some("imp") => Some(MemoryScope::Imp),
         Some("channel") => Some(MemoryScope::Channel),
         Some("user") => Some(MemoryScope::User),
-        Some(other) => return Err(format!("unknown memory scope \"{other}\" (imp, channel, user)").into()),
+        Some(other) => {
+            return Err(format!("unknown memory scope \"{other}\" (imp, channel, user)").into())
+        }
     };
     let notes: Vec<_> = memory::list(imp)
         .into_iter()
@@ -76,7 +78,8 @@ pub fn correct(imp: &str, id: &str, replacement: &str) -> Result<(), BErr> {
     if replacement.trim().is_empty() {
         return Err("correct needs the replacement text".into());
     }
-    memory::admin_mutate(imp, "correct", id, Some(replacement)).map_err(|e| -> BErr { e.into() })?;
+    memory::admin_mutate(imp, "correct", id, Some(replacement))
+        .map_err(|e| -> BErr { e.into() })?;
     println!("memory {id} → correct");
     Ok(())
 }

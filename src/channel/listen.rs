@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 
 /// (imp, platform, vault credential) triples — straight from live config.
 pub fn plan() -> Vec<(String, String, String)> {
-    crate::config::snapshot().map(|c| c.listeners.clone()).unwrap_or_default()
+    crate::config::snapshot()
+        .map(|c| c.listeners.clone())
+        .unwrap_or_default()
 }
 
 /// Run one imp's listener on one platform forever, restarting with backoff.
@@ -22,7 +24,9 @@ pub async fn supervised(imp: String, platform: String, credential: String) {
     let mut backoff = 5u64;
     loop {
         match listen_imp(&imp, &platform, &credential).await {
-            Ok(()) => eprintln!("listener {imp}/{platform}: disconnected; reconnecting in {backoff}s"),
+            Ok(()) => {
+                eprintln!("listener {imp}/{platform}: disconnected; reconnecting in {backoff}s")
+            }
             Err(e) => eprintln!("listener {imp}/{platform}: {e}; retrying in {backoff}s"),
         }
         tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
@@ -103,7 +107,11 @@ struct ListenerLock {
 
 impl ListenerLock {
     fn acquire(imp: &str, platform: &str) -> Result<Self, BErr> {
-        if imp.is_empty() || !imp.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        if imp.is_empty()
+            || !imp
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
             return Err(format!("invalid imp name \"{imp}\"").into());
         }
         // Discord keeps the legacy `<imp>.lock` name; other platforms get
@@ -159,7 +167,9 @@ impl ListenerLock {
 
 impl Drop for ListenerLock {
     fn drop(&mut self) {
-        let owned = read_lock(&self.path).map(|record| record.token == self.token).unwrap_or(false);
+        let owned = read_lock(&self.path)
+            .map(|record| record.token == self.token)
+            .unwrap_or(false);
         if owned {
             let _ = std::fs::remove_file(&self.path);
         }
@@ -167,7 +177,9 @@ impl Drop for ListenerLock {
 }
 
 fn read_lock(path: &Path) -> Option<LockRecord> {
-    std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok())
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
 }
 
 fn process_alive(pid: u32) -> bool {
@@ -180,7 +192,10 @@ mod tests {
 
     #[test]
     fn listener_lock_excludes_a_second_owner_and_cleans_up() {
-        let path = std::env::temp_dir().join(format!("impyard-listener-test-{}.lock", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "impyard-listener-test-{}.lock",
+            uuid::Uuid::new_v4()
+        ));
         let first = ListenerLock::acquire_path("yuko", "discord", path.clone()).unwrap();
         assert!(ListenerLock::acquire_path("yuko", "discord", path.clone()).is_err());
         drop(first);
@@ -192,7 +207,10 @@ mod tests {
 
     #[test]
     fn stale_listener_lock_is_replaced() {
-        let path = std::env::temp_dir().join(format!("impyard-listener-stale-{}.lock", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "impyard-listener-stale-{}.lock",
+            uuid::Uuid::new_v4()
+        ));
         let stale = LockRecord {
             pid: u32::MAX,
             imp: "yuko".into(),

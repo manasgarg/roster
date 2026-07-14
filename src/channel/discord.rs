@@ -31,7 +31,11 @@ pub async fn post_message(token: &str, channel_id: &str, text: &str) -> Result<S
     if !status.is_success() {
         return Err(format!("discord POST message {status}: {body}"));
     }
-    Ok(body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string())
+    Ok(body
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string())
 }
 
 /// Open (or fetch) a DM channel with a user. Returns the DM channel id.
@@ -48,7 +52,10 @@ pub async fn open_dm(token: &str, user_id: &str) -> Result<String, String> {
     if !status.is_success() {
         return Err(format!("discord open DM {status}: {body}"));
     }
-    body.get("id").and_then(|v| v.as_str()).map(String::from).ok_or_else(|| "DM channel had no id".to_string())
+    body.get("id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .ok_or_else(|| "DM channel had no id".to_string())
 }
 
 // ── inbound: the gateway (WebSocket) client ───────────────────────────────────
@@ -93,8 +100,13 @@ pub async fn run_gateway(imp: &str, token: &str) {
 }
 
 async fn connect_once(imp: &str, token: &str) -> Result<(), GwError> {
-    let transient = |m: String| GwError { fatal: false, msg: m };
-    let (ws, _) = tokio_tungstenite::connect_async(GATEWAY_URL).await.map_err(|e| transient(format!("connect: {e}")))?;
+    let transient = |m: String| GwError {
+        fatal: false,
+        msg: m,
+    };
+    let (ws, _) = tokio_tungstenite::connect_async(GATEWAY_URL)
+        .await
+        .map_err(|e| transient(format!("connect: {e}")))?;
     let (mut sink, mut stream) = ws.split();
 
     // One writer task owns the sink; heartbeat + identify send through this channel.
@@ -114,7 +126,9 @@ async fn connect_once(imp: &str, token: &str) -> Result<(), GwError> {
     let mut guilds: HashMap<String, Guild> = HashMap::new();
 
     let result = loop {
-        let Some(msg) = stream.next().await else { break Err(transient("stream ended".into())) };
+        let Some(msg) = stream.next().await else {
+            break Err(transient("stream ended".into()));
+        };
         let msg = match msg {
             Ok(m) => m,
             Err(e) => break Err(transient(format!("read: {e}"))),
@@ -132,7 +146,10 @@ async fn connect_once(imp: &str, token: &str) -> Result<(), GwError> {
                     break Err(GwError { fatal: true, msg: "a privileged intent (MESSAGE CONTENT) isn't enabled — Developer Portal → Bot → Privileged Gateway Intents".into() });
                 }
                 if code == 4004 {
-                    break Err(GwError { fatal: true, msg: "authentication failed — bad bot token".into() });
+                    break Err(GwError {
+                        fatal: true,
+                        msg: "authentication failed — bad bot token".into(),
+                    });
                 }
                 break Err(transient(format!("closed ({code})")));
             }
@@ -154,7 +171,10 @@ async fn connect_once(imp: &str, token: &str) -> Result<(), GwError> {
                     tokio::time::sleep(Duration::from_millis(interval / 2)).await; // jitter
                     loop {
                         let s = *seq2.lock().unwrap();
-                        if tx2.send(Ws::text(json!({ "op": 1, "d": s }).to_string())).is_err() {
+                        if tx2
+                            .send(Ws::text(json!({ "op": 1, "d": s }).to_string()))
+                            .is_err()
+                        {
                             break;
                         }
                         tokio::time::sleep(Duration::from_millis(interval)).await;
@@ -170,18 +190,29 @@ async fn connect_once(imp: &str, token: &str) -> Result<(), GwError> {
                 let s = *seq.lock().unwrap();
                 let _ = tx.send(Ws::text(json!({ "op": 1, "d": s }).to_string()));
             }
-            7 | 9 => break Err(transient(format!("gateway asked to reconnect (op {})", v["op"]))),
+            7 | 9 => {
+                break Err(transient(format!(
+                    "gateway asked to reconnect (op {})",
+                    v["op"]
+                )))
+            }
             0 => {
                 let d = &v["d"];
                 match v["t"].as_str().unwrap_or("") {
                     "READY" => {
                         bot_id = d["user"]["id"].as_str().unwrap_or("").to_string();
                         app_id = d["application"]["id"].as_str().unwrap_or("").to_string();
-                        eprintln!("discord: connected as {} ({bot_id})", d["user"]["username"].as_str().unwrap_or("?"));
+                        eprintln!(
+                            "discord: connected as {} ({bot_id})",
+                            d["user"]["username"].as_str().unwrap_or("?")
+                        );
                     }
                     "GUILD_CREATE" => {
                         let g = ingest_guild(d);
-                        eprintln!("discord: guild \"{}\" — {} channels visible", g.name, g.channels);
+                        eprintln!(
+                            "discord: guild \"{}\" — {} channels visible",
+                            g.name, g.channels
+                        );
                         let guild_id = d["id"].as_str().unwrap_or("").to_string();
                         register_commands(&app_id, &guild_id, token).await;
                         guilds.insert(guild_id, g);
@@ -209,7 +240,10 @@ fn ingest_guild(d: &Value) -> Guild {
     if let Some(roles) = d["roles"].as_array() {
         for r in roles {
             let id = r["id"].as_str().unwrap_or("");
-            let perms = r["permissions"].as_str().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            let perms = r["permissions"]
+                .as_str()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
             if id == guild_id {
                 everyone_perms = perms; // @everyone role id == guild id
             }
@@ -257,7 +291,13 @@ fn resolve_role(d: &Value, guilds: &HashMap<String, Guild>) -> &'static str {
     }
 }
 
-async fn handle_message(imp: &str, d: &Value, bot_id: &str, guilds: &HashMap<String, Guild>, token: &str) {
+async fn handle_message(
+    imp: &str,
+    d: &Value,
+    bot_id: &str,
+    guilds: &HashMap<String, Guild>,
+    token: &str,
+) {
     // Never react to bots (including ourselves) — avoids reply loops.
     if d["author"]["bot"].as_bool().unwrap_or(false) {
         return;
@@ -286,7 +326,10 @@ async fn handle_message(imp: &str, d: &Value, bot_id: &str, guilds: &HashMap<Str
 
     // Wake rule: a DM, an @mention, or a channel in "all" mode. In "mention"
     // mode ambient messages are persisted but don't spawn a run.
-    let mentioned = d["mentions"].as_array().map(|m| m.iter().any(|u| u["id"].as_str() == Some(bot_id))).unwrap_or(false);
+    let mentioned = d["mentions"]
+        .as_array()
+        .map(|m| m.iter().any(|u| u["id"].as_str() == Some(bot_id)))
+        .unwrap_or(false);
     if !(is_dm || mentioned || channel_mode(channel_id) == "all") {
         return;
     }
@@ -312,21 +355,16 @@ async fn handle_message(imp: &str, d: &Value, bot_id: &str, guilds: &HashMap<Str
         inbound: false, // live channel context carries ids; inbound marks relay tasks
     };
     eprintln!("discord: {author} ({role}) in {channel_id} → session");
-    route_to_session(
-        imp,
-        channel_id,
-        author.to_string(),
-        text,
-        context,
-        token,
-    )
-    .await;
+    route_to_session(imp, channel_id, author.to_string(), text, context, token).await;
 }
 
 // ── conversation sessions: one warm box per active channel ────────────────────
 
-fn sessions() -> &'static Mutex<HashMap<String, tokio::sync::mpsc::Sender<crate::run::boxed::SessionMessage>>> {
-    static S: OnceLock<Mutex<HashMap<String, tokio::sync::mpsc::Sender<crate::run::boxed::SessionMessage>>>> = OnceLock::new();
+fn sessions(
+) -> &'static Mutex<HashMap<String, tokio::sync::mpsc::Sender<crate::run::boxed::SessionMessage>>> {
+    static S: OnceLock<
+        Mutex<HashMap<String, tokio::sync::mpsc::Sender<crate::run::boxed::SessionMessage>>>,
+    > = OnceLock::new();
     S.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -352,11 +390,13 @@ async fn route_to_session(
     let delivered = {
         let map = sessions().lock().unwrap();
         match map.get(channel_id) {
-            Some(tx) => tx.try_send(crate::run::boxed::SessionMessage {
-                text: message.text.clone(),
-                author_label: message.author_label.clone(),
-                context: message.context.clone(),
-            }).is_ok(),
+            Some(tx) => tx
+                .try_send(crate::run::boxed::SessionMessage {
+                    text: message.text.clone(),
+                    author_label: message.author_label.clone(),
+                    context: message.context.clone(),
+                })
+                .is_ok(),
             None => false,
         }
     };
@@ -367,7 +407,10 @@ async fn route_to_session(
     // Start a new session (clears any stale closed sender).
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::run::boxed::SessionMessage>(64);
     let _ = tx.try_send(message);
-    sessions().lock().unwrap().insert(channel_id.to_string(), tx);
+    sessions()
+        .lock()
+        .unwrap()
+        .insert(channel_id.to_string(), tx);
     let (w, run_id) = (imp.to_string(), crate::run::boxed::new_run_id());
     tokio::spawn(async move {
         if let Err(e) = crate::run::boxed::run_session(
@@ -466,14 +509,20 @@ async fn register_commands(app_id: &str, guild_id: &str, token: &str) {
         return;
     }
     let res = reqwest::Client::new()
-        .put(format!("{}/applications/{app_id}/guilds/{guild_id}/commands", base()))
+        .put(format!(
+            "{}/applications/{app_id}/guilds/{guild_id}/commands",
+            base()
+        ))
         .header("authorization", format!("Bot {token}"))
         .json(&command_defs())
         .send()
         .await;
     match res {
         Ok(r) if r.status().is_success() => {}
-        Ok(r) => eprintln!("discord: register commands → {} (guild {guild_id})", r.status()),
+        Ok(r) => eprintln!(
+            "discord: register commands → {} (guild {guild_id})",
+            r.status()
+        ),
         Err(e) => eprintln!("discord: register commands failed: {e}"),
     }
 }
@@ -492,7 +541,10 @@ fn interaction_role(d: &Value, guilds: &HashMap<String, Guild>) -> &'static str 
     let Some(guild_id) = d["guild_id"].as_str() else {
         return "trusted"; // DM
     };
-    let perms = d["member"]["permissions"].as_str().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    let perms = d["member"]["permissions"]
+        .as_str()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
     if perms & PERM_ADMINISTRATOR != 0 {
         return "admin";
     }
@@ -516,18 +568,27 @@ async fn handle_interaction(imp: &str, d: &Value, guilds: &HashMap<String, Guild
     let itoken = d["token"].as_str().unwrap_or("");
     // Ack immediately (deferred, ephemeral) — the interaction token, not bot auth.
     let _ = reqwest::Client::new()
-        .post(format!("{}/interactions/{interaction_id}/{itoken}/callback", base()))
+        .post(format!(
+            "{}/interactions/{interaction_id}/{itoken}/callback",
+            base()
+        ))
         .json(&json!({ "type": 5, "data": { "flags": 64 } }))
         .send()
         .await;
 
     let role = interaction_role(d, guilds);
-    let caller = d["member"]["user"]["username"].as_str().or_else(|| d["user"]["username"].as_str()).unwrap_or("someone");
+    let caller = d["member"]["user"]["username"]
+        .as_str()
+        .or_else(|| d["user"]["username"].as_str())
+        .unwrap_or("someone");
     let text = run_command(imp, d, role, caller).await;
 
     // Fill in the deferred response (webhook uses the interaction token).
     let _ = reqwest::Client::new()
-        .patch(format!("{}/webhooks/{app_id}/{itoken}/messages/@original", base()))
+        .patch(format!(
+            "{}/webhooks/{app_id}/{itoken}/messages/@original",
+            base()
+        ))
         .json(&json!({ "content": text }))
         .send()
         .await;
@@ -538,7 +599,10 @@ async fn run_command(imp: &str, d: &Value, role: &str, caller: &str) -> String {
     let cmd = data["name"].as_str().unwrap_or("");
     let sub = data["options"][0]["name"].as_str().unwrap_or("");
     let channel_id = d["channel_id"].as_str().unwrap_or("");
-    let caller_id = d["member"]["user"]["id"].as_str().or_else(|| d["user"]["id"].as_str()).unwrap_or("");
+    let caller_id = d["member"]["user"]["id"]
+        .as_str()
+        .or_else(|| d["user"]["id"].as_str())
+        .unwrap_or("");
     let memory_context = crate::imp::memory::RunContext {
         provider: "discord".into(),
         channel_id: Some(channel_id.to_string()).filter(|s| !s.is_empty()),
@@ -568,7 +632,10 @@ async fn run_command(imp: &str, d: &Value, role: &str, caller: &str) -> String {
             if g.is_empty() {
                 "No pending gates.".into()
             } else {
-                let lines: Vec<String> = g.iter().map(|x| format!("• `{}` {} ({})", x.id, x.intent, x.imp)).collect();
+                let lines: Vec<String> = g
+                    .iter()
+                    .map(|x| format!("• `{}` {} ({})", x.id, x.intent, x.imp))
+                    .collect();
                 format!("Pending gates:\n{}", lines.join("\n"))
             }
         }
@@ -600,7 +667,10 @@ async fn run_command(imp: &str, d: &Value, role: &str, caller: &str) -> String {
             if tasks.is_empty() {
                 "Queue is empty.".into()
             } else {
-                let lines: Vec<String> = tasks.iter().map(|t| format!("• `{}` [{}] {}", t.id, t.state, first_words(&t.prompt))).collect();
+                let lines: Vec<String> = tasks
+                    .iter()
+                    .map(|t| format!("• `{}` [{}] {}", t.id, t.state, first_words(&t.prompt)))
+                    .collect();
                 format!("Tasks:\n{}", lines.join("\n"))
             }
         }
@@ -644,7 +714,10 @@ async fn run_command(imp: &str, d: &Value, role: &str, caller: &str) -> String {
                 _ => return "Memory state must be `on` or `off`.".into(),
             };
             set_channel_memory(channel_id, enabled);
-            format!("Memory is now **{}** in this channel.", if enabled { "on" } else { "off" })
+            format!(
+                "Memory is now **{}** in this channel.",
+                if enabled { "on" } else { "off" }
+            )
         }
         ("channel", "memory-inferred") => {
             if rank < 1 {
@@ -657,7 +730,10 @@ async fn run_command(imp: &str, d: &Value, role: &str, caller: &str) -> String {
                 _ => return "Inferred memory must be `auto` or `review`.".into(),
             };
             set_channel_memory_inferred_auto(channel_id, enabled);
-            format!("Inferred channel memories now require **{}**.", if enabled { "no review" } else { "review" })
+            format!(
+                "Inferred channel memories now require **{}**.",
+                if enabled { "no review" } else { "review" }
+            )
         }
         ("channel", "memory-kinds") => {
             if rank < 1 {
@@ -667,7 +743,12 @@ async fn run_command(imp: &str, d: &Value, role: &str, caller: &str) -> String {
             match crate::cli::channel::parse_memory_kinds(&value) {
                 Ok(kinds) => {
                     set_channel_memory_allowed_kinds(channel_id, kinds.clone());
-                    format!("Channel memory kinds: **{}**.", kinds.map(|v| v.join(", ")).unwrap_or_else(|| "default".into()))
+                    format!(
+                        "Channel memory kinds: **{}**.",
+                        kinds
+                            .map(|v| v.join(", "))
+                            .unwrap_or_else(|| "default".into())
+                    )
                 }
                 Err(e) => format!("Could not set memory kinds: {e}"),
             }
@@ -682,11 +763,17 @@ async fn run_command(imp: &str, d: &Value, role: &str, caller: &str) -> String {
             } else {
                 match value.parse::<u64>().ok().filter(|n| *n > 0) {
                     Some(days) => Some(days),
-                    None => return "Retention must be `default` or a positive number of days.".into(),
+                    None => {
+                        return "Retention must be `default` or a positive number of days.".into()
+                    }
                 }
             };
             set_channel_memory_retention_days(channel_id, days);
-            format!("Channel memory retention: **{}**.", days.map(|n| format!("{n} days")).unwrap_or_else(|| "default".into()))
+            format!(
+                "Channel memory retention: **{}**.",
+                days.map(|n| format!("{n} days"))
+                    .unwrap_or_else(|| "default".into())
+            )
         }
         ("memory", "show") => {
             let notes = crate::imp::memory::visible_in_context(imp, &memory_context);
@@ -696,14 +783,23 @@ async fn run_command(imp: &str, d: &Value, role: &str, caller: &str) -> String {
                 let lines: Vec<String> = notes
                     .iter()
                     .take(20)
-                    .map(|n| format!("• `{}` [{} / {}] {}", n.id, n.scope.as_str(), n.status(), n.note))
+                    .map(|n| {
+                        format!(
+                            "• `{}` [{} / {}] {}",
+                            n.id,
+                            n.scope.as_str(),
+                            n.status(),
+                            n.note
+                        )
+                    })
                     .collect();
                 format!("Visible memories:\n{}", lines.join("\n"))
             }
         }
         ("memory", "forget") => {
             let id = arg("id");
-            match crate::imp::memory::participant_mutate(imp, "forget", &id, None, &memory_context) {
+            match crate::imp::memory::participant_mutate(imp, "forget", &id, None, &memory_context)
+            {
                 Ok(()) => format!("Forgot `{id}`."),
                 Err(e) => format!("Could not forget `{id}`: {e}"),
             }
@@ -711,7 +807,13 @@ async fn run_command(imp: &str, d: &Value, role: &str, caller: &str) -> String {
         ("memory", "correct") => {
             let id = arg("id");
             let text = arg("text");
-            match crate::imp::memory::participant_mutate(imp, "correct", &id, Some(&text), &memory_context) {
+            match crate::imp::memory::participant_mutate(
+                imp,
+                "correct",
+                &id,
+                Some(&text),
+                &memory_context,
+            ) {
                 Ok(()) => format!("Corrected `{id}`."),
                 Err(e) => format!("Could not correct `{id}`: {e}"),
             }
@@ -721,7 +823,9 @@ async fn run_command(imp: &str, d: &Value, role: &str, caller: &str) -> String {
                 return denied("trusted participants");
             }
             match std::fs::read_to_string(purpose_path(channel_id)) {
-                Ok(p) if !p.trim().is_empty() => format!("This channel's purpose:\n```\n{}\n```", p.trim()),
+                Ok(p) if !p.trim().is_empty() => {
+                    format!("This channel's purpose:\n```\n{}\n```", p.trim())
+                }
                 _ => "This channel has no purpose set yet. Set one with `/purpose set`.".into(),
             }
         }
@@ -742,7 +846,9 @@ async fn run_command(imp: &str, d: &Value, role: &str, caller: &str) -> String {
                 return denied("server admins");
             }
             match std::fs::read_to_string(crate::run::boxed::identity_path(imp)) {
-                Ok(p) if !p.trim().is_empty() => format!("{imp}'s identity:\n```\n{}\n```", p.trim()),
+                Ok(p) if !p.trim().is_empty() => {
+                    format!("{imp}'s identity:\n```\n{}\n```", p.trim())
+                }
                 _ => format!("{imp} has no identity.md set."),
             }
         }
@@ -811,7 +917,10 @@ fn settings_path() -> PathBuf {
 }
 
 fn load_settings() -> HashMap<String, ChannelSettings> {
-    if let Some(s) = std::fs::read_to_string(settings_path()).ok().and_then(|s| serde_json::from_str::<HashMap<String, ChannelSettings>>(&s).ok()) {
+    if let Some(s) = std::fs::read_to_string(settings_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<HashMap<String, ChannelSettings>>(&s).ok())
+    {
         return s;
     }
     // Migrate a legacy trust.json (bool map), if present.
@@ -820,7 +929,15 @@ fn load_settings() -> HashMap<String, ChannelSettings> {
         .and_then(|s| serde_json::from_str::<HashMap<String, bool>>(&s).ok())
         .map(|m| {
             m.into_iter()
-                .map(|(k, v)| (k, ChannelSettings { trusted: v, ..Default::default() }))
+                .map(|(k, v)| {
+                    (
+                        k,
+                        ChannelSettings {
+                            trusted: v,
+                            ..Default::default()
+                        },
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -838,7 +955,10 @@ fn save_settings(map: &HashMap<String, ChannelSettings>) {
 
 /// Is this channel marked trusted? (DMs are marked trusted when first seen.)
 pub fn channel_trusted(channel_id: &str) -> bool {
-    load_settings().get(channel_id).map(|s| s.trusted).unwrap_or(false)
+    load_settings()
+        .get(channel_id)
+        .map(|s| s.trusted)
+        .unwrap_or(false)
 }
 
 pub fn set_channel_trust(channel_id: &str, trusted: bool) {
@@ -853,7 +973,10 @@ pub fn set_channel_trust(channel_id: &str, trusted: bool) {
 
 /// The channel's response mode: "all" (default) or "mention".
 pub fn channel_mode(channel_id: &str) -> String {
-    load_settings().get(channel_id).map(|s| s.mode.clone()).unwrap_or_else(default_mode)
+    load_settings()
+        .get(channel_id)
+        .map(|s| s.mode.clone())
+        .unwrap_or_else(default_mode)
 }
 
 pub fn set_channel_mode(channel_id: &str, mode: &str) {
@@ -864,44 +987,64 @@ pub fn set_channel_mode(channel_id: &str, mode: &str) {
 }
 
 pub fn channel_memory_enabled(channel_id: &str) -> bool {
-    load_settings().get(channel_id).map(|s| s.memory_enabled).unwrap_or(true)
+    load_settings()
+        .get(channel_id)
+        .map(|s| s.memory_enabled)
+        .unwrap_or(true)
 }
 
 pub fn channel_memory_recall_max_notes(channel_id: &str) -> Option<usize> {
-    load_settings().get(channel_id).and_then(|s| s.memory_recall_max_notes)
+    load_settings()
+        .get(channel_id)
+        .and_then(|s| s.memory_recall_max_notes)
 }
 
 pub fn channel_memory_recall_char_budget(channel_id: &str) -> Option<usize> {
-    load_settings().get(channel_id).and_then(|s| s.memory_recall_char_budget)
+    load_settings()
+        .get(channel_id)
+        .and_then(|s| s.memory_recall_char_budget)
 }
 
 pub fn channel_memory_inferred_auto(channel_id: &str) -> bool {
-    load_settings().get(channel_id).map(|s| s.memory_inferred_auto).unwrap_or(false)
+    load_settings()
+        .get(channel_id)
+        .map(|s| s.memory_inferred_auto)
+        .unwrap_or(false)
 }
 
 pub fn channel_memory_allowed_kinds(channel_id: &str) -> Option<Vec<String>> {
-    load_settings().get(channel_id).and_then(|s| s.memory_allowed_kinds.clone())
+    load_settings()
+        .get(channel_id)
+        .and_then(|s| s.memory_allowed_kinds.clone())
 }
 
 pub fn channel_memory_retention_days(channel_id: &str) -> Option<u64> {
-    load_settings().get(channel_id).and_then(|s| s.memory_retention_days)
+    load_settings()
+        .get(channel_id)
+        .and_then(|s| s.memory_retention_days)
 }
 
 pub fn set_channel_memory_inferred_auto(channel_id: &str, enabled: bool) {
     let mut m = load_settings();
-    m.entry(channel_id.to_string()).or_default().memory_inferred_auto = enabled;
+    m.entry(channel_id.to_string())
+        .or_default()
+        .memory_inferred_auto = enabled;
     save_settings(&m);
 }
 
 pub fn set_channel_memory_allowed_kinds(channel_id: &str, kinds: Option<Vec<String>>) {
     let mut m = load_settings();
-    m.entry(channel_id.to_string()).or_default().memory_allowed_kinds = kinds;
+    m.entry(channel_id.to_string())
+        .or_default()
+        .memory_allowed_kinds = kinds;
     save_settings(&m);
 }
 
 pub fn set_channel_memory_retention_days(channel_id: &str, days: Option<u64>) {
     let mut m = load_settings();
-    m.entry(channel_id.to_string()).or_default().memory_retention_days = days;
+    m.entry(channel_id.to_string())
+        .or_default()
+        .memory_retention_days = days;
     save_settings(&m);
 }
 
@@ -938,7 +1081,11 @@ pub fn purpose_path(channel_id: &str) -> PathBuf {
 pub(crate) fn persist_message(channel_id: &str, record: &Value) {
     let dir = channel_dir(channel_id);
     let _ = std::fs::create_dir_all(&dir);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("messages.jsonl")) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("messages.jsonl"))
+    {
         use std::io::Write;
         let _ = writeln!(f, "{record}");
     }
@@ -956,8 +1103,12 @@ pub(crate) fn distinct_human_authors(channel_id: &str) -> usize {
 }
 
 fn recent_messages(channel_id: &str, n: usize) -> Vec<Value> {
-    let text = std::fs::read_to_string(channel_dir(channel_id).join("messages.jsonl")).unwrap_or_default();
-    let mut evs: Vec<Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let text =
+        std::fs::read_to_string(channel_dir(channel_id).join("messages.jsonl")).unwrap_or_default();
+    let mut evs: Vec<Value> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
     let len = evs.len();
     if len > n {
         evs.split_off(len - n)
@@ -967,16 +1118,23 @@ fn recent_messages(channel_id: &str, n: usize) -> Vec<Value> {
 }
 
 async fn download_attachments(channel_id: &str, attachments: &Value) {
-    let Some(list) = attachments.as_array() else { return };
+    let Some(list) = attachments.as_array() else {
+        return;
+    };
     if list.is_empty() {
         return;
     }
     let dir = channel_dir(channel_id).join("files");
     let _ = std::fs::create_dir_all(&dir);
     for a in list {
-        let (Some(url), Some(name)) = (a["url"].as_str(), a["filename"].as_str()) else { continue };
+        let (Some(url), Some(name)) = (a["url"].as_str(), a["filename"].as_str()) else {
+            continue;
+        };
         // Keep the filename safe (no path traversal).
-        let safe: String = name.chars().map(|c| if c == '/' || c == '\\' { '_' } else { c }).collect();
+        let safe: String = name
+            .chars()
+            .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+            .collect();
         if let Ok(res) = reqwest::Client::new().get(url).send().await {
             if let Ok(bytes) = res.bytes().await {
                 let _ = std::fs::write(dir.join(&safe), &bytes);

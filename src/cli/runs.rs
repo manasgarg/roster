@@ -1,12 +1,12 @@
 //! `impyard server runs` inspection — every execution, including warm Discord
 //! sessions that intentionally bypass the durable task queue.
 
-use crate::util::BErr;
 use crate::imp::context as context_compiler;
 use crate::imp::journal;
 use crate::imp::memory;
-use crate::work::queue;
 use crate::run::runlog;
+use crate::util::BErr;
+use crate::work::queue;
 
 pub fn ls(imp: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
     if limit == 0 {
@@ -263,8 +263,14 @@ pub fn context(id: &str, all: bool) -> Result<(), BErr> {
         }
         println!(
             "=== {} {}{} ===",
-            event.get("phase").and_then(|value| value.as_str()).unwrap_or("?"),
-            event.get("ts").and_then(|value| value.as_str()).unwrap_or(""),
+            event
+                .get("phase")
+                .and_then(|value| value.as_str())
+                .unwrap_or("?"),
+            event
+                .get("ts")
+                .and_then(|value| value.as_str())
+                .unwrap_or(""),
             event
                 .get("turn_id")
                 .and_then(|value| value.as_str())

@@ -76,36 +76,61 @@ pub struct ActionPolicy {
 }
 
 pub fn load_action_policy() -> ActionPolicy {
-    crate::config::snapshot().map(|c| c.actions.clone()).unwrap_or_default()
+    crate::config::snapshot()
+        .map(|c| c.actions.clone())
+        .unwrap_or_default()
 }
 
 fn grant_for<'a>(policy: &'a ActionPolicy, imp: &str, intent: &str) -> Option<&'a ActionGrant> {
-    policy.actions.iter().find(|a| crate::gateway::scope::applies(&a.scope, imp) && a.name == intent)
+    policy
+        .actions
+        .iter()
+        .find(|a| crate::gateway::scope::applies(&a.scope, imp) && a.name == intent)
 }
 
 /// Is a channel-send payload targeting a channel an admin marked trusted?
 /// (The trust store is channel-id keyed and platform-agnostic.)
 fn channel_payload_trusted(payload: &Value) -> bool {
-    payload.get("channel_id").and_then(|v| v.as_str()).map(crate::channel::discord::channel_trusted).unwrap_or(false)
+    payload
+        .get("channel_id")
+        .and_then(|v| v.as_str())
+        .map(crate::channel::discord::channel_trusted)
+        .unwrap_or(false)
 }
 
 // ── the gateway's action decision ────────────────────────────────────────────
 
 fn reply(status: StatusCode, v: Value) -> Response<Body> {
-    let mut resp = Response::new(Full::new(Bytes::from(v.to_string())).map_err(|n| match n {}).boxed());
+    let mut resp = Response::new(
+        Full::new(Bytes::from(v.to_string()))
+            .map_err(|n| match n {})
+            .boxed(),
+    );
     *resp.status_mut() = status;
-    resp.headers_mut().insert(hyper::header::CONTENT_TYPE, "application/json".parse().unwrap());
+    resp.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        "application/json".parse().unwrap(),
+    );
     resp
 }
 
 /// Route a request to the action host. `imp` is resolved from the identity
 /// token. POST /submit proposes an action; GET /gates and /journal are the
 /// imp's read-only view of its own state (the box's cross-run awareness).
-pub async fn handle_action(imp: &str, trusted_run_id: &str, method: &str, path: &str, body: &[u8]) -> Response<Body> {
+pub async fn handle_action(
+    imp: &str,
+    trusted_run_id: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Response<Body> {
     match (method, path) {
         ("POST", "/submit") => submit(imp, trusted_run_id, body).await,
         ("GET", "/gates") => {
-            let gates: Vec<Value> = crate::action::gate::for_imp(imp).iter().map(|g| g.summary()).collect();
+            let gates: Vec<Value> = crate::action::gate::for_imp(imp)
+                .iter()
+                .map(|g| g.summary())
+                .collect();
             reply(StatusCode::OK, json!({ "gates": gates }))
         }
         ("GET", "/journal") => reply(StatusCode::OK, json!({ "events": journal::tail(imp, 30) })),
@@ -118,9 +143,15 @@ pub async fn handle_action(imp: &str, trusted_run_id: &str, method: &str, path: 
                 "memory-read",
                 json!({ "note_ids": memories.iter().map(|n| n.id.as_str()).collect::<Vec<_>>() }),
             );
-            reply(StatusCode::OK, json!({ "memories": memories, "user_settings": user_settings }))
+            reply(
+                StatusCode::OK,
+                json!({ "memories": memories, "user_settings": user_settings }),
+            )
         }
-        _ => reply(StatusCode::NOT_FOUND, json!({ "status": "error", "error": "unknown action endpoint" })),
+        _ => reply(
+            StatusCode::NOT_FOUND,
+            json!({ "status": "error", "error": "unknown action endpoint" }),
+        ),
     }
 }
 
@@ -129,23 +160,53 @@ pub async fn handle_action(imp: &str, trusted_run_id: &str, method: &str, path: 
 async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> {
     let env: Envelope = match serde_json::from_slice(body) {
         Ok(e) => e,
-        Err(e) => return reply(StatusCode::BAD_REQUEST, json!({ "status": "error", "error": format!("bad envelope: {e}") })),
+        Err(e) => {
+            return reply(
+                StatusCode::BAD_REQUEST,
+                json!({ "status": "error", "error": format!("bad envelope: {e}") }),
+            )
+        }
     };
-    let run_id = if trusted_run_id.is_empty() { env.run_id.clone() } else { trusted_run_id.to_string() };
+    let run_id = if trusted_run_id.is_empty() {
+        env.run_id.clone()
+    } else {
+        trusted_run_id.to_string()
+    };
     let policy = load_action_policy();
     let Some(grant) = grant_for(&policy, imp, &env.intent) else {
-        journal::append(imp, &run_id, "action-refused", json!({ "intent": env.intent, "reason": "no action grant in scope" }));
+        journal::append(
+            imp,
+            &run_id,
+            "action-refused",
+            json!({ "intent": env.intent, "reason": "no action grant in scope" }),
+        );
         audit(imp, &env.intent, "refused", None, None);
-        return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": format!("no action grant for \"{}\"", env.intent) }));
+        return reply(
+            StatusCode::FORBIDDEN,
+            json!({ "status": "denied", "reason": format!("no action grant for \"{}\"", env.intent) }),
+        );
     };
     let grant = grant.clone();
     if grant.executor == "note" && trusted_run_id.is_empty() {
-        journal::append(imp, &run_id, "action-refused", json!({ "intent": env.intent, "reason": "run-scoped action has no trusted run context" }));
+        journal::append(
+            imp,
+            &run_id,
+            "action-refused",
+            json!({ "intent": env.intent, "reason": "run-scoped action has no trusted run context" }),
+        );
         audit(imp, &env.intent, "refused", None, None);
-        return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": "run-scoped action has no trusted run context" }));
+        return reply(
+            StatusCode::FORBIDDEN,
+            json!({ "status": "denied", "reason": "run-scoped action has no trusted run context" }),
+        );
     }
 
-    journal::append(imp, &run_id, "action-proposed", json!({ "intent": env.intent, "rationale": env.rationale, "run_id": run_id }));
+    journal::append(
+        imp,
+        &run_id,
+        "action-proposed",
+        json!({ "intent": env.intent, "rationale": env.rationale, "run_id": run_id }),
+    );
 
     let (executed, denied) = gate::history(imp, &env.intent);
     let level = if grant.executor == "note" {
@@ -153,15 +214,25 @@ async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> 
         match crate::imp::memory::action_trust(imp, &env.intent, &env.payload, &context) {
             Ok(level) => level.to_string(),
             Err(reason) => {
-                journal::append(imp, &run_id, "action-refused", json!({ "intent": env.intent, "reason": reason }));
+                journal::append(
+                    imp,
+                    &run_id,
+                    "action-refused",
+                    json!({ "intent": env.intent, "reason": reason }),
+                );
                 audit(imp, &env.intent, "refused", None, None);
-                return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": reason }));
+                return reply(
+                    StatusCode::FORBIDDEN,
+                    json!({ "status": "denied", "reason": reason }),
+                );
             }
         }
     } else if grant.executor == "identity" {
         // Identity is imp-wide — always hard-gated (D10).
         "gate".to_string()
-    } else if (grant.executor == "discord" || grant.executor == "slack" || grant.executor == "purpose")
+    } else if (grant.executor == "discord"
+        || grant.executor == "slack"
+        || grant.executor == "purpose")
         && channel_payload_trusted(&env.payload)
     {
         // Replies AND channel-purpose refinements flow without a gate in a trusted
@@ -169,17 +240,38 @@ async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> 
         // `/purpose set` directly). Untrusted channels still gate for review.
         "auto".to_string()
     } else {
-        trust::evaluate(imp, &env.intent, &env.payload, &grant.trust, &policy.trust, executed, denied)
+        trust::evaluate(
+            imp,
+            &env.intent,
+            &env.payload,
+            &grant.trust,
+            &policy.trust,
+            executed,
+            denied,
+        )
     };
     if level == "auto" {
         match run_executor(&grant.executor, imp, &env.intent, &env.payload, &run_id).await {
             Ok(result) => {
-                journal::append(imp, &run_id, "executed", json!({ "intent": env.intent, "auto": true, "result": result }));
+                journal::append(
+                    imp,
+                    &run_id,
+                    "executed",
+                    json!({ "intent": env.intent, "auto": true, "result": result }),
+                );
                 audit(imp, &env.intent, "auto-executed", None, Some(&result));
-                reply(StatusCode::OK, json!({ "status": "done", "result": result }))
+                reply(
+                    StatusCode::OK,
+                    json!({ "status": "done", "result": result }),
+                )
             }
             Err(e) => {
-                journal::append(imp, &run_id, "failed", json!({ "intent": env.intent, "auto": true, "error": e }));
+                journal::append(
+                    imp,
+                    &run_id,
+                    "failed",
+                    json!({ "intent": env.intent, "auto": true, "error": e }),
+                );
                 audit(imp, &env.intent, "failed", None, None);
                 reply(StatusCode::OK, json!({ "status": "error", "error": e }))
             }
@@ -204,11 +296,22 @@ async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> 
             error: None,
         };
         if let Err(e) = gate::save(&g) {
-            return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({ "status": "error", "error": format!("could not file gate: {e}") }));
+            return reply(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "status": "error", "error": format!("could not file gate: {e}") }),
+            );
         }
-        journal::append(imp, &run_id, "gate-filed", json!({ "gate_id": g.id, "intent": env.intent, "rationale": env.rationale }));
+        journal::append(
+            imp,
+            &run_id,
+            "gate-filed",
+            json!({ "gate_id": g.id, "intent": env.intent, "rationale": env.rationale }),
+        );
         audit(imp, &env.intent, "gated", Some(&g.id), None);
-        reply(StatusCode::ACCEPTED, json!({ "status": "pending", "gate_id": g.id, "message": "held for human approval" }))
+        reply(
+            StatusCode::ACCEPTED,
+            json!({ "status": "pending", "gate_id": g.id, "message": "held for human approval" }),
+        )
     }
 }
 
@@ -230,7 +333,12 @@ pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Res
         g.decided_at = Some(now_rfc3339());
         g.decision_note = note.map(String::from);
         gate::save(&g).map_err(|e| e.to_string())?;
-        journal::append(&g.imp, &g.run_id, "approved", json!({ "gate_id": g.id, "by": decided_by, "note": note }));
+        journal::append(
+            &g.imp,
+            &g.run_id,
+            "approved",
+            json!({ "gate_id": g.id, "by": decided_by, "note": note }),
+        );
     }
     g.state = "executing".into();
     gate::save(&g).map_err(|e| e.to_string())?;
@@ -240,7 +348,12 @@ pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Res
             g.executed_at = Some(now_rfc3339());
             g.result = Some(result.clone());
             gate::save(&g).map_err(|e| e.to_string())?;
-            journal::append(&g.imp, &g.run_id, "executed", json!({ "gate_id": g.id, "intent": g.intent, "result": result }));
+            journal::append(
+                &g.imp,
+                &g.run_id,
+                "executed",
+                json!({ "gate_id": g.id, "intent": g.intent, "result": result }),
+            );
             audit(&g.imp, &g.intent, "executed", Some(&g.id), Some(&result));
             resolve_followup(&g);
             Ok(g)
@@ -249,7 +362,12 @@ pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Res
             g.state = "failed".into();
             g.error = Some(e.clone());
             gate::save(&g).map_err(|e| e.to_string())?;
-            journal::append(&g.imp, &g.run_id, "failed", json!({ "gate_id": g.id, "intent": g.intent, "error": e }));
+            journal::append(
+                &g.imp,
+                &g.run_id,
+                "failed",
+                json!({ "gate_id": g.id, "intent": g.intent, "error": e }),
+            );
             audit(&g.imp, &g.intent, "failed", Some(&g.id), None);
             Err(e)
         }
@@ -266,7 +384,12 @@ pub fn deny_gate(id: &str, decided_by: &str, note: Option<&str>) -> Result<Gate,
     g.decided_at = Some(now_rfc3339());
     g.decision_note = note.map(String::from);
     gate::save(&g).map_err(|e| e.to_string())?;
-    journal::append(&g.imp, &g.run_id, "denied", json!({ "gate_id": g.id, "by": decided_by, "note": note }));
+    journal::append(
+        &g.imp,
+        &g.run_id,
+        "denied",
+        json!({ "gate_id": g.id, "by": decided_by, "note": note }),
+    );
     audit(&g.imp, &g.intent, "denied", Some(&g.id), None);
     resolve_followup(&g);
     Ok(g)
@@ -287,23 +410,49 @@ fn resolve_followup(g: &Gate) {
     }
 
     let policy = load_action_policy();
-    let wake = grant_for(&policy, &g.imp, &g.intent).map(|a| a.wake_on_resolve).unwrap_or(false);
+    let wake = grant_for(&policy, &g.imp, &g.intent)
+        .map(|a| a.wake_on_resolve)
+        .unwrap_or(false);
     if !wake {
         return;
     }
     let short = g.imp.strip_prefix("org/").unwrap_or(&g.imp).to_string();
     let outcome = if g.state == "executed" {
-        format!("was approved and executed. Result: {}", g.result.clone().unwrap_or(json!(null)))
+        format!(
+            "was approved and executed. Result: {}",
+            g.result.clone().unwrap_or(json!(null))
+        )
     } else {
-        format!("was denied{}", g.decision_note.as_deref().map(|n| format!(" ({n})")).unwrap_or_default())
+        format!(
+            "was denied{}",
+            g.decision_note
+                .as_deref()
+                .map(|n| format!(" ({n})"))
+                .unwrap_or_default()
+        )
     };
     let prompt = format!(
         "A previous action you proposed — {} (gate {}) — {}. Decide whether any follow-up is needed; if not, you are done.",
         g.intent, g.id, outcome
     );
     let context = json!({ "resolved_gate": { "id": g.id, "intent": g.intent, "state": g.state, "result": g.result, "decided_by": g.decided_by, "note": g.decision_note } });
-    let _ = crate::work::queue::create(&short, &prompt, "continuation", false, 15.0, "append", context, None, None);
-    journal::append(&g.imp, &g.run_id, "continuation-filed", json!({ "gate_id": g.id, "intent": g.intent }));
+    let _ = crate::work::queue::create(
+        &short,
+        &prompt,
+        "continuation",
+        false,
+        15.0,
+        "append",
+        context,
+        None,
+        None,
+    );
+    journal::append(
+        &g.imp,
+        &g.run_id,
+        "continuation-filed",
+        json!({ "gate_id": g.id, "intent": g.intent }),
+    );
 }
 
 // ── executors (trusted-side; hold real credentials the box never sees) ───────
@@ -311,7 +460,13 @@ fn resolve_followup(g: &Gate) {
 /// Dispatch to the executor that performs an intent. New capabilities register
 /// here. Executors that egress route through the gateway as the privileged
 /// subject (uniform judge/inject/meter/audit); local ones act directly.
-pub async fn run_executor(executor: &str, imp: &str, intent: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
+pub async fn run_executor(
+    executor: &str,
+    imp: &str,
+    intent: &str,
+    payload: &Value,
+    run_id: &str,
+) -> Result<Value, String> {
     match executor {
         "message-user" => exec_message_user(imp, payload).await,
         "email" => exec_email(imp, payload).await,
@@ -344,11 +499,20 @@ fn exec_file_task(imp: &str, payload: &Value, run_id: &str) -> Result<Value, Str
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or("file-task needs a non-empty \"prompt\"")?;
-    let ceiling = payload.get("ceiling_min").and_then(|v| v.as_f64()).unwrap_or(30.0).clamp(1.0, 240.0);
+    let ceiling = payload
+        .get("ceiling_min")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(30.0)
+        .clamp(1.0, 240.0);
 
     let context = crate::imp::memory::load_run_context(run_id);
     if let Err(reason) = crate::imp::boundary::check_task_prompt(&context, prompt) {
-        journal::append(imp, run_id, "boundary-denied", json!({ "intent": "file-task", "reason": reason }));
+        journal::append(
+            imp,
+            run_id,
+            "boundary-denied",
+            json!({ "intent": "file-task", "reason": reason }),
+        );
         return Err(reason);
     }
 
@@ -364,17 +528,28 @@ fn exec_file_task(imp: &str, payload: &Value, run_id: &str) -> Result<Value, Str
         None,
     )
     .map_err(|e| e.to_string())?;
-    journal::append(imp, run_id, "task-filed", json!({ "task_id": task.id, "prompt": prompt }));
+    journal::append(
+        imp,
+        run_id,
+        "task-filed",
+        json!({ "task_id": task.id, "prompt": prompt }),
+    );
     eprintln!("file-task [{imp}] → {} ({} min)", task.id, ceiling);
     Ok(json!({ "task_id": task.id, "state": "waiting" }))
 }
 
 async fn exec_message_user(imp: &str, payload: &Value) -> Result<Value, String> {
-    let text = payload.get("text").and_then(|v| v.as_str()).ok_or("message-user needs a \"text\" field")?;
+    let text = payload
+        .get("text")
+        .and_then(|v| v.as_str())
+        .ok_or("message-user needs a \"text\" field")?;
 
     if let Some(cred) = crate::credential::vault::get_credential("discord") {
         let token = cred.get("token").and_then(|v| v.as_str());
-        let owner = cred.get("owner_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        let owner = cred
+            .get("owner_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
         if let (Some(token), Some(owner)) = (token, owner) {
             match crate::channel::discord::open_dm(token, owner).await {
                 Ok(dm) => match crate::channel::discord::post_message(token, &dm, text).await {
@@ -382,7 +557,9 @@ async fn exec_message_user(imp: &str, payload: &Value) -> Result<Value, String> 
                         eprintln!("message-user [{imp}] → lead DM");
                         return Ok(json!({ "delivered": "discord-dm" }));
                     }
-                    Err(e) => eprintln!("message-user: DM post failed ({e}); trying other channels"),
+                    Err(e) => {
+                        eprintln!("message-user: DM post failed ({e}); trying other channels")
+                    }
                 },
                 Err(e) => eprintln!("message-user: open DM failed ({e}); trying other channels"),
             }
@@ -391,7 +568,10 @@ async fn exec_message_user(imp: &str, payload: &Value) -> Result<Value, String> 
 
     if let Some(cred) = crate::credential::vault::get_credential(&slack_credential_name(imp)) {
         let token = cred.get("bot_token").and_then(|v| v.as_str());
-        let owner = cred.get("owner_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        let owner = cred
+            .get("owner_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
         if let (Some(token), Some(owner)) = (token, owner) {
             match crate::channel::slack::open_dm(token, owner).await {
                 Ok(dm) => match crate::channel::slack::post_message(token, &dm, text, None).await {
@@ -411,7 +591,11 @@ async fn exec_message_user(imp: &str, payload: &Value) -> Result<Value, String> 
         let _ = std::fs::create_dir_all(dir);
     }
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{}", json!({ "ts": now_rfc3339(), "imp": imp, "text": text }));
+        let _ = writeln!(
+            f,
+            "{}",
+            json!({ "ts": now_rfc3339(), "imp": imp, "text": text })
+        );
     }
     eprintln!("message-user [{imp}]: {text}");
     Ok(json!({ "delivered": "inbox" }))
@@ -420,14 +604,21 @@ async fn exec_message_user(imp: &str, payload: &Value) -> Result<Value, String> 
 /// Post a message to a Discord channel (the imp's reply). Trusted-side; the
 /// bot token comes from the vault, never the box.
 async fn exec_discord(imp: &str, payload: &Value) -> Result<Value, String> {
-    let channel = payload.get("channel_id").and_then(|v| v.as_str()).ok_or("discord-send needs a \"channel_id\"")?;
+    let channel = payload
+        .get("channel_id")
+        .and_then(|v| v.as_str())
+        .ok_or("discord-send needs a \"channel_id\"")?;
     let text = payload
         .get("text")
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
         .ok_or("discord-send needs non-empty \"text\"")?;
-    let cred = crate::credential::vault::get_credential("discord").ok_or("no discord credential — run: impyard server vault connect discord")?;
-    let token = cred.get("token").and_then(|v| v.as_str()).ok_or("discord credential has no token")?;
+    let cred = crate::credential::vault::get_credential("discord")
+        .ok_or("no discord credential — run: impyard server vault connect discord")?;
+    let token = cred
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or("discord credential has no token")?;
     let id = crate::channel::discord::post_message(token, channel, text).await?;
     eprintln!("discord [{imp}] → channel {channel}");
     Ok(json!({ "sent": true, "channel_id": channel, "message_id": id }))
@@ -449,17 +640,27 @@ fn slack_credential_name(imp: &str) -> String {
 }
 
 async fn exec_slack(imp: &str, payload: &Value) -> Result<Value, String> {
-    let channel = payload.get("channel_id").and_then(|v| v.as_str()).ok_or("slack-send needs a \"channel_id\"")?;
+    let channel = payload
+        .get("channel_id")
+        .and_then(|v| v.as_str())
+        .ok_or("slack-send needs a \"channel_id\"")?;
     let text = payload
         .get("text")
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
         .ok_or("slack-send needs non-empty \"text\"")?;
-    let thread_ts = payload.get("thread_ts").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+    let thread_ts = payload
+        .get("thread_ts")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
     let name = slack_credential_name(imp);
-    let cred = crate::credential::vault::get_credential(&name)
-        .ok_or_else(|| format!("no \"{name}\" credential — run: impyard server vault connect slack"))?;
-    let token = cred.get("bot_token").and_then(|v| v.as_str()).ok_or("slack credential has no bot_token")?;
+    let cred = crate::credential::vault::get_credential(&name).ok_or_else(|| {
+        format!("no \"{name}\" credential — run: impyard server vault connect slack")
+    })?;
+    let token = cred
+        .get("bot_token")
+        .and_then(|v| v.as_str())
+        .ok_or("slack credential has no bot_token")?;
     let ts = crate::channel::slack::post_message(token, channel, text, thread_ts).await?;
     eprintln!("slack [{imp}] → channel {channel}");
     Ok(json!({ "sent": true, "channel_id": channel, "message_ts": ts }))
@@ -473,16 +674,27 @@ async fn exec_email(imp: &str, payload: &Value) -> Result<Value, String> {
     let to: Vec<String> = payload
         .get("to")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .filter(|v: &Vec<String>| !v.is_empty())
         .ok_or("email needs a non-empty \"to\" array")?;
-    let subject = payload.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+    let subject = payload
+        .get("subject")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let body = payload.get("body").and_then(|v| v.as_str()).unwrap_or("");
 
     if let Some(cfg) = smtp_config() {
-        let status = crate::action::smtp::send(&cfg, &to, subject, body).await.map_err(|e| format!("smtp send failed: {e}"))?;
+        let status = crate::action::smtp::send(&cfg, &to, subject, body)
+            .await
+            .map_err(|e| format!("smtp send failed: {e}"))?;
         eprintln!("email [{imp}] → {to:?} via {}: {subject}", cfg.host);
-        return Ok(json!({ "delivered": "smtp", "provider": cfg.host, "to": to, "status": status }));
+        return Ok(
+            json!({ "delivered": "smtp", "provider": cfg.host, "to": to, "status": status }),
+        );
     }
 
     // No SMTP configured: fail loudly so an email is never silently dropped. The
@@ -492,10 +704,23 @@ async fn exec_email(imp: &str, payload: &Value) -> Result<Value, String> {
     }
     let dir = paths::outbox_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let file = dir.join(format!("{}-{}.json", now_rfc3339().replace(':', "-"), imp.replace('/', "_")));
+    let file = dir.join(format!(
+        "{}-{}.json",
+        now_rfc3339().replace(':', "-"),
+        imp.replace('/', "_")
+    ));
     let rendered = json!({ "from": imp, "to": to, "subject": subject, "body": body });
-    std::fs::write(&file, format!("{}\n", serde_json::to_string_pretty(&rendered).unwrap_or_default())).map_err(|e| e.to_string())?;
-    eprintln!("email [{imp}] → {to:?}: {subject} (IMPYARD_EMAIL_SINK — wrote local sink, NOT sent)");
+    std::fs::write(
+        &file,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&rendered).unwrap_or_default()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    eprintln!(
+        "email [{imp}] → {to:?}: {subject} (IMPYARD_EMAIL_SINK — wrote local sink, NOT sent)"
+    );
     Ok(json!({ "delivered": "local-sink", "to": to, "file": file.display().to_string() }))
 }
 
@@ -524,8 +749,14 @@ fn exec_git_pr(imp: &str, run_id: &str, payload: &Value) -> Result<Value, String
         return Err(format!("no worktree at {}", wt.display()));
     }
     let wt = wt.display().to_string();
-    let message = payload.get("message").and_then(|v| v.as_str()).unwrap_or("changes proposed by imp");
-    let title = payload.get("title").and_then(|v| v.as_str()).unwrap_or(message);
+    let message = payload
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("changes proposed by imp");
+    let title = payload
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or(message);
     let body = payload.get("body").and_then(|v| v.as_str()).unwrap_or("");
 
     git(&["-C", &wt, "add", "-A"])?;
@@ -539,7 +770,17 @@ fn exec_git_pr(imp: &str, run_id: &str, payload: &Value) -> Result<Value, String
         return Err("no changes in the worktree to commit".into());
     }
     let author = format!("user.name=impyard imp {imp}");
-    git(&["-C", &wt, "-c", "user.email=imp@impyard.local", "-c", &author, "commit", "-m", message])?;
+    git(&[
+        "-C",
+        &wt,
+        "-c",
+        "user.email=imp@impyard.local",
+        "-c",
+        &author,
+        "commit",
+        "-m",
+        message,
+    ])?;
     let branch = git(&["-C", &wt, "rev-parse", "--abbrev-ref", "HEAD"])?;
     let commit = git(&["-C", &wt, "rev-parse", "--short", "HEAD"])?;
     git(&["-C", &wt, "push", "-u", "origin", &branch])?;
@@ -547,7 +788,9 @@ fn exec_git_pr(imp: &str, run_id: &str, payload: &Value) -> Result<Value, String
     // Open a PR if the GitHub CLI is available and authenticated; otherwise the
     // branch is pushed and the PR is opened out of band.
     let pr = match std::process::Command::new("gh")
-        .args(["pr", "create", "--head", &branch, "--title", title, "--body", body])
+        .args([
+            "pr", "create", "--head", &branch, "--title", title, "--body", body,
+        ])
         .current_dir(&wt)
         .output()
     {
@@ -571,7 +814,10 @@ fn exec_identity(imp: &str, payload: &Value) -> Result<Value, String> {
     let path = crate::run::boxed::identity_path(short);
     let dir = path.parent().ok_or("bad identity path")?;
     if !dir.exists() {
-        return Err(format!("no imp directory {} — is \"{short}\" a real imp?", dir.display()));
+        return Err(format!(
+            "no imp directory {} — is \"{short}\" a real imp?",
+            dir.display()
+        ));
     }
     write_atomic(&path, content)?;
     eprintln!("identity [{imp}] updated ({} bytes)", content.trim().len());
@@ -580,7 +826,10 @@ fn exec_identity(imp: &str, payload: &Value) -> Result<Value, String> {
 
 /// Overwrite a channel's purpose (channels/<id>/purpose.md), post-approval (D10).
 fn exec_purpose(payload: &Value) -> Result<Value, String> {
-    let channel = payload.get("channel_id").and_then(|v| v.as_str()).ok_or("purpose-edit needs a \"channel_id\"")?;
+    let channel = payload
+        .get("channel_id")
+        .and_then(|v| v.as_str())
+        .ok_or("purpose-edit needs a \"channel_id\"")?;
     let content = payload
         .get("purpose")
         .and_then(|v| v.as_str())
@@ -589,7 +838,10 @@ fn exec_purpose(payload: &Value) -> Result<Value, String> {
     let path = crate::channel::discord::purpose_path(channel);
     let _ = std::fs::create_dir_all(path.parent().unwrap());
     write_atomic(&path, content)?;
-    eprintln!("purpose [{channel}] updated ({} bytes)", content.trim().len());
+    eprintln!(
+        "purpose [{channel}] updated ({} bytes)",
+        content.trim().len()
+    );
     Ok(json!({ "written": path.display().to_string(), "channel_id": channel }))
 }
 
@@ -601,9 +853,16 @@ fn write_atomic(path: &std::path::Path, content: &str) -> Result<(), String> {
 }
 
 fn git(args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git").args(args).output().map_err(|e| e.to_string())?;
+    let out = std::process::Command::new("git")
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
     if !out.status.success() {
-        return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(format!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -620,7 +879,11 @@ pub fn purpose_diff(channel_id: &str, proposed: &str) -> Option<String> {
 }
 
 fn file_diff(current: &std::path::Path, proposed: &str) -> Option<String> {
-    let current_arg = if current.exists() { current.to_path_buf() } else { std::path::PathBuf::from("/dev/null") };
+    let current_arg = if current.exists() {
+        current.to_path_buf()
+    } else {
+        std::path::PathBuf::from("/dev/null")
+    };
     let tmp = std::env::temp_dir().join(format!("impyard-charter-{}.md", std::process::id()));
     std::fs::write(&tmp, format!("{}\n", proposed.trim())).ok()?;
     let out = std::process::Command::new("git")
@@ -647,14 +910,22 @@ pub fn worktree_diff(run_id: &str) -> Option<String> {
     }
     let wt = wt.display().to_string();
     // Stage nothing; show working-tree changes against HEAD, including new files.
-    let _ = std::process::Command::new("git").args(["-C", &wt, "add", "-A", "-N"]).status();
+    let _ = std::process::Command::new("git")
+        .args(["-C", &wt, "add", "-A", "-N"])
+        .status();
     git(&["-C", &wt, "diff", "HEAD"]).ok()
 }
 
 // ── audit ────────────────────────────────────────────────────────────────────
 
 /// Append an action decision to the shared audit log, alongside egress decisions.
-fn audit(imp: &str, intent: &str, disposition: &str, gate_id: Option<&str>, result: Option<&Value>) {
+fn audit(
+    imp: &str,
+    intent: &str,
+    disposition: &str,
+    gate_id: Option<&str>,
+    result: Option<&Value>,
+) {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let rec = json!({

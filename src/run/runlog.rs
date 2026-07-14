@@ -1,8 +1,8 @@
 //! Durable run manifests plus discovery of legacy run directories.
 
-use crate::work::queue;
 use crate::paths;
 use crate::util::now_rfc3339;
+use crate::work::queue;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -98,10 +98,7 @@ pub fn fail(run_id: &str) {
     }
 }
 
-pub fn attach_storage(
-    run_id: &str,
-    knowledge: Option<KnowledgeRunRecord>,
-) -> Result<(), String> {
+pub fn attach_storage(run_id: &str, knowledge: Option<KnowledgeRunRecord>) -> Result<(), String> {
     let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
     record.knowledge = knowledge;
     save(&record)

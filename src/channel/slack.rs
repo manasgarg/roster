@@ -34,14 +34,22 @@ async fn api(token: &str, method: &str, body: Value) -> Result<Value, String> {
     let status = res.status();
     let body: Value = res.json().await.unwrap_or(Value::Null);
     if !status.is_success() || !body["ok"].as_bool().unwrap_or(false) {
-        return Err(format!("slack {method} {status}: {}", body["error"].as_str().unwrap_or("?")));
+        return Err(format!(
+            "slack {method} {status}: {}",
+            body["error"].as_str().unwrap_or("?")
+        ));
     }
     Ok(body)
 }
 
 /// Post a message. Returns the message ts (Slack's message id). `thread_ts`
 /// replies inside a thread.
-pub async fn post_message(token: &str, channel_id: &str, text: &str, thread_ts: Option<&str>) -> Result<String, String> {
+pub async fn post_message(
+    token: &str,
+    channel_id: &str,
+    text: &str,
+    thread_ts: Option<&str>,
+) -> Result<String, String> {
     let mut body = json!({ "channel": channel_id, "text": text });
     if let Some(ts) = thread_ts {
         body["thread_ts"] = json!(ts);
@@ -53,7 +61,10 @@ pub async fn post_message(token: &str, channel_id: &str, text: &str, thread_ts: 
 /// Open (or fetch) a DM with a user. Returns the DM channel id (D…).
 pub async fn open_dm(token: &str, user_id: &str) -> Result<String, String> {
     let res = api(token, "conversations.open", json!({ "users": user_id })).await?;
-    res["channel"]["id"].as_str().map(String::from).ok_or_else(|| "DM had no channel id".into())
+    res["channel"]["id"]
+        .as_str()
+        .map(String::from)
+        .ok_or_else(|| "DM had no channel id".into())
 }
 
 // ── inbound: the Socket Mode client ──────────────────────────────────────────
@@ -83,11 +94,19 @@ pub async fn run_socket_mode(imp: &str, bot_token: &str, app_token: &str) {
 }
 
 async fn connect_once(imp: &str, bot_token: &str, app_token: &str) -> Result<(), SmError> {
-    let transient = |m: String| SmError { fatal: false, msg: m };
-    let fatal = |m: String| SmError { fatal: true, msg: m };
+    let transient = |m: String| SmError {
+        fatal: false,
+        msg: m,
+    };
+    let fatal = |m: String| SmError {
+        fatal: true,
+        msg: m,
+    };
 
     // Who are we? (Also validates the bot token.)
-    let me = api(bot_token, "auth.test", json!({})).await.map_err(|e| fatal(format!("auth.test: {e}")))?;
+    let me = api(bot_token, "auth.test", json!({}))
+        .await
+        .map_err(|e| fatal(format!("auth.test: {e}")))?;
     let bot_user_id = me["user_id"].as_str().unwrap_or("").to_string();
     let team = me["team"].as_str().unwrap_or("?");
 
@@ -101,9 +120,13 @@ async fn connect_once(imp: &str, bot_token: &str, app_token: &str) -> Result<(),
                 transient(format!("apps.connections.open: {e}"))
             }
         })?;
-    let url = open["url"].as_str().ok_or_else(|| transient("no socket url".into()))?;
+    let url = open["url"]
+        .as_str()
+        .ok_or_else(|| transient("no socket url".into()))?;
 
-    let (ws, _) = tokio_tungstenite::connect_async(url).await.map_err(|e| transient(format!("connect: {e}")))?;
+    let (ws, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .map_err(|e| transient(format!("connect: {e}")))?;
     let (mut sink, mut stream) = ws.split();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Ws>();
     let writer = tokio::spawn(async move {
@@ -163,13 +186,22 @@ async fn is_workspace_admin(token: &str, user_id: &str, cache: &mut HashMap<Stri
     }
     let admin = api(token, "users.info", json!({ "user": user_id }))
         .await
-        .map(|r| r["user"]["is_admin"].as_bool().unwrap_or(false) || r["user"]["is_owner"].as_bool().unwrap_or(false))
+        .map(|r| {
+            r["user"]["is_admin"].as_bool().unwrap_or(false)
+                || r["user"]["is_owner"].as_bool().unwrap_or(false)
+        })
         .unwrap_or(false);
     cache.insert(user_id.to_string(), admin);
     admin
 }
 
-async fn handle_message(imp: &str, event: &Value, bot_user_id: &str, bot_token: &str, admins: &mut HashMap<String, bool>) {
+async fn handle_message(
+    imp: &str,
+    event: &Value,
+    bot_user_id: &str,
+    bot_token: &str,
+    admins: &mut HashMap<String, bool>,
+) {
     // Never react to bots (including ourselves) — avoids reply loops. Skip
     // subtypes too (edits, joins, thread broadcasts): only fresh plain messages.
     if event["bot_id"].as_str().is_some() || event["subtype"].as_str().is_some() {
@@ -232,13 +264,23 @@ async fn handle_message(imp: &str, event: &Value, bot_user_id: &str, bot_token: 
         inbound: false, // live channel context carries ids; inbound marks relay tasks
     };
     eprintln!("slack: {user_id} ({role}) in {channel_id} → session");
-    route_to_session(imp, channel_id, user_id.to_string(), format!("{text}{hint}"), context).await;
+    route_to_session(
+        imp,
+        channel_id,
+        user_id.to_string(),
+        format!("{text}{hint}"),
+        context,
+    )
+    .await;
 }
 
 // ── conversation sessions: one warm box per active channel ────────────────────
 
-fn sessions() -> &'static Mutex<HashMap<String, tokio::sync::mpsc::Sender<crate::run::boxed::SessionMessage>>> {
-    static S: OnceLock<Mutex<HashMap<String, tokio::sync::mpsc::Sender<crate::run::boxed::SessionMessage>>>> = OnceLock::new();
+fn sessions(
+) -> &'static Mutex<HashMap<String, tokio::sync::mpsc::Sender<crate::run::boxed::SessionMessage>>> {
+    static S: OnceLock<
+        Mutex<HashMap<String, tokio::sync::mpsc::Sender<crate::run::boxed::SessionMessage>>>,
+    > = OnceLock::new();
     S.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -255,7 +297,11 @@ async fn route_to_session(
     context: crate::imp::memory::RunContext,
 ) {
     let start_context = context.clone();
-    let message = crate::run::boxed::SessionMessage { text, author_label, context };
+    let message = crate::run::boxed::SessionMessage {
+        text,
+        author_label,
+        context,
+    };
     let delivered = {
         let map = sessions().lock().unwrap();
         match map.get(channel_id) {
@@ -274,7 +320,10 @@ async fn route_to_session(
     }
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::run::boxed::SessionMessage>(64);
     let _ = tx.try_send(message);
-    sessions().lock().unwrap().insert(channel_id.to_string(), tx);
+    sessions()
+        .lock()
+        .unwrap()
+        .insert(channel_id.to_string(), tx);
     let (w, run_id) = (imp.to_string(), crate::run::boxed::new_run_id());
     tokio::spawn(async move {
         if let Err(e) = crate::run::boxed::run_session(

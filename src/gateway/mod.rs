@@ -27,7 +27,9 @@ pub const PORT: u16 = 7300;
 /// budgets). An accept error is logged and retried — it must never take the
 /// daemon down.
 pub async fn start(addr: &str) -> Result<tokio::task::JoinHandle<()>, BErr> {
-    rustls::crypto::ring::default_provider().install_default().ok();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
 
     let ca = Arc::new(ca::Ca::ensure()?);
     let tls = tls::acceptor(ca.clone());

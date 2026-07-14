@@ -42,7 +42,9 @@ pub fn registry_json() -> serde_json::Map<String, Value> {
         .and_then(|v| v.as_object().cloned())
         .unwrap_or_default();
     if let Ok(text) = std::fs::read_to_string(paths::providers_file()) {
-        match toml::from_str::<toml::Value>(&text).map(|v| serde_json::to_value(v).unwrap_or(Value::Null)) {
+        match toml::from_str::<toml::Value>(&text)
+            .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
+        {
             Ok(Value::Object(overlay)) => {
                 for (name, provider) in overlay {
                     map.insert(name, provider);

@@ -11,11 +11,11 @@
 
 use crate::action::ActionPolicy;
 use crate::gateway::budget::BudgetPolicy;
+use crate::gateway::schema::Policy;
 use crate::imp::context::{CompiledContextPolicy, ContextPolicy};
 use crate::imp::memory::{CompiledMemoryPolicy, MemoryPolicy};
-use crate::paths;
-use crate::gateway::schema::Policy;
 use crate::imp::storage::{CompiledStoragePolicy, StoragePolicy};
+use crate::paths;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -160,7 +160,10 @@ pub fn load() -> Result<Loaded, Vec<String>> {
             };
             let declared = w.get("name").and_then(|v| v.as_str());
             if declared != Some(name.as_str()) {
-                errors.push(format!("{}: name {declared:?} != folder \"{name}\"", spec.display()));
+                errors.push(format!(
+                    "{}: name {declared:?} != folder \"{name}\"",
+                    spec.display()
+                ));
                 continue;
             }
             let scope = format!("org/{name}");
@@ -178,12 +181,14 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                 Err(e) => errors.push(format!("{name} [context]: {e}")),
             }
             match storage_policy(&w, Some(&default_storage)) {
-                Ok(storage) => match crate::imp::storage::validate_imp_overlay(&default_storage, &storage) {
-                    Ok(()) => {
-                        imp_storage.insert(name.clone(), storage);
+                Ok(storage) => {
+                    match crate::imp::storage::validate_imp_overlay(&default_storage, &storage) {
+                        Ok(()) => {
+                            imp_storage.insert(name.clone(), storage);
+                        }
+                        Err(e) => errors.push(format!("{name} [knowledge]: {e}")),
                     }
-                    Err(e) => errors.push(format!("{name} [knowledge]: {e}")),
-                },
+                }
                 Err(e) => errors.push(format!("{name} [knowledge]: {e}")),
             }
             for g in array(&w, "grant") {
@@ -221,12 +226,17 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                     .and_then(|c| c.get(platform))
                     .and_then(|v| v.as_str())
                 {
-                    if let Some((taken, _, _)) = listeners.iter().find(|(_, _, c)| c == credential) {
+                    if let Some((taken, _, _)) = listeners.iter().find(|(_, _, c)| c == credential)
+                    {
                         errors.push(format!(
                             "imps {taken} and {name} both listen with credential \"{credential}\" — one bot cannot serve two listeners"
                         ));
                     } else {
-                        listeners.push((name.clone(), platform.to_string(), credential.to_string()));
+                        listeners.push((
+                            name.clone(),
+                            platform.to_string(),
+                            credential.to_string(),
+                        ));
                     }
                 }
             }
@@ -250,7 +260,11 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         .collect();
     connection_files.sort();
     for path in connection_files {
-        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let name = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         let v = match read_toml(&path) {
             Ok(v) => v,
             Err(e) => {
@@ -290,9 +304,17 @@ pub fn load() -> Result<Loaded, Vec<String>> {
             "limits": limits,
         }),
     );
-    let actions = parse::<ActionPolicy>(&mut errors, "actions/trust", json!({ "actions": actions, "trust": trust }));
+    let actions = parse::<ActionPolicy>(
+        &mut errors,
+        "actions/trust",
+        json!({ "actions": actions, "trust": trust }),
+    );
 
-    validate_exposes(&exposes, |name| crate::credential::vault::get_credential(name).is_some(), &mut errors);
+    validate_exposes(
+        &exposes,
+        |name| crate::credential::vault::get_credential(name).is_some(),
+        &mut errors,
+    );
 
     if !errors.is_empty() {
         return Err(errors);
@@ -302,9 +324,18 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         budget,
         actions,
         triggers,
-        memory: CompiledMemoryPolicy { default: default_memory, imps: imp_memory },
-        context: CompiledContextPolicy { default: default_context, imps: imp_context },
-        storage: CompiledStoragePolicy { default: default_storage, imps: imp_storage },
+        memory: CompiledMemoryPolicy {
+            default: default_memory,
+            imps: imp_memory,
+        },
+        context: CompiledContextPolicy {
+            default: default_context,
+            imps: imp_context,
+        },
+        storage: CompiledStoragePolicy {
+            default: default_storage,
+            imps: imp_storage,
+        },
         listeners,
         exposes,
         connections,
@@ -315,6 +346,10 @@ pub fn load() -> Result<Loaded, Vec<String>> {
 }
 
 /// Compile one connection file into (record, judge rules, exposures, warning).
+/// What one connection file compiles into: the record, the judge rules it
+/// contributes, its env exposures, and a warning when it is disabled.
+type CompiledConnection = (Connection, Vec<Value>, Vec<Expose>, Option<String>);
+
 /// Pure over the injected lookups, so it is unit-testable.
 fn compile_connection(
     name: &str,
@@ -322,27 +357,40 @@ fn compile_connection(
     known_imps: &[String],
     provider_exists: impl Fn(&str) -> bool,
     secret_exists: impl Fn(&str) -> bool,
-) -> Result<(Connection, Vec<Value>, Vec<Expose>, Option<String>), Vec<String>> {
+) -> Result<CompiledConnection, Vec<String>> {
     let mut errors = Vec::new();
     let ctx = format!("connection \"{name}\"");
 
-    let provider = v.get("provider").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let provider = v
+        .get("provider")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
     if provider.is_empty() {
         errors.push(format!("{ctx}: needs provider = \"<registry name>\""));
     } else if !provider_exists(&provider) {
-        errors.push(format!("{ctx}: unknown provider \"{provider}\" (declare it in providers.toml)"));
+        errors.push(format!(
+            "{ctx}: unknown provider \"{provider}\" (declare it in providers.toml)"
+        ));
     }
 
     let strings = |key: &str| -> Option<Vec<String>> {
         v.get(key).and_then(|x| x.as_array()).map(|a| {
-            a.iter().filter_map(|s| s.as_str()).map(str::to_string).collect()
+            a.iter()
+                .filter_map(|s| s.as_str())
+                .map(str::to_string)
+                .collect()
         })
     };
     let org_scoped = v.get("scope").and_then(|x| x.as_str()) == Some("org");
     let imps = strings("imps");
     match (&imps, org_scoped) {
-        (Some(_), true) => errors.push(format!("{ctx}: choose imps = [..] OR scope = \"org\", not both")),
-        (None, false) => errors.push(format!("{ctx}: needs imps = [\"<name>\", ..] or scope = \"org\"")),
+        (Some(_), true) => errors.push(format!(
+            "{ctx}: choose imps = [..] OR scope = \"org\", not both"
+        )),
+        (None, false) => errors.push(format!(
+            "{ctx}: needs imps = [\"<name>\", ..] or scope = \"org\""
+        )),
         (Some(list), false) => {
             for w in list {
                 if !known_imps.contains(w) {
@@ -350,7 +398,9 @@ fn compile_connection(
                 }
             }
             if list.is_empty() {
-                errors.push(format!("{ctx}: imps = [] grants nothing — use scope = \"org\" or name imps"));
+                errors.push(format!(
+                    "{ctx}: imps = [] grants nothing — use scope = \"org\" or name imps"
+                ));
             }
         }
         (None, true) => {}
@@ -361,7 +411,11 @@ fn compile_connection(
         errors.push(format!("{ctx}: needs hosts = [\"api.example.com\", ..]"));
     }
     let methods = strings("methods").unwrap_or_else(|| vec!["GET".into()]);
-    let env = v.get("env").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let env = v
+        .get("env")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
     if env.is_empty() {
         errors.push(format!("{ctx}: needs env = \"<VAR the box sees>\""));
     }
@@ -387,7 +441,8 @@ fn compile_connection(
         } else {
             format!("impyard server connect {} --as {name}", connection.provider)
         };
-        let warning = format!("{ctx} is disabled — no \"{name}\" credential in the vault (run: {fix})");
+        let warning =
+            format!("{ctx} is disabled — no \"{name}\" credential in the vault (run: {fix})");
         return Ok((connection, Vec::new(), Vec::new(), Some(warning)));
     }
 
@@ -409,7 +464,11 @@ fn compile_connection(
         .collect();
     let exposes = scopes
         .into_iter()
-        .map(|scope| Expose { scope, credential: name.to_string(), env: env.clone() })
+        .map(|scope| Expose {
+            scope,
+            credential: name.to_string(),
+            env: env.clone(),
+        })
         .collect();
     Ok((connection, rules, exposes, None))
 }
@@ -417,33 +476,67 @@ fn compile_connection(
 /// The env vars provisioning owns — an `[[expose]]` may not overwrite the
 /// box's wiring (proxy, trust, identity), only add credential placeholders.
 const RESERVED_ENV: &[&str] = &[
-    "HOME", "TMPDIR", "PI_CODING_AGENT_DIR", "ANTHROPIC_API_KEY",
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY",
-    "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "CURL_CA_BUNDLE",
-    "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO", "PIP_CERT",
+    "HOME",
+    "TMPDIR",
+    "PI_CODING_AGENT_DIR",
+    "ANTHROPIC_API_KEY",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "NODE_USE_ENV_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "CURL_CA_BUNDLE",
+    "REQUESTS_CA_BUNDLE",
+    "GIT_SSL_CAINFO",
+    "PIP_CERT",
 ];
 
-fn parse_expose(v: &toml::Value, scope: &str, source: &str, exposes: &mut Vec<Expose>, errors: &mut Vec<String>) {
+fn parse_expose(
+    v: &toml::Value,
+    scope: &str,
+    source: &str,
+    exposes: &mut Vec<Expose>,
+    errors: &mut Vec<String>,
+) {
     let field = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
     match (field("credential"), field("env")) {
-        (Some(credential), Some(env)) => exposes.push(Expose { scope: scope.to_string(), credential, env }),
-        _ => errors.push(format!("{source} [[expose]]: needs string fields \"credential\" and \"env\"")),
+        (Some(credential), Some(env)) => exposes.push(Expose {
+            scope: scope.to_string(),
+            credential,
+            env,
+        }),
+        _ => errors.push(format!(
+            "{source} [[expose]]: needs string fields \"credential\" and \"env\""
+        )),
     }
 }
 
 /// Every exposure must name a real credential (fail closed, like listener
 /// credentials), a well-formed env name outside the reserved wiring, and no
 /// two exposures that could reach the same imp may claim one env name.
-fn validate_exposes(exposes: &[Expose], credential_exists: impl Fn(&str) -> bool, errors: &mut Vec<String>) {
+fn validate_exposes(
+    exposes: &[Expose],
+    credential_exists: impl Fn(&str) -> bool,
+    errors: &mut Vec<String>,
+) {
     for (i, e) in exposes.iter().enumerate() {
         let well_formed = !e.env.is_empty()
             && !e.env.as_bytes()[0].is_ascii_digit()
-            && e.env.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+            && e.env
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
         if !well_formed {
-            errors.push(format!("[[expose]] env \"{}\": use UPPER_SNAKE_CASE", e.env));
+            errors.push(format!(
+                "[[expose]] env \"{}\": use UPPER_SNAKE_CASE",
+                e.env
+            ));
         }
         if RESERVED_ENV.contains(&e.env.as_str()) || e.env.starts_with("IMPYARD_") {
-            errors.push(format!("[[expose]] env \"{}\" is reserved box wiring", e.env));
+            errors.push(format!(
+                "[[expose]] env \"{}\" is reserved box wiring",
+                e.env
+            ));
         }
         if !credential_exists(&e.credential) {
             errors.push(format!(
@@ -467,7 +560,9 @@ fn validate_exposes(exposes: &[Expose], credential_exists: impl Fn(&str) -> bool
 /// admin edits are live without a restart. On invalid config returns Err —
 /// callers fail closed.
 pub fn snapshot() -> Result<Arc<Loaded>, String> {
-    static CACHE: OnceLock<Mutex<Option<(String, Arc<Loaded>)>>> = OnceLock::new();
+    /// The cached config, keyed by the fingerprint it was loaded from.
+    type Cached = Mutex<Option<(String, Arc<Loaded>)>>;
+    static CACHE: OnceLock<Cached> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
     let fp = fingerprint();
     {
@@ -533,7 +628,11 @@ fn fingerprint() -> String {
 
 // ── helpers (moved from the retired deploy step) ─────────────────────────────
 
-fn parse<T: serde::de::DeserializeOwned + Default>(errors: &mut Vec<String>, what: &str, v: Value) -> T {
+fn parse<T: serde::de::DeserializeOwned + Default>(
+    errors: &mut Vec<String>,
+    what: &str,
+    v: Value,
+) -> T {
     match serde_json::from_value::<T>(v) {
         Ok(t) => t,
         Err(e) => {
@@ -545,7 +644,10 @@ fn parse<T: serde::de::DeserializeOwned + Default>(errors: &mut Vec<String>, wha
 
 type BErr = Box<dyn std::error::Error>;
 
-fn context_policy(value: Option<&toml::Value>, base: Option<&ContextPolicy>) -> Result<ContextPolicy, BErr> {
+fn context_policy(
+    value: Option<&toml::Value>,
+    base: Option<&ContextPolicy>,
+) -> Result<ContextPolicy, BErr> {
     let mut merged = serde_json::to_value(base.cloned().unwrap_or_default())?;
     if let Some(value) = value {
         merge_json(&mut merged, to_json(value));
@@ -553,12 +655,16 @@ fn context_policy(value: Option<&toml::Value>, base: Option<&ContextPolicy>) -> 
     serde_json::from_value(merged).map_err(|e| format!("context policy is invalid: {e}").into())
 }
 
-fn memory_policy(value: Option<&toml::Value>, base: Option<&MemoryPolicy>) -> Result<MemoryPolicy, BErr> {
+fn memory_policy(
+    value: Option<&toml::Value>,
+    base: Option<&MemoryPolicy>,
+) -> Result<MemoryPolicy, BErr> {
     let mut merged = serde_json::to_value(base.cloned().unwrap_or_default())?;
     if let Some(value) = value {
         merge_json(&mut merged, to_json(value));
     }
-    let policy: MemoryPolicy = serde_json::from_value(merged).map_err(|e| format!("memory policy is invalid: {e}"))?;
+    let policy: MemoryPolicy =
+        serde_json::from_value(merged).map_err(|e| format!("memory policy is invalid: {e}"))?;
     if let Some(kind) = policy
         .allowed_kinds
         .iter()
@@ -573,14 +679,19 @@ fn memory_policy(value: Option<&toml::Value>, base: Option<&MemoryPolicy>) -> Re
     Ok(policy)
 }
 
-fn storage_policy(value: &toml::Value, base: Option<&StoragePolicy>) -> Result<StoragePolicy, BErr> {
+fn storage_policy(
+    value: &toml::Value,
+    base: Option<&StoragePolicy>,
+) -> Result<StoragePolicy, BErr> {
     let mut merged = serde_json::to_value(base.cloned().unwrap_or_default())?;
     let overlay = json!({
         "knowledge": value.get("knowledge").map(to_json).unwrap_or(json!({})),
     });
     merge_json(&mut merged, overlay);
-    let policy: StoragePolicy = serde_json::from_value(merged).map_err(|error| format!("storage policy is invalid: {error}"))?;
-    crate::imp::storage::validate(&policy).map_err(|error| format!("storage policy is invalid: {error}"))?;
+    let policy: StoragePolicy = serde_json::from_value(merged)
+        .map_err(|error| format!("storage policy is invalid: {error}"))?;
+    crate::imp::storage::validate(&policy)
+        .map_err(|error| format!("storage policy is invalid: {error}"))?;
     Ok(policy)
 }
 
@@ -609,7 +720,10 @@ fn read_toml(path: &std::path::Path) -> Result<toml::Value, BErr> {
 
 /// The array of tables under `key` in a TOML table (`[[key]]`), or empty.
 fn array<'a>(v: &'a toml::Value, key: &str) -> Vec<&'a toml::Value> {
-    v.get(key).and_then(|x| x.as_array()).map(|a| a.iter().collect()).unwrap_or_default()
+    v.get(key)
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().collect())
+        .unwrap_or_default()
 }
 
 fn to_json(v: &toml::Value) -> Value {
@@ -629,7 +743,11 @@ mod tests {
     use super::*;
 
     fn expose(scope: &str, credential: &str, env: &str) -> Expose {
-        Expose { scope: scope.into(), credential: credential.into(), env: env.into() }
+        Expose {
+            scope: scope.into(),
+            credential: credential.into(),
+            env: env.into(),
+        }
     }
 
     fn toml(s: &str) -> toml::Value {
@@ -638,12 +756,14 @@ mod tests {
 
     #[test]
     fn connection_compiles_per_imp_grants_and_exposes() {
-        let v = toml(r#"
+        let v = toml(
+            r#"
             provider = "github"
             imps = ["yuko", "kdemo"]
             hosts = ["api.github.com"]
             env = "GH_TOKEN"
-        "#);
+        "#,
+        );
         let imps = vec!["yuko".to_string(), "kdemo".to_string()];
         let (c, rules, exposes, warning) =
             compile_connection("github", &v, &imps, |_| true, |_| true).unwrap();
@@ -662,12 +782,14 @@ mod tests {
 
     #[test]
     fn connection_without_secret_is_disabled_not_broken() {
-        let v = toml(r#"
+        let v = toml(
+            r#"
             provider = "github"
             scope = "org"
             hosts = ["api.github.com"]
             env = "GH_TOKEN"
-        "#);
+        "#,
+        );
         let (c, rules, exposes, warning) =
             compile_connection("github", &v, &[], |_| true, |_| false).unwrap();
         assert!(!c.enabled);
@@ -677,14 +799,21 @@ mod tests {
 
     #[test]
     fn connection_validation_catches_each_failure_mode() {
-        let v = toml(r#"
+        let v = toml(
+            r#"
             provider = "nope"
             imps = ["ghost"]
             env = ""
-        "#);
-        let errors =
-            compile_connection("acme", &v, &["yuko".to_string()], |p| p == "github", |_| true)
-                .unwrap_err();
+        "#,
+        );
+        let errors = compile_connection(
+            "acme",
+            &v,
+            &["yuko".to_string()],
+            |p| p == "github",
+            |_| true,
+        )
+        .unwrap_err();
         assert!(errors.iter().any(|e| e.contains("unknown provider")));
         assert!(errors.iter().any(|e| e.contains("no such imp \"ghost\"")));
         assert!(errors.iter().any(|e| e.contains("needs hosts")));
@@ -697,7 +826,10 @@ mod tests {
 
         // Well-formed, distinct imps sharing an env name: fine.
         let mut errors = Vec::new();
-        let ok = [expose("org/a", "github", "GH_TOKEN"), expose("org/b", "github", "GH_TOKEN")];
+        let ok = [
+            expose("org/a", "github", "GH_TOKEN"),
+            expose("org/b", "github", "GH_TOKEN"),
+        ];
         validate_exposes(&ok, vault, &mut errors);
         assert!(errors.is_empty(), "{errors:?}");
 
@@ -713,8 +845,12 @@ mod tests {
         ];
         validate_exposes(&bad, vault, &mut errors);
         assert_eq!(errors.len(), 5, "{errors:?}");
-        assert!(errors.iter().any(|e| e.contains("reserved") && e.contains("HTTP_PROXY")));
-        assert!(errors.iter().any(|e| e.contains("reserved") && e.contains("IMPYARD_X")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("reserved") && e.contains("HTTP_PROXY")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("reserved") && e.contains("IMPYARD_X")));
         assert!(errors.iter().any(|e| e.contains("UPPER_SNAKE_CASE")));
         assert!(errors.iter().any(|e| e.contains("no \"nope\" credential")));
         assert!(errors.iter().any(|e| e.contains("claimed twice")));

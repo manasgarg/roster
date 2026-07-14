@@ -28,7 +28,10 @@ pub fn vault_dir() -> PathBuf {
 pub fn get_credential(name: &str) -> Option<Credential> {
     let path = vault_dir().join(format!("{name}.json"));
     let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str::<Value>(&text).ok()?.as_object().cloned()
+    serde_json::from_str::<Value>(&text)
+        .ok()?
+        .as_object()
+        .cloned()
 }
 
 fn expires(cred: &Credential) -> Option<i64> {
@@ -110,7 +113,8 @@ fn log_refresh(event: Value) {
 // One refresh lane per credential: concurrent callers hitting an expired token
 // share a lock so the second doesn't fail on the token the first rotated.
 fn name_lock(name: &str) -> Arc<tokio::sync::Mutex<()>> {
-    static LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    static LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+        OnceLock::new();
     let map = LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     let mut m = map.lock().unwrap();
     m.entry(name.to_string())
@@ -126,7 +130,10 @@ pub async fn get_fresh_credential(name: &str) -> Result<Option<Credential>, BErr
         Some(c) => c,
         None => return Ok(None),
     };
-    if !is_oauth(&cred) || cred.get("refresh").and_then(|v| v.as_str()).is_none() || !needs_refresh(&cred, now_ms()) {
+    if !is_oauth(&cred)
+        || cred.get("refresh").and_then(|v| v.as_str()).is_none()
+        || !needs_refresh(&cred, now_ms())
+    {
         return Ok(Some(cred));
     }
 
@@ -138,7 +145,11 @@ pub async fn get_fresh_credential(name: &str) -> Result<Option<Credential>, BErr
     if !needs_refresh(&cred, now_ms()) {
         return Ok(Some(cred));
     }
-    let refresh_token = cred.get("refresh").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let refresh_token = cred
+        .get("refresh")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
 
     match providers::refresh(name, &refresh_token).await {
         Ok(fresh) => {
@@ -147,11 +158,15 @@ pub async fn get_fresh_credential(name: &str) -> Result<Option<Credential>, BErr
             merged.insert("refresh".into(), json!(fresh.refresh));
             merged.insert("expires".into(), json!(fresh.expires));
             write_credential(name, &merged)?;
-            log_refresh(json!({"ts": crate::util::now_rfc3339(), "event":"refresh", "credential": name, "ok": true, "expires": fresh.expires}));
+            log_refresh(
+                json!({"ts": crate::util::now_rfc3339(), "event":"refresh", "credential": name, "ok": true, "expires": fresh.expires}),
+            );
             Ok(Some(merged))
         }
         Err(e) => {
-            log_refresh(json!({"ts": crate::util::now_rfc3339(), "event":"refresh", "credential": name, "ok": false, "error": e.to_string()}));
+            log_refresh(
+                json!({"ts": crate::util::now_rfc3339(), "event":"refresh", "credential": name, "ok": false, "error": e.to_string()}),
+            );
             Err(e)
         }
     }
@@ -173,14 +188,23 @@ mod tests {
         assert!(needs_refresh(&oauth(now_ms() - 1000), now_ms()));
         assert!(!needs_refresh(&oauth(now_ms() + 3_600_000), now_ms()));
         assert!(needs_refresh(&oauth(now_ms() + 30_000), now_ms())); // within 60s skew
-        let no_exp = serde_json::json!({"type":"oauth","access":"a","refresh":"r"}).as_object().unwrap().clone();
+        let no_exp = serde_json::json!({"type":"oauth","access":"a","refresh":"r"})
+            .as_object()
+            .unwrap()
+            .clone();
         assert!(!needs_refresh(&no_exp, now_ms()));
     }
 
     #[test]
     fn substitute_fills_fields_and_skips_missing() {
-        let cred = serde_json::json!({"access":"tok","accountId":"acc","key":"sk-1"}).as_object().unwrap().clone();
-        assert_eq!(substitute("Bearer {access}", &cred), Some("Bearer tok".to_string()));
+        let cred = serde_json::json!({"access":"tok","accountId":"acc","key":"sk-1"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            substitute("Bearer {access}", &cred),
+            Some("Bearer tok".to_string())
+        );
         assert_eq!(substitute("{accountId}", &cred), Some("acc".to_string()));
         assert_eq!(substitute("{key}", &cred), Some("sk-1".to_string()));
         assert_eq!(substitute("Bearer {missing}", &cred), None); // referenced field absent

@@ -7,10 +7,10 @@
 use crate::paths;
 use crate::util::now_rfc3339;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
-use std::collections::HashMap;
 
 fn path(imp: &str) -> PathBuf {
     paths::imp_journal_file(imp)
@@ -55,7 +55,10 @@ pub fn for_run(imp: &str, run_id: &str) -> Vec<Value> {
 /// read-only `journal_read` tool draw on this.
 pub fn tail(imp: &str, n: usize) -> Vec<Value> {
     let text = std::fs::read_to_string(path(imp)).unwrap_or_default();
-    let mut evs: Vec<Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let mut evs: Vec<Value> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
     let len = evs.len();
     if len > n {
         evs.split_off(len - n)
@@ -82,11 +85,17 @@ pub fn run_imps() -> HashMap<String, String> {
     let mut out = HashMap::new();
     for path in paths {
         let text = std::fs::read_to_string(path).unwrap_or_default();
-        for event in text.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()) {
+        for event in text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        {
             let run_id = event.get("run_id").and_then(Value::as_str).unwrap_or("");
             let imp = event.get("imp").and_then(Value::as_str).unwrap_or("");
             if !run_id.is_empty() && !imp.is_empty() {
-                out.insert(run_id.to_string(), imp.strip_prefix("org/").unwrap_or(imp).to_string());
+                out.insert(
+                    run_id.to_string(),
+                    imp.strip_prefix("org/").unwrap_or(imp).to_string(),
+                );
             }
         }
     }

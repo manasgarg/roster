@@ -24,7 +24,9 @@ pub fn participant_markers(context: &RunContext) -> Vec<String> {
         let history = crate::paths::channel_dir(channel).join("messages.jsonl");
         if let Ok(text) = std::fs::read_to_string(history) {
             for line in text.lines() {
-                let Ok(record) = serde_json::from_str::<Value>(line) else { continue };
+                let Ok(record) = serde_json::from_str::<Value>(line) else {
+                    continue;
+                };
                 for key in ["author_id", "author"] {
                     if let Some(v) = record[key].as_str() {
                         markers.insert(v.to_string());
@@ -82,7 +84,9 @@ fn find_mention(text: &str) -> Option<String> {
             let inner = &tail[..end];
             if !inner.is_empty()
                 && inner.len() <= 24
-                && inner.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'!' || b == b'&')
+                && inner
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'!' || b == b'&')
             {
                 return Some(format!("<@{inner}>"));
             }
@@ -101,9 +105,12 @@ fn find_email(text: &str) -> Option<String> {
         if *b != b'@' {
             continue;
         }
-        let is_part = |c: u8| c.is_ascii_alphanumeric() || c == b'.' || c == b'_' || c == b'-' || c == b'+';
+        let is_part =
+            |c: u8| c.is_ascii_alphanumeric() || c == b'.' || c == b'_' || c == b'-' || c == b'+';
         let start = (0..i).rev().take_while(|&j| is_part(bytes[j])).last();
-        let end = (i + 1..bytes.len()).take_while(|&j| is_part(bytes[j])).last();
+        let end = (i + 1..bytes.len())
+            .take_while(|&j| is_part(bytes[j]))
+            .last();
         if let (Some(s), Some(e)) = (start, end) {
             let candidate = &text[s..=e];
             let domain = &candidate[candidate.find('@').unwrap() + 1..];
@@ -122,7 +129,10 @@ mod tests {
     #[test]
     fn task_prompt_gate_denies_person_references_from_tainted_runs_only() {
         let clean = RunContext::default();
-        let relay = RunContext { inbound: true, ..Default::default() };
+        let relay = RunContext {
+            inbound: true,
+            ..Default::default()
+        };
         let session = RunContext {
             channel_id: Some("C123".into()),
             user_id: Some("U0AB12CD3".into()),
@@ -133,7 +143,10 @@ mod tests {
 
         // A tainted run cannot smuggle a person across the boundary...
         let err = check_task_prompt(&relay, personal).unwrap_err();
-        assert!(err.contains("lead-person@example.com") && err.contains("belongs in memory"), "{err}");
+        assert!(
+            err.contains("lead-person@example.com") && err.contains("belongs in memory"),
+            "{err}"
+        );
         assert!(check_task_prompt(&session, "summarize what U0AB12CD3 asked").is_err());
         assert!(check_task_prompt(&session, "reply to <@1521174547326566530>").is_err());
 
@@ -149,15 +162,33 @@ mod tests {
     fn scan_matches_participants_mentions_and_emails() {
         let markers = vec!["U0AB12CD3".to_string(), "manas".to_string()];
 
-        assert_eq!(scan("ask U0AB12CD3 about it", &markers, false), Some("U0AB12CD3".into()));
-        assert_eq!(scan("per Manas's request", &markers, false), Some("manas".into()));
-        assert_eq!(scan("ping <@1521174547326566530> later", &[], false), Some("<@1521174547326566530>".into()));
-        assert_eq!(scan("write to a-lead@example.com", &[], true), Some("a-lead@example.com".into()));
+        assert_eq!(
+            scan("ask U0AB12CD3 about it", &markers, false),
+            Some("U0AB12CD3".into())
+        );
+        assert_eq!(
+            scan("per Manas's request", &markers, false),
+            Some("manas".into())
+        );
+        assert_eq!(
+            scan("ping <@1521174547326566530> later", &[], false),
+            Some("<@1521174547326566530>".into())
+        );
+        assert_eq!(
+            scan("write to a-lead@example.com", &[], true),
+            Some("a-lead@example.com".into())
+        );
 
         // Emails pass when not matched (knowledge records: world content).
-        assert_eq!(scan("contact sales@vendor.com for pricing", &[], false), None);
+        assert_eq!(
+            scan("contact sales@vendor.com for pricing", &[], false),
+            None
+        );
         // Clean world text passes everything.
-        assert_eq!(scan("summarize the RFC and cite sources", &markers, true), None);
+        assert_eq!(
+            scan("summarize the RFC and cite sources", &markers, true),
+            None
+        );
         // Short markers are never produced; scan tolerates empty marker sets.
         assert_eq!(scan("anything", &[], false), None);
     }

@@ -34,8 +34,12 @@ pub fn provider_help() -> String {
             Some("discord") => "prompts for a bot token and, optionally, your Discord user id",
             Some("slack") => "prompts for a bot token (xoxb-) and a Socket Mode app token (xapp-)",
             Some("oauth") => match p["login"]["flow"].as_str() {
-                Some("device_code") => "device-code login: open a URL, enter the shown code, approve",
-                Some("pkce") => "browser login: open the printed URL, authorize, paste the code back",
+                Some("device_code") => {
+                    "device-code login: open a URL, enter the shown code, approve"
+                }
+                Some("pkce") => {
+                    "browser login: open the printed URL, authorize, paste the code back"
+                }
                 _ => "OAuth login (unrecognized flow)",
             },
             _ => "unrecognized auth kind",
@@ -58,9 +62,12 @@ pub async fn run(name: &str) -> Result<(), BErr> {
     let registry = read_registry()?;
     let mut available: Vec<String> = registry.keys().cloned().collect();
     available.sort();
-    let p = registry
-        .get(name)
-        .ok_or_else(|| format!("unknown provider \"{name}\" — try one of: {}", available.join(", ")))?;
+    let p = registry.get(name).ok_or_else(|| {
+        format!(
+            "unknown provider \"{name}\" — try one of: {}",
+            available.join(", ")
+        )
+    })?;
     let cred = login(name, p).await?;
     store(name, &cred)?;
     println!("\nconnected: credential for \"{name}\" written to the vault");
@@ -80,7 +87,9 @@ pub async fn login(provider_name: &str, p: &Value) -> Result<Value, BErr> {
             match login.get("flow").and_then(|v| v.as_str()) {
                 Some("device_code") => connect_device_code(p, &login).await,
                 Some("pkce") => connect_pkce(p, &login).await,
-                other => Err(format!("provider \"{provider_name}\": unknown oauth flow {other:?}").into()),
+                other => Err(
+                    format!("provider \"{provider_name}\": unknown oauth flow {other:?}").into(),
+                ),
             }
         }
         other => Err(format!("provider \"{provider_name}\": unknown auth {other:?}").into()),
@@ -116,7 +125,9 @@ fn connect_api_key() -> Result<Value, BErr> {
 /// password from the domain's SMTP credentials.
 fn connect_smtp() -> Result<Value, BErr> {
     let host = prompt_default("SMTP host [smtp.mailgun.org]: ", "smtp.mailgun.org")?;
-    let port: u16 = prompt_default("SMTP port [465 = TLS, 587 = STARTTLS] [465]: ", "465")?.parse().map_err(|_| "port must be a number")?;
+    let port: u16 = prompt_default("SMTP port [465 = TLS, 587 = STARTTLS] [465]: ", "465")?
+        .parse()
+        .map_err(|_| "port must be a number")?;
     let user = prompt("SMTP username (e.g. postmaster@mg.example.com): ")?;
     if user.is_empty() {
         return Err("no username entered".into());
@@ -126,7 +137,9 @@ fn connect_smtp() -> Result<Value, BErr> {
         return Err("no password entered".into());
     }
     let from = prompt_default(&format!("From address [{user}]: "), &user)?;
-    Ok(json!({ "type": "smtp", "host": host, "port": port, "user": user, "pass": pass, "from": from }))
+    Ok(
+        json!({ "type": "smtp", "host": host, "port": port, "user": user, "pass": pass, "from": from }),
+    )
 }
 
 // ── Discord (bot) ─────────────────────────────────────────────────────────────
@@ -158,7 +171,9 @@ fn connect_slack() -> Result<Value, BErr> {
         return Err("no app-level token entered — Socket Mode needs one (app settings → Basic Information → App-Level Tokens)".into());
     }
     let owner_id = prompt("Your lead's Slack member id (for DMs; optional): ")?;
-    Ok(json!({ "type": "slack", "bot_token": bot_token, "app_token": app_token, "owner_id": owner_id }))
+    Ok(
+        json!({ "type": "slack", "bot_token": bot_token, "app_token": app_token, "owner_id": owner_id }),
+    )
 }
 
 // ── OAuth device-code ────────────────────────────────────────────────────────
@@ -174,11 +189,18 @@ async fn connect_device_code(p: &Value, login: &Value) -> Result<Value, BErr> {
         .await?
         .json()
         .await?;
-    let device_auth_id = start["device_auth_id"].as_str().ok_or_else(|| format!("device-code start failed: {start}"))?;
-    let user_code = start["user_code"].as_str().ok_or("device-code start had no user_code")?;
+    let device_auth_id = start["device_auth_id"]
+        .as_str()
+        .ok_or_else(|| format!("device-code start failed: {start}"))?;
+    let user_code = start["user_code"]
+        .as_str()
+        .ok_or("device-code start had no user_code")?;
     let mut wait = start["interval"].as_u64().unwrap_or(5);
 
-    println!("\n  1. open: {}", login["verification_url"].as_str().unwrap_or(""));
+    println!(
+        "\n  1. open: {}",
+        login["verification_url"].as_str().unwrap_or("")
+    );
     println!("  2. enter code: {user_code}\n");
     println!("waiting for you to authorize…");
 
@@ -196,7 +218,10 @@ async fn connect_device_code(p: &Value, login: &Value) -> Result<Value, BErr> {
         let status = res.status().as_u16();
         if res.status().is_success() {
             let j: Value = res.json().await?;
-            if let (Some(c), Some(v)) = (j["authorization_code"].as_str(), j["code_verifier"].as_str()) {
+            if let (Some(c), Some(v)) = (
+                j["authorization_code"].as_str(),
+                j["code_verifier"].as_str(),
+            ) {
                 break (c.to_string(), v.to_string());
             }
         } else if status == 403 || status == 404 {
@@ -271,7 +296,11 @@ async fn connect_pkce(p: &Value, login: &Value) -> Result<Value, BErr> {
     if !got_state.is_empty() && got_state != sent_state {
         return Err("state mismatch — aborting".into());
     }
-    let exchange_state = if got_state.is_empty() { sent_state } else { got_state };
+    let exchange_state = if got_state.is_empty() {
+        sent_state
+    } else {
+        got_state
+    };
 
     let tok = post_json(
         str_field(p, "token_url")?,
@@ -311,9 +340,15 @@ fn parse_callback(value: &str) -> (String, String) {
 // ── shared ───────────────────────────────────────────────────────────────────
 
 fn oauth_cred(p: &Value, tok: &Value) -> Result<Value, BErr> {
-    let access = tok["access_token"].as_str().ok_or_else(|| format!("token response missing access_token: {tok}"))?;
-    let refresh = tok["refresh_token"].as_str().ok_or("token response missing refresh_token")?;
-    let expires_in = tok["expires_in"].as_f64().ok_or("token response missing expires_in")?;
+    let access = tok["access_token"]
+        .as_str()
+        .ok_or_else(|| format!("token response missing access_token: {tok}"))?;
+    let refresh = tok["refresh_token"]
+        .as_str()
+        .ok_or("token response missing refresh_token")?;
+    let expires_in = tok["expires_in"]
+        .as_f64()
+        .ok_or("token response missing expires_in")?;
     let skew = p["skew_ms"].as_i64().unwrap_or(0);
     let mut cred = json!({
         "type": "oauth",
@@ -332,7 +367,9 @@ fn oauth_cred(p: &Value, tok: &Value) -> Result<Value, BErr> {
 
 fn jwt_claim(jwt: &str, path: &[&str]) -> Option<String> {
     let payload = jwt.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
     let mut node: Value = serde_json::from_slice(&bytes).ok()?;
     for key in path {
         node = node.get(*key)?.clone();
@@ -380,7 +417,9 @@ async fn post_form(url: &str, form: &[(&str, &str)]) -> Result<Value, BErr> {
 }
 
 fn str_field<'a>(v: &'a Value, key: &str) -> Result<&'a str, BErr> {
-    v[key].as_str().ok_or_else(|| format!("provider config missing \"{key}\"").into())
+    v[key]
+        .as_str()
+        .ok_or_else(|| format!("provider config missing \"{key}\"").into())
 }
 
 fn error_code(text: &str) -> Option<String> {

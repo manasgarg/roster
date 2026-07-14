@@ -4,12 +4,12 @@
 //! judge + forward loop in `src/gateway.ts`. Injection/refresh land in P3.
 //! See docs/rust-port.md (P2).
 
+use crate::credential::vault;
 use crate::gateway::ca::Ca;
 use crate::gateway::judge::judge;
 use crate::gateway::schema::{GovernedRequest, Mcp, Policy, Verdict};
 use crate::paths;
 use crate::util::now_rfc3339;
-use crate::credential::vault;
 use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
 use hyper::body::Incoming;
@@ -61,7 +61,10 @@ fn load_policy() -> Policy {
 fn next_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     format!("{nanos:x}-{n:x}")
 }
 
@@ -77,7 +80,11 @@ fn record(
         .headers
         .iter()
         .map(|(k, v)| {
-            let val = if SENSITIVE.contains(&k.as_str()) { "<redacted>".to_string() } else { v.clone() };
+            let val = if SENSITIVE.contains(&k.as_str()) {
+                "<redacted>".to_string()
+            } else {
+                v.clone()
+            };
             (k.clone(), Value::String(val))
         })
         .collect();
@@ -147,7 +154,10 @@ fn lower_headers(map: &HeaderMap) -> HashMap<String, String> {
 
 /// Lift MCP's own terms from a JSON-RPC body, if that's what this is.
 fn lift_mcp(headers: &HashMap<String, String>, body: &[u8]) -> Option<Mcp> {
-    let ct = headers.get("content-type").map(|s| s.as_str()).unwrap_or("");
+    let ct = headers
+        .get("content-type")
+        .map(|s| s.as_str())
+        .unwrap_or("");
     if body.is_empty() || !ct.contains("json") {
         return None;
     }
@@ -159,7 +169,10 @@ fn lift_mcp(headers: &HashMap<String, String>, body: &[u8]) -> Option<Mcp> {
         return None;
     }
     let tool = if method == "tools/call" {
-        msg.get("params").and_then(|p| p.get("name")).and_then(|n| n.as_str()).map(|s| s.to_string())
+        msg.get("params")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string())
     } else {
         None
     };
@@ -169,11 +182,15 @@ fn lift_mcp(headers: &HashMap<String, String>, body: &[u8]) -> Option<Mcp> {
 // ── body helpers ────────────────────────────────────────────────────────────
 
 fn full(s: &str) -> Body {
-    Full::new(Bytes::from(s.to_string())).map_err(|never| match never {}).boxed()
+    Full::new(Bytes::from(s.to_string()))
+        .map_err(|never| match never {})
+        .boxed()
 }
 
 fn empty() -> Body {
-    Empty::<Bytes>::new().map_err(|never| match never {}).boxed()
+    Empty::<Bytes>::new()
+        .map_err(|never| match never {})
+        .boxed()
 }
 
 // ── identity ────────────────────────────────────────────────────────────────
@@ -207,7 +224,11 @@ fn resolve_identity(proxy_auth: Option<&hyper::header::HeaderValue>) -> (String,
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .and_then(|v| {
             let subject = v.get("subject")?.as_str()?.to_string();
-            let run_id = v.get("run_id").and_then(Value::as_str).unwrap_or("").to_string();
+            let run_id = v
+                .get("run_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             Some((subject, run_id))
         })
         .unwrap_or_else(default)
@@ -217,7 +238,9 @@ fn resolve_identity(proxy_auth: Option<&hyper::header::HeaderValue>) -> (String,
 /// rule in headers (for clients that print nothing else), the body carries
 /// them again plus a hint that this is governance, not an outage.
 fn deny_response(verdict: Verdict, rule: Option<&str>) -> Response<Body> {
-    let rule_json = rule.map(|r| format!("\"{r}\"")).unwrap_or_else(|| "null".into());
+    let rule_json = rule
+        .map(|r| format!("\"{r}\""))
+        .unwrap_or_else(|| "null".into());
     let mut resp = Response::new(full(&format!(
         "{{\"error\":\"denied by gateway ({})\",\"rule\":{},\"hint\":\"policy said no — retrying won't change the answer; propose an action or ask your lead\"}}",
         verdict.as_str(),
@@ -249,17 +272,34 @@ pub fn build_client() -> UpstreamClient {
 pub async fn serve(stream: TcpStream, tls: TlsAcceptor, client: UpstreamClient, _ca: Arc<Ca>) {
     let io = TokioIo::new(stream);
     let svc = service_fn(move |req| outer(req, tls.clone(), client.clone()));
-    if let Err(e) = server_http1::Builder::new().serve_connection(io, svc).with_upgrades().await {
+    if let Err(e) = server_http1::Builder::new()
+        .serve_connection(io, svc)
+        .with_upgrades()
+        .await
+    {
         let _ = e;
     }
 }
 
-async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient) -> Result<Response<Body>, BErr> {
+async fn outer(
+    req: Request<Incoming>,
+    tls: TlsAcceptor,
+    client: UpstreamClient,
+) -> Result<Response<Body>, BErr> {
     if req.method() == Method::CONNECT {
-        let authority = req.uri().authority().map(|a| a.to_string()).unwrap_or_default();
+        let authority = req
+            .uri()
+            .authority()
+            .map(|a| a.to_string())
+            .unwrap_or_default();
         let host = authority.split(':').next().unwrap_or("").to_string();
-        let port: u16 = authority.split(':').nth(1).and_then(|p| p.parse().ok()).unwrap_or(443);
-        let (subject, run_id) = resolve_identity(req.headers().get(hyper::header::PROXY_AUTHORIZATION));
+        let port: u16 = authority
+            .split(':')
+            .nth(1)
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(443);
+        let (subject, run_id) =
+            resolve_identity(req.headers().get(hyper::header::PROXY_AUTHORIZATION));
 
         // Tunnel escape hatch: judge host+port only; if the rule says tunnel,
         // raw-pipe without terminating (host-only visibility).
@@ -277,7 +317,14 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
         };
         let (verdict, rule) = judge(&pre, &load_policy());
         if verdict == Verdict::Tunnel {
-            record(&pre, Verdict::Tunnel, rule.as_deref(), None, &HashMap::new(), None);
+            record(
+                &pre,
+                Verdict::Tunnel,
+                rule.as_deref(),
+                None,
+                &HashMap::new(),
+                None,
+            );
             tokio::spawn(async move {
                 let upgraded = match hyper::upgrade::on(req).await {
                     Ok(u) => u,
@@ -302,17 +349,33 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
                 Err(_) => return,
             };
             let io = TokioIo::new(tls_stream);
-            let svc = service_fn(move |r| handle(r, "https", host.clone(), subject.clone(), run_id.clone(), client.clone()));
-            let _ = server_http1::Builder::new().serve_connection(io, svc).with_upgrades().await;
+            let svc = service_fn(move |r| {
+                handle(
+                    r,
+                    "https",
+                    host.clone(),
+                    subject.clone(),
+                    run_id.clone(),
+                    client.clone(),
+                )
+            });
+            let _ = server_http1::Builder::new()
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await;
         });
         Ok(Response::new(empty()))
     } else if req.uri().path() == "/healthz" {
         let mut resp = Response::new(full("{\"ok\":true}"));
-        resp.headers_mut().insert(hyper::header::CONTENT_TYPE, "application/json".parse().unwrap());
+        resp.headers_mut().insert(
+            hyper::header::CONTENT_TYPE,
+            "application/json".parse().unwrap(),
+        );
         Ok(resp)
     } else if req.uri().scheme_str() == Some("http") {
         let host = req.uri().host().unwrap_or("").to_string();
-        let (subject, run_id) = resolve_identity(req.headers().get(hyper::header::PROXY_AUTHORIZATION));
+        let (subject, run_id) =
+            resolve_identity(req.headers().get(hyper::header::PROXY_AUTHORIZATION));
         handle(req, "http", host, subject, run_id, client).await
     } else {
         let mut resp = Response::new(full("{\"error\":\"not a proxy request\"}"));
@@ -342,7 +405,14 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
             if let Some(inj) = policy.rule(rule_name).and_then(|r| r.inject.as_ref()) {
                 match vault::get_fresh_credential(&inj.credential).await {
                     Err(_) | Ok(None) => {
-                        record(gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), None);
+                        record(
+                            gr,
+                            Verdict::Deny,
+                            rule.as_deref(),
+                            None,
+                            &HashMap::new(),
+                            None,
+                        );
                         return Gate::Deny(deny_response(Verdict::Deny, rule.as_deref()));
                     }
                     Ok(Some(cred)) => {
@@ -358,13 +428,26 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
     let budget = crate::gateway::budget::load_budget();
     let now = crate::util::now_ms();
     let spend = if verdict == Verdict::Allow {
-        crate::gateway::budget::compute_spend(gr, verdict.as_str(), rule.as_deref(), &json!({}), &budget)
+        crate::gateway::budget::compute_spend(
+            gr,
+            verdict.as_str(),
+            rule.as_deref(),
+            &json!({}),
+            &budget,
+        )
     } else {
         HashMap::new()
     };
     if verdict == Verdict::Allow {
         if let Some(refusal) = crate::gateway::ledger::check(subject, &spend, &budget.limits, now) {
-            record(gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), Some(&refusal.reason));
+            record(
+                gr,
+                Verdict::Deny,
+                rule.as_deref(),
+                None,
+                &HashMap::new(),
+                Some(&refusal.reason),
+            );
             let mut resp = Response::new(full(&format!(
                 "{{\"error\":\"budget exceeded\",\"detail\":\"{}\",\"retry_after_secs\":{},\"hint\":\"a budget window is used up — nothing is broken; retry after it resets\"}}",
                 refusal.reason, refusal.retry_after_secs
@@ -379,7 +462,14 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
         }
     }
 
-    record(gr, verdict, rule.as_deref(), injected_names.as_deref(), &spend, None);
+    record(
+        gr,
+        verdict,
+        rule.as_deref(),
+        injected_names.as_deref(),
+        &spend,
+        None,
+    );
     if verdict != Verdict::Allow {
         return Gate::Deny(deny_response(verdict, rule.as_deref()));
     }
@@ -390,19 +480,33 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
 /// A decrypted (or plain-http) request: judge, then forward. WebSocket upgrades
 /// are tunneled (see forward_websocket); everything else is a buffered forward
 /// with the response streamed back.
-async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: String, run_id: String, client: UpstreamClient) -> Result<Response<Body>, BErr> {
+async fn handle(
+    req: Request<Incoming>,
+    protocol: &str,
+    host: String,
+    subject: String,
+    run_id: String,
+    client: UpstreamClient,
+) -> Result<Response<Body>, BErr> {
     // The action host is served internally: parse the envelope and let the
     // action layer attribute, authorize, and execute-or-gate it. Never forwarded.
     if host == crate::action::ACTION_HOST {
         let (parts, incoming) = req.into_parts();
         let method = parts.method.as_str().to_string();
         let path = parts.uri.path().to_string();
-        let body = incoming.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
+        let body = incoming
+            .collect()
+            .await
+            .map(|c| c.to_bytes())
+            .unwrap_or_default();
         return Ok(crate::action::handle_action(&subject, &run_id, &method, &path, &body).await);
     }
 
     let headers = lower_headers(req.headers());
-    let is_ws = headers.get("upgrade").map(|u| u.eq_ignore_ascii_case("websocket")).unwrap_or(false);
+    let is_ws = headers
+        .get("upgrade")
+        .map(|u| u.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false);
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
     let query = req.uri().query().unwrap_or("").to_string();
@@ -430,7 +534,11 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: S
 
     let had_scheme = req.uri().scheme().is_some();
     let (parts, incoming) = req.into_parts();
-    let body_bytes = incoming.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
+    let body_bytes = incoming
+        .collect()
+        .await
+        .map(|c| c.to_bytes())
+        .unwrap_or_default();
     let mcp = lift_mcp(&headers, &body_bytes);
     let gr = GovernedRequest {
         imp: Some(subject.clone()),
@@ -461,7 +569,8 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: S
     } else {
         format!("https://{host}{path}?{query}").parse()?
     };
-    let inject_keys: std::collections::HashSet<&str> = inject.iter().map(|(k, _)| k.as_str()).collect();
+    let inject_keys: std::collections::HashSet<&str> =
+        inject.iter().map(|(k, _)| k.as_str()).collect();
     let mut builder = Request::builder().method(parts.method.clone()).uri(target);
     for (k, v) in parts.headers.iter() {
         if k == hyper::header::PROXY_AUTHORIZATION || inject_keys.contains(k.as_str()) {
@@ -472,11 +581,18 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: S
     for (k, v) in &inject {
         builder = builder.header(k, v);
     }
-    let out = builder.body(Full::new(body_bytes).map_err(|never| match never {}).boxed())?;
+    let out = builder.body(
+        Full::new(body_bytes)
+            .map_err(|never| match never {})
+            .boxed(),
+    )?;
     match client.request(out).await {
         Ok(resp) => {
             let (parts, body) = resp.into_parts();
-            Ok(Response::from_parts(parts, body.map_err(|e| Box::new(e) as BErr).boxed()))
+            Ok(Response::from_parts(
+                parts,
+                body.map_err(|e| Box::new(e) as BErr).boxed(),
+            ))
         }
         Err(err) => {
             let mut resp = Response::new(full(&format!("{{\"error\":\"upstream: {err}\"}}")));
@@ -489,7 +605,12 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: S
 /// Proxy a WebSocket upgrade: send the (injected) handshake to the real host,
 /// and on 101 tunnel the frames bidirectionally. TLS is already terminated, so
 /// injection applies to the handshake just like an HTTP request.
-async fn forward_websocket(mut req: Request<Incoming>, host: String, port: u16, inject: Vec<(String, String)>) -> Result<Response<Body>, BErr> {
+async fn forward_websocket(
+    mut req: Request<Incoming>,
+    host: String,
+    port: u16,
+    inject: Vec<(String, String)>,
+) -> Result<Response<Body>, BErr> {
     let box_upgrade = hyper::upgrade::on(&mut req); // resolves after we return 101
     let (parts, _body) = req.into_parts();
 
@@ -497,14 +618,21 @@ async fn forward_websocket(mut req: Request<Incoming>, host: String, port: u16, 
     let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await?;
     let server_name = rustls::pki_types::ServerName::try_from(host.clone())?;
     let tls = upstream_connector().connect(server_name, tcp).await?;
-    let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(tls)).await?;
+    let (mut sender, conn) =
+        hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(tls)).await?;
     tokio::spawn(async move {
         let _ = conn.with_upgrades().await;
     });
 
     // Replay the handshake (origin-form), injecting the credential.
-    let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/").to_string();
-    let inject_keys: std::collections::HashSet<&str> = inject.iter().map(|(k, _)| k.as_str()).collect();
+    let pq = parts
+        .uri
+        .path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or("/")
+        .to_string();
+    let inject_keys: std::collections::HashSet<&str> =
+        inject.iter().map(|(k, _)| k.as_str()).collect();
     let mut builder = Request::builder().method(parts.method.clone()).uri(pq);
     for (k, v) in parts.headers.iter() {
         if k == hyper::header::PROXY_AUTHORIZATION || inject_keys.contains(k.as_str()) {
@@ -515,13 +643,20 @@ async fn forward_websocket(mut req: Request<Incoming>, host: String, port: u16, 
     for (k, v) in &inject {
         builder = builder.header(k, v);
     }
-    let out = builder.body(Empty::<Bytes>::new().map_err(|never| match never {}).boxed())?;
+    let out = builder.body(
+        Empty::<Bytes>::new()
+            .map_err(|never| match never {})
+            .boxed(),
+    )?;
 
     let resp = sender.send_request(out).await?;
     if resp.status() != StatusCode::SWITCHING_PROTOCOLS {
         // Upstream declined the upgrade — pass its response back as-is.
         let (rp, body) = resp.into_parts();
-        return Ok(Response::from_parts(rp, body.map_err(|e| Box::new(e) as BErr).boxed()));
+        return Ok(Response::from_parts(
+            rp,
+            body.map_err(|e| Box::new(e) as BErr).boxed(),
+        ));
     }
 
     // Both sides upgraded: tunnel the raw frames.
@@ -551,7 +686,9 @@ fn upstream_connector() -> tokio_rustls::TlsConnector {
             for cert in rustls_native_certs::load_native_certs().certs {
                 let _ = roots.add(cert);
             }
-            let config = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+            let config = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
             tokio_rustls::TlsConnector::from(Arc::new(config))
         })
         .clone()

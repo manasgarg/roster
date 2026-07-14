@@ -2,8 +2,8 @@
 //! and feed it messages from stdin, one per line. For working with (and
 //! testing) the multi-message session without a channel in front.
 
-use crate::util::BErr;
 use crate::run::boxed;
+use crate::util::BErr;
 
 pub async fn chat(imp: &str, idle: u64) -> Result<(), BErr> {
     crate::imp::require_imp(imp)?;

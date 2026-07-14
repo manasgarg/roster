@@ -1,8 +1,8 @@
 //! `impyard init` — initialize a deployment: the XDG config/data/state roots
 //! and a starter org.toml. Idempotent; never overwrites an existing file.
 
-use crate::util::BErr;
 use crate::paths;
+use crate::util::BErr;
 
 const STARTER_ORG: &str = r#"# Impyard org config — ADMIN-ONLY. Applies to every imp (scope "org");
 # per-imp overlays live in imps/<name>/imp.toml. Config loads live:

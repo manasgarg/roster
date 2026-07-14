@@ -31,7 +31,11 @@ fn matches(m: &Match, req: &GovernedRequest) -> bool {
         }
     }
     if let Some(meth) = &m.method {
-        if !meth.values().iter().any(|v| v.eq_ignore_ascii_case(&req.method)) {
+        if !meth
+            .values()
+            .iter()
+            .any(|v| v.eq_ignore_ascii_case(&req.method))
+        {
             return false;
         }
     }
@@ -142,7 +146,9 @@ mod tests {
 
     #[test]
     fn first_match_wins() {
-        let p = policy(r#"{"rules":[{"name":"d","match":{},"verdict":"deny"},{"name":"a","match":{},"verdict":"allow"}]}"#);
+        let p = policy(
+            r#"{"rules":[{"name":"d","match":{},"verdict":"deny"},{"name":"a","match":{},"verdict":"allow"}]}"#,
+        );
         let (v, r) = judge(&req(), &p);
         assert_eq!(v, Verdict::Deny);
         assert_eq!(r.as_deref(), Some("d"));
@@ -150,13 +156,17 @@ mod tests {
 
     #[test]
     fn host_port_and_method() {
-        let p = policy(r#"{"rules":[{"name":"model","match":{"host":["chatgpt.com","api.anthropic.com"],"port":443},"verdict":"allow"}]}"#);
+        let p = policy(
+            r#"{"rules":[{"name":"model","match":{"host":["chatgpt.com","api.anthropic.com"],"port":443},"verdict":"allow"}]}"#,
+        );
         assert_eq!(judge(&req(), &p).0, Verdict::Allow);
         let mut evil = req();
         evil.host = "evil.com".into();
         assert_eq!(judge(&evil, &p).0, Verdict::Deny);
 
-        let pm = policy(r#"{"rules":[{"name":"posts","match":{"host":"chatgpt.com","method":"post"},"verdict":"allow"}]}"#);
+        let pm = policy(
+            r#"{"rules":[{"name":"posts","match":{"host":"chatgpt.com","method":"post"},"verdict":"allow"}]}"#,
+        );
         let mut get = req();
         get.method = "GET".into();
         assert_eq!(judge(&get, &pm).0, Verdict::Deny);
@@ -165,11 +175,19 @@ mod tests {
 
     #[test]
     fn mcp_tool_globs() {
-        let p = policy(r#"{"rules":[{"name":"ro","match":{"mcp":{"method":"tools/call","tool":["get_*","list_*"]}},"verdict":"allow"}]}"#);
+        let p = policy(
+            r#"{"rules":[{"name":"ro","match":{"mcp":{"method":"tools/call","tool":["get_*","list_*"]}},"verdict":"allow"}]}"#,
+        );
         let mut r = req();
-        r.mcp = Some(Mcp { method: "tools/call".into(), tool: Some("get_issue".into()) });
+        r.mcp = Some(Mcp {
+            method: "tools/call".into(),
+            tool: Some("get_issue".into()),
+        });
         assert_eq!(judge(&r, &p).0, Verdict::Allow);
-        r.mcp = Some(Mcp { method: "tools/call".into(), tool: Some("create_pr".into()) });
+        r.mcp = Some(Mcp {
+            method: "tools/call".into(),
+            tool: Some("create_pr".into()),
+        });
         assert_eq!(judge(&r, &p).0, Verdict::Deny);
         r.mcp = None;
         assert_eq!(judge(&r, &p).0, Verdict::Deny);
@@ -178,14 +196,18 @@ mod tests {
     #[test]
     fn rule_scope_is_ancestor_filtered() {
         // A rule scoped to org/w1 must not govern a request from org/w2.
-        let p = policy(r#"{"rules":[{"name":"w1-only","match":{"host":"chatgpt.com"},"verdict":"allow","scope":"org/w1"}]}"#);
+        let p = policy(
+            r#"{"rules":[{"name":"w1-only","match":{"host":"chatgpt.com"},"verdict":"allow","scope":"org/w1"}]}"#,
+        );
         let mut r = req();
         r.imp = Some("org/w1".into());
         assert_eq!(judge(&r, &p).0, Verdict::Allow);
         r.imp = Some("org/w2".into());
         assert_eq!(judge(&r, &p).0, Verdict::Deny); // out of scope → no rule → default deny
-        // An org-scoped rule governs any imp.
-        let org = policy(r#"{"rules":[{"name":"all","match":{"host":"chatgpt.com"},"verdict":"allow","scope":"org"}]}"#);
+                                                    // An org-scoped rule governs any imp.
+        let org = policy(
+            r#"{"rules":[{"name":"all","match":{"host":"chatgpt.com"},"verdict":"allow","scope":"org"}]}"#,
+        );
         assert_eq!(judge(&r, &org).0, Verdict::Allow);
     }
 
@@ -194,7 +216,10 @@ mod tests {
         assert!(host_matches("*", "anything.com"));
         assert!(host_matches("*.githubcopilot.com", "api.githubcopilot.com"));
         assert!(host_matches("*.githubcopilot.com", "githubcopilot.com"));
-        assert!(!host_matches("*.githubcopilot.com", "githubcopilot.com.evil.com"));
+        assert!(!host_matches(
+            "*.githubcopilot.com",
+            "githubcopilot.com.evil.com"
+        ));
         assert!(!host_matches("chatgpt.com", "evil.chatgpt.com"));
         assert!(glob_matches("get_*", "get_issue"));
         assert!(!glob_matches("get_*", "set_issue"));

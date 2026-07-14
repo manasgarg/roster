@@ -70,7 +70,10 @@ pub fn validate(policy: &StoragePolicy) -> Result<(), String> {
     if !policy.knowledge.reorganization_requires_exclusive_lease {
         return Err("knowledge reorganization must require an exclusive lease".into());
     }
-    if !matches!(policy.knowledge.write_from.as_str(), "clean-room" | "any-run") {
+    if !matches!(
+        policy.knowledge.write_from.as_str(),
+        "clean-room" | "any-run"
+    ) {
         return Err(format!(
             "knowledge.write_from must be \"clean-room\" or \"any-run\", not \"{}\"",
             policy.knowledge.write_from

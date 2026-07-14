@@ -1,15 +1,15 @@
 //! `impyard imp ls|show|trust` — the fleet, one imp, and its earned
 //! trust. Computed from specs, ledgers, and records — never model-written.
 
-use crate::util::BErr;
-use crate::gateway::scope::applies;
-use crate::util::now_ms;
 use crate::action;
-use crate::gateway::budget;
 use crate::action::gate;
+use crate::gateway::budget;
 use crate::gateway::ledger;
+use crate::gateway::scope::applies;
 use crate::imp::memory;
 use crate::paths;
+use crate::util::now_ms;
+use crate::util::BErr;
 use crate::work::queue;
 use std::collections::BTreeMap;
 
@@ -85,7 +85,10 @@ pub fn ls(json: bool) -> Result<(), BErr> {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let gates = gate::for_imp(&name).iter().filter(|g| g.state == "pending").count();
+        let gates = gate::for_imp(&name)
+            .iter()
+            .filter(|g| g.state == "pending")
+            .count();
         println!(
             "{:<12}  {:<24}  {:<6}  {:<7}  {}",
             name,
@@ -140,8 +143,14 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
     }
 
     println!("imp    {name}");
-    println!("spec      {}", paths::imp_dir(name).join("imp.toml").display());
-    println!("identity  {}", paths::imp_dir(name).join("identity.md").display());
+    println!(
+        "spec      {}",
+        paths::imp_dir(name).join("imp.toml").display()
+    );
+    println!(
+        "identity  {}",
+        paths::imp_dir(name).join("identity.md").display()
+    );
     let queue_line = if counts.is_empty() {
         "empty".to_string()
     } else {
@@ -178,7 +187,10 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
             "trigger   {}  (ceiling {} min): {}",
             t.get("schedule").and_then(|v| v.as_str()).unwrap_or("?"),
             t.get("ceiling_min").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            crate::run::runlog::one_line(t.get("prompt").and_then(|v| v.as_str()).unwrap_or(""), 60)
+            crate::run::runlog::one_line(
+                t.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
+                60
+            )
         );
     }
     println!("memory    {memory_notes} note(s)");
@@ -214,7 +226,11 @@ pub fn trust(name: &str, json: bool) -> Result<(), BErr> {
     let policy = action::load_action_policy();
 
     let mut rows: Vec<serde_json::Value> = Vec::new();
-    for grant in policy.actions.iter().filter(|g| applies(&g.scope, &subject)) {
+    for grant in policy
+        .actions
+        .iter()
+        .filter(|g| applies(&g.scope, &subject))
+    {
         let (executed, denied) = gate::history(name, &grant.name);
         let rules: Vec<serde_json::Value> = policy
             .trust
@@ -272,7 +288,11 @@ pub fn trust(name: &str, json: bool) -> Result<(), BErr> {
                 .as_u64()
                 .map(|n| format!(" after {n} clean approvals"))
                 .unwrap_or_default();
-            println!("  rule: {}{preds}{after}  (scope {})", rule["level"].as_str().unwrap_or("?"), rule["scope"].as_str().unwrap_or("?"));
+            println!(
+                "  rule: {}{preds}{after}  (scope {})",
+                rule["level"].as_str().unwrap_or("?"),
+                rule["scope"].as_str().unwrap_or("?")
+            );
         }
     }
     println!("\npromotion is admin-only: rules live in org.toml / imp.toml; a denial revokes earned auto");

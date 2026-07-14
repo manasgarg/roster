@@ -78,7 +78,9 @@ impl Window {
 /// Read the budget config fresh each call (admin edits are live). Absent or
 /// unparseable ⇒ no meters (no spend recorded; the judge still governs).
 pub fn load_budget() -> BudgetPolicy {
-    crate::config::snapshot().map(|c| c.budget.clone()).unwrap_or_default()
+    crate::config::snapshot()
+        .map(|c| c.budget.clone())
+        .unwrap_or_default()
 }
 
 fn eval(program_src: &str, ctx: &Context) -> Option<Cel> {
@@ -169,22 +171,44 @@ mod tests {
             r#"{"currencies":["model_calls","usd"],"vars":{"price":{"call":0.01}},
                 "meters":[{"match":"decision.rule == 'model-api'","spend":{"model_calls":"1","usd":"vars.price.call"}}]}"#,
         );
-        let spend = compute_spend(&gr("chatgpt.com"), "allow", Some("model-api"), &json!({}), &p);
+        let spend = compute_spend(
+            &gr("chatgpt.com"),
+            "allow",
+            Some("model-api"),
+            &json!({}),
+            &p,
+        );
         assert_eq!(spend.get("model_calls"), Some(&1.0));
         assert_eq!(spend.get("usd"), Some(&0.01));
     }
 
     #[test]
     fn non_matching_rule_draws_nothing() {
-        let p = policy(r#"{"meters":[{"match":"decision.rule == 'web-search'","spend":{"searches":"1"}}]}"#);
-        let spend = compute_spend(&gr("chatgpt.com"), "allow", Some("model-api"), &json!({}), &p);
+        let p = policy(
+            r#"{"meters":[{"match":"decision.rule == 'web-search'","spend":{"searches":"1"}}]}"#,
+        );
+        let spend = compute_spend(
+            &gr("chatgpt.com"),
+            "allow",
+            Some("model-api"),
+            &json!({}),
+            &p,
+        );
         assert!(spend.is_empty());
     }
 
     #[test]
     fn can_meter_on_request_fields() {
-        let p = policy(r#"{"meters":[{"match":"request.host == 'chatgpt.com'","spend":{"bytes":"request.bodyBytes"}}]}"#);
-        let spend = compute_spend(&gr("chatgpt.com"), "allow", Some("model-api"), &json!({}), &p);
+        let p = policy(
+            r#"{"meters":[{"match":"request.host == 'chatgpt.com'","spend":{"bytes":"request.bodyBytes"}}]}"#,
+        );
+        let spend = compute_spend(
+            &gr("chatgpt.com"),
+            "allow",
+            Some("model-api"),
+            &json!({}),
+            &p,
+        );
         assert_eq!(spend.get("bytes"), Some(&10.0));
     }
 }

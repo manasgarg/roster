@@ -4,9 +4,9 @@
 //! idempotently; deny records the refusal. Both append to the imp's journal
 //! and the audit log.
 
-use crate::util::BErr;
 use crate::action;
 use crate::action::gate;
+use crate::util::BErr;
 
 fn resolve(id_or_prefix: &str) -> Result<String, BErr> {
     let all = gate::list_all();
@@ -23,9 +23,12 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         println!("no pending gates");
         return Ok(());
     }
-    println!("{:<12}  {:<10}  {:<16}  {}", "GATE", "IMP", "INTENT", "FILED");
+    println!("{:<12}  {:<10}  {:<16}  FILED", "GATE", "IMP", "INTENT");
     for g in pending {
-        println!("{:<12}  {:<10}  {:<16}  {}", g.id, g.imp, g.intent, g.filed_at);
+        println!(
+            "{:<12}  {:<10}  {:<16}  {}",
+            g.id, g.imp, g.intent, g.filed_at
+        );
     }
     println!("\napprove: impyard server gates approve <id>   deny: impyard server gates deny <id> \"reason\"");
     Ok(())
@@ -40,7 +43,12 @@ pub fn show(id: &str) -> Result<(), BErr> {
     println!("state    {}", g.state);
     println!("filed    {}", g.filed_at);
     if let Some(by) = &g.decided_by {
-        println!("decided  {} by {} {}", g.decided_at.as_deref().unwrap_or(""), by, g.decision_note.as_deref().unwrap_or(""));
+        println!(
+            "decided  {} by {} {}",
+            g.decided_at.as_deref().unwrap_or(""),
+            by,
+            g.decision_note.as_deref().unwrap_or("")
+        );
     }
     if let Some(r) = &g.result {
         println!("result   {r}");
@@ -55,15 +63,28 @@ pub fn show(id: &str) -> Result<(), BErr> {
     // diff; a code gate shows the worktree diff; everything else shows its payload.
     match g.executor.as_str() {
         "identity" => {
-            let proposed = g.payload.get("identity").or_else(|| g.payload.get("charter")).and_then(|v| v.as_str()).unwrap_or("");
+            let proposed = g
+                .payload
+                .get("identity")
+                .or_else(|| g.payload.get("charter"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             match action::identity_diff(&g.imp, proposed) {
                 Some(d) => println!("\nidentity change — current vs proposed:\n{d}"),
                 None => println!("\n(the proposed identity is identical to the current one)"),
             }
         }
         "purpose" => {
-            let ch = g.payload.get("channel_id").and_then(|v| v.as_str()).unwrap_or("");
-            let proposed = g.payload.get("purpose").and_then(|v| v.as_str()).unwrap_or("");
+            let ch = g
+                .payload
+                .get("channel_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let proposed = g
+                .payload
+                .get("purpose")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             match action::purpose_diff(ch, proposed) {
                 Some(d) => println!("\npurpose change (channel {ch}) — current vs proposed:\n{d}"),
                 None => println!("\n(the proposed purpose is identical to the current one)"),
@@ -76,7 +97,10 @@ pub fn show(id: &str) -> Result<(), BErr> {
                 _ => println!("\ndiff — (no changes found in the worktree)"),
             }
         }
-        _ => println!("\npayload — the exact action that will run:\n{}", serde_json::to_string_pretty(&g.payload)?),
+        _ => println!(
+            "\npayload — the exact action that will run:\n{}",
+            serde_json::to_string_pretty(&g.payload)?
+        ),
     }
     Ok(())
 }

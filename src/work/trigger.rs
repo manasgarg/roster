@@ -89,16 +89,32 @@ pub fn fire() -> usize {
     let mut fired = 0;
     for t in &triggers {
         let Some(interval) = parse_interval(&t.schedule) else {
-            eprintln!("trigger for {}: unparseable schedule \"{}\" — skipped", t.imp, t.schedule);
+            eprintln!(
+                "trigger for {}: unparseable schedule \"{}\" — skipped",
+                t.imp, t.schedule
+            );
             continue;
         };
         let last = state.get(&key(t)).copied().unwrap_or(0);
         if now - last >= interval {
-            match crate::work::queue::create(&t.imp, &t.prompt, "schedule", true, t.ceiling_min, "append", Value::Null, None, None) {
+            match crate::work::queue::create(
+                &t.imp,
+                &t.prompt,
+                "schedule",
+                true,
+                t.ceiling_min,
+                "append",
+                Value::Null,
+                None,
+                None,
+            ) {
                 Ok(task) => {
                     state.insert(key(t), now);
                     fired += 1;
-                    eprintln!("trigger → queued {} for {} ({})", task.id, t.imp, t.schedule);
+                    eprintln!(
+                        "trigger → queued {} for {} ({})",
+                        task.id, t.imp, t.schedule
+                    );
                 }
                 Err(e) => eprintln!("trigger for {}: could not queue: {e}", t.imp),
             }

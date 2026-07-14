@@ -34,7 +34,10 @@ impl ResolvesServerCert for SniResolver {
         let (cert_der, key_der) = self.ca.mint_leaf_der(&name).ok()?;
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
         let signing_key = rustls::crypto::ring::sign::any_supported_type(&key).ok()?;
-        let ck = Arc::new(CertifiedKey::new(vec![CertificateDer::from(cert_der)], signing_key));
+        let ck = Arc::new(CertifiedKey::new(
+            vec![CertificateDer::from(cert_der)],
+            signing_key,
+        ));
         self.cache.lock().unwrap().insert(name, ck.clone());
         Some(ck)
     }

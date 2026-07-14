@@ -18,8 +18,7 @@ const DEFAULT_NOTE_CHARS: usize = 2_000;
 const DEFAULT_SCOPE_NOTES: usize = 100;
 const DEFAULT_RECALL_NOTES: usize = 20;
 const DEFAULT_RECALL_CHARS: usize = 6_000;
-pub const SUPPORTED_MEMORY_KINDS: &[&str] =
-    &["preference", "fact", "decision", "interaction"];
+pub const SUPPORTED_MEMORY_KINDS: &[&str] = &["preference", "fact", "decision", "interaction"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -606,9 +605,7 @@ fn remember(
         .get("kind")
         .and_then(Value::as_str)
         .unwrap_or("fact");
-    if !SUPPORTED_MEMORY_KINDS.contains(&kind)
-        || !policy.allowed_kinds.iter().any(|k| k == kind)
-    {
+    if !SUPPORTED_MEMORY_KINDS.contains(&kind) || !policy.allowed_kinds.iter().any(|k| k == kind) {
         return Err(format!("memory kind \"{kind}\" is not allowed"));
     }
     let basis = parse_basis(payload)?;
@@ -722,11 +719,7 @@ fn effective_expiry(
         .and_then(|at| at.format(format).ok())
 }
 
-fn set_user_preferences(
-    imp: &str,
-    payload: &Value,
-    context: &RunContext,
-) -> Result<Value, String> {
+fn set_user_preferences(imp: &str, payload: &Value, context: &RunContext) -> Result<Value, String> {
     let scope_id = context
         .user_scope_id()
         .ok_or("memory preferences require an active user")?;
@@ -777,12 +770,7 @@ fn operation_name(intent: &str) -> Result<&'static str, String> {
     }
 }
 
-fn mutate(
-    imp: &str,
-    intent: &str,
-    payload: &Value,
-    context: &RunContext,
-) -> Result<Value, String> {
+fn mutate(imp: &str, intent: &str, payload: &Value, context: &RunContext) -> Result<Value, String> {
     let id = payload
         .get("note_id")
         .and_then(Value::as_str)
@@ -1161,13 +1149,7 @@ mod tests {
     #[test]
     fn dm_recall_combines_imp_channel_and_user() {
         let notes = vec![
-            note(
-                "1",
-                MemoryScope::Imp,
-                None,
-                MemoryBasis::Inferred,
-                "imp",
-            ),
+            note("1", MemoryScope::Imp, None, MemoryBasis::Inferred, "imp"),
             note(
                 "2",
                 MemoryScope::Channel,
@@ -1229,13 +1211,7 @@ mod tests {
             MemoryBasis::Explicit,
             "explicit",
         );
-        let mut pinned = note(
-            "3",
-            MemoryScope::Imp,
-            None,
-            MemoryBasis::Inferred,
-            "pinned",
-        );
+        let mut pinned = note("3", MemoryScope::Imp, None, MemoryBasis::Inferred, "pinned");
         pinned.pinned = true;
         let selected = select_for_recall(
             &[inferred, explicit, pinned],

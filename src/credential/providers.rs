@@ -1,8 +1,8 @@
 //! OAuth refresh, driven by the shared provider registry (providers.json) — no
 //! dependency on pi's code. See docs/injection-spec.md, docs/rust-port.md.
 
-use crate::gateway::proxy::BErr;
 use crate::credential::registry;
+use crate::gateway::proxy::BErr;
 use crate::util::now_ms;
 use serde_json::{json, Value};
 
@@ -56,9 +56,14 @@ pub async fn refresh(name: &str, refresh_token: &str) -> Result<RefreshedTokens,
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(format!("refresh for \"{name}\" returned {status}: {}", &text[..text.len().min(200)]).into());
+        return Err(format!(
+            "refresh for \"{name}\" returned {status}: {}",
+            &text[..text.len().min(200)]
+        )
+        .into());
     }
-    let json: Value = serde_json::from_str(&text).map_err(|_| format!("refresh for \"{name}\" returned non-JSON"))?;
+    let json: Value = serde_json::from_str(&text)
+        .map_err(|_| format!("refresh for \"{name}\" returned non-JSON"))?;
     map_token_response(p.skew_ms, &json)
 }
 
@@ -69,7 +74,11 @@ mod tests {
     #[test]
     fn maps_fields_and_applies_skew() {
         let before = now_ms();
-        let out = map_token_response(0, &json!({"access_token":"a","refresh_token":"r","expires_in":3600})).unwrap();
+        let out = map_token_response(
+            0,
+            &json!({"access_token":"a","refresh_token":"r","expires_in":3600}),
+        )
+        .unwrap();
         assert_eq!(out.access, "a");
         assert_eq!(out.refresh, "r");
         assert!(out.expires >= before + 3_600_000 && out.expires <= now_ms() + 3_600_000);
@@ -77,7 +86,11 @@ mod tests {
 
     #[test]
     fn applies_nonzero_skew() {
-        let out = map_token_response(300_000, &json!({"access_token":"a","refresh_token":"r","expires_in":3600})).unwrap();
+        let out = map_token_response(
+            300_000,
+            &json!({"access_token":"a","refresh_token":"r","expires_in":3600}),
+        )
+        .unwrap();
         assert!(out.expires <= now_ms() + 3_600_000 - 300_000);
     }
 

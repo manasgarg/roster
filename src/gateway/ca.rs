@@ -63,7 +63,11 @@ fn write_bundle(system_roots: &Path, ca_cert: &Path, bundle: &Path) -> Result<()
         }
     };
     let ca = fs::read_to_string(ca_cert)?;
-    let newline = if roots.is_empty() || roots.ends_with('\n') { "" } else { "\n" };
+    let newline = if roots.is_empty() || roots.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
     fs::write(bundle, format!("{roots}{newline}{ca}"))?;
     Ok(())
 }

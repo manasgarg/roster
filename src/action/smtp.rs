@@ -29,7 +29,12 @@ pub struct SmtpConfig {
 
 /// Send one message, bounded by a deadline. Returns a short status on success,
 /// or a diagnostic string (never hangs).
-pub async fn send(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) -> Result<String, String> {
+pub async fn send(
+    cfg: &SmtpConfig,
+    to: &[String],
+    subject: &str,
+    body: &str,
+) -> Result<String, String> {
     match tokio::time::timeout(Duration::from_secs(SEND_TIMEOUT_SECS), send_inner(cfg, to, subject, body)).await {
         Ok(r) => r,
         Err(_) => Err(format!(
@@ -39,13 +44,24 @@ pub async fn send(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) ->
     }
 }
 
-async fn send_inner(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) -> Result<String, String> {
-    let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port)).await.map_err(|e| format!("connect {}:{}: {e}", cfg.host, cfg.port))?;
+async fn send_inner(
+    cfg: &SmtpConfig,
+    to: &[String],
+    subject: &str,
+    body: &str,
+) -> Result<String, String> {
+    let tcp = TcpStream::connect((cfg.host.as_str(), cfg.port))
+        .await
+        .map_err(|e| format!("connect {}:{}: {e}", cfg.host, cfg.port))?;
 
     // Establish TLS: implicit on 465, else STARTTLS (587/2525). Port 465 greets
     // over TLS; STARTTLS consumed the plaintext greeting and goes straight to EHLO.
     let implicit = cfg.port == 465;
-    let tls = if implicit { tls_connect(cfg, tcp).await? } else { starttls(cfg, tcp).await? };
+    let tls = if implicit {
+        tls_connect(cfg, tcp).await?
+    } else {
+        starttls(cfg, tcp).await?
+    };
     let (rd, mut wr) = tokio::io::split(tls);
     let mut r = BufReader::new(rd);
 
@@ -56,14 +72,28 @@ async fn send_inner(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) 
     say(&mut wr, &mut r, "AUTH LOGIN", 334).await?;
     say(&mut wr, &mut r, &b64(&cfg.user), 334).await?;
     say(&mut wr, &mut r, &b64(&cfg.pass), 235).await?;
-    say(&mut wr, &mut r, &format!("MAIL FROM:<{}>", addr_of(&cfg.from)), 250).await?;
+    say(
+        &mut wr,
+        &mut r,
+        &format!("MAIL FROM:<{}>", addr_of(&cfg.from)),
+        250,
+    )
+    .await?;
     for rcpt in to {
-        say(&mut wr, &mut r, &format!("RCPT TO:<{}>", addr_of(rcpt)), 250).await?;
+        say(
+            &mut wr,
+            &mut r,
+            &format!("RCPT TO:<{}>", addr_of(rcpt)),
+            250,
+        )
+        .await?;
     }
     say(&mut wr, &mut r, "DATA", 354).await?;
 
     let message = build_message(cfg, to, subject, body);
-    wr.write_all(message.as_bytes()).await.map_err(|e| e.to_string())?;
+    wr.write_all(message.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
     wr.write_all(b".\r\n").await.map_err(|e| e.to_string())?;
     expect(&mut r, 250).await?; // accepted for delivery
     let _ = say(&mut wr, &mut r, "QUIT", 221).await;
@@ -71,15 +101,25 @@ async fn send_inner(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) 
 }
 
 /// Wrap a connected TCP stream in verified TLS for `cfg.host`.
-async fn tls_connect(cfg: &SmtpConfig, tcp: TcpStream) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
-    let name = rustls::pki_types::ServerName::try_from(cfg.host.clone()).map_err(|e| format!("bad host: {e}"))?;
-    connector().connect(name, tcp).await.map_err(|e| format!("TLS: {e}"))
+async fn tls_connect(
+    cfg: &SmtpConfig,
+    tcp: TcpStream,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
+    let name = rustls::pki_types::ServerName::try_from(cfg.host.clone())
+        .map_err(|e| format!("bad host: {e}"))?;
+    connector()
+        .connect(name, tcp)
+        .await
+        .map_err(|e| format!("TLS: {e}"))
 }
 
 /// Speak plaintext SMTP up to STARTTLS, then upgrade the connection to TLS (the
 /// port-587 path). Fails closed if the server pipelines data before the TLS
 /// handshake (a STARTTLS-injection guard).
-async fn starttls(cfg: &SmtpConfig, tcp: TcpStream) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
+async fn starttls(
+    cfg: &SmtpConfig,
+    tcp: TcpStream,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
     let (rd, mut wr) = tokio::io::split(tcp);
     let mut r = BufReader::new(rd);
     expect(&mut r, 220).await?; // plaintext greeting
@@ -109,7 +149,9 @@ fn connector() -> TlsConnector {
                 let _ = roots.add(cert);
             }
         }
-        let config = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
         TlsConnector::from(Arc::new(config))
     })
     .clone()
@@ -144,7 +186,9 @@ where
     W: AsyncWriteExt + Unpin,
     R: tokio::io::AsyncRead + Unpin,
 {
-    wr.write_all(line.as_bytes()).await.map_err(|e| e.to_string())?;
+    wr.write_all(line.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
     wr.write_all(b"\r\n").await.map_err(|e| e.to_string())?;
     expect(r, code).await
 }
@@ -186,12 +230,21 @@ fn addr_of(s: &str) -> String {
 }
 
 fn domain_of(addr: &str) -> String {
-    addr.rsplit('@').next().unwrap_or("impyard.local").to_string()
+    addr.rsplit('@')
+        .next()
+        .unwrap_or("impyard.local")
+        .to_string()
 }
 
 fn build_message(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) -> String {
-    let date = time::OffsetDateTime::now_utc().format(&Rfc2822).unwrap_or_default();
-    let id = format!("{}@{}", uuid::Uuid::new_v4().simple(), domain_of(&addr_of(&cfg.from)));
+    let date = time::OffsetDateTime::now_utc()
+        .format(&Rfc2822)
+        .unwrap_or_default();
+    let id = format!(
+        "{}@{}",
+        uuid::Uuid::new_v4().simple(),
+        domain_of(&addr_of(&cfg.from))
+    );
     let mut m = String::new();
     m.push_str(&format!("From: {}\r\n", cfg.from));
     m.push_str(&format!("To: {}\r\n", to.join(", ")));
@@ -225,8 +278,19 @@ mod tests {
 
     #[test]
     fn message_has_crlf_headers_and_dot_stuffing() {
-        let cfg = SmtpConfig { host: "h".into(), port: 465, user: "u".into(), pass: "p".into(), from: "Bot <bot@mg.example.com>".into() };
-        let m = build_message(&cfg, &["a@x.com".into(), "b@y.com".into()], "Hi", "normal\n.leading dot");
+        let cfg = SmtpConfig {
+            host: "h".into(),
+            port: 465,
+            user: "u".into(),
+            pass: "p".into(),
+            from: "Bot <bot@mg.example.com>".into(),
+        };
+        let m = build_message(
+            &cfg,
+            &["a@x.com".into(), "b@y.com".into()],
+            "Hi",
+            "normal\n.leading dot",
+        );
         assert!(m.contains("From: Bot <bot@mg.example.com>\r\n"));
         assert!(m.contains("To: a@x.com, b@y.com\r\n"));
         assert!(m.contains("Subject: Hi\r\n"));

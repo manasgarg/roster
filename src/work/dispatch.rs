@@ -4,9 +4,9 @@
 //! gate). Runs beside the gateway in the same daemon, sharing the same on-disk
 //! state. See docs/supervisor-spec.md.
 
-use crate::run::boxed;
 use crate::action::gate;
 use crate::gateway::ledger;
+use crate::run::boxed;
 use crate::work::queue;
 use crate::work::trigger;
 use std::time::Duration;
@@ -81,18 +81,18 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
                     repo: r.clone(),
                     base: t.base.clone().unwrap_or_else(|| "main".into()),
                 });
-                let out = boxed::dispatch(
-                    &t.imp,
-                    context_task,
-                    &memory_context,
-                    t.ceiling_min,
-                    &t.id,
-                    &run_id,
-                    code.as_ref(),
-                    &t.knowledge_mode,
-                )
-                .await
-                .map_err(|e| e.to_string());
+                let spec = boxed::RunSpec {
+                    imp: &t.imp,
+                    run_id: &run_id,
+                    task_id: &t.id,
+                    ceiling_min: t.ceiling_min,
+                    code: code.as_ref(),
+                    run_context: &memory_context,
+                    knowledge_mode: &t.knowledge_mode,
+                };
+                let out = boxed::dispatch(spec, context_task)
+                    .await
+                    .map_err(|e| e.to_string());
                 (t, out)
             });
         }

@@ -23,7 +23,9 @@ pub fn resolve_prefix<'a>(
 }
 
 pub fn now_rfc3339() -> String {
-    time::OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_default()
+    time::OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_default()
 }
 
 pub fn now_ms() -> i64 {

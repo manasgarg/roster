@@ -2,9 +2,9 @@
 //! with no Git metadata. The trusted host validates additions and creates the
 //! commit in a serialized per-imp integration lane.
 
-use crate::run::runlog::KnowledgeRunRecord;
 use crate::imp::storage::KnowledgePolicy;
 use crate::paths;
+use crate::run::runlog::KnowledgeRunRecord;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -176,7 +176,12 @@ impl ValidatedChanges {
     }
 }
 
-pub fn provision(imp: &str, run_id: &str, requested_mode: &str, tainted: bool) -> Result<RunStorage, String> {
+pub fn provision(
+    imp: &str,
+    run_id: &str,
+    requested_mode: &str,
+    tainted: bool,
+) -> Result<RunStorage, String> {
     let imp = short_imp(imp);
     safe_component(imp, "imp")?;
     safe_component(run_id, "run id")?;
@@ -210,9 +215,7 @@ pub fn provision(imp: &str, run_id: &str, requested_mode: &str, tainted: bool) -
 
     let repo = ensure_repo(imp)?;
     let reorganization_lease = if mode == KnowledgeMode::Reorganization {
-        Some(acquire_lease(
-            &imp_dir(imp).join("reorganization.lock"),
-        )?)
+        Some(acquire_lease(&imp_dir(imp).join("reorganization.lock"))?)
     } else {
         None
     };
@@ -237,7 +240,11 @@ pub fn provision(imp: &str, run_id: &str, requested_mode: &str, tainted: bool) -
     fs::remove_dir_all(path.join(".git")).map_err(|error| error.to_string())?;
 
     let record_namespace = format!("n_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
-    let state = if mode == KnowledgeMode::Read { "read-only" } else { "active" };
+    let state = if mode == KnowledgeMode::Read {
+        "read-only"
+    } else {
+        "active"
+    };
     crate::run::runlog::attach_storage(
         run_id,
         Some(KnowledgeRunRecord {
@@ -313,7 +320,9 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
     let changes = match checkout.mode {
         // Unreachable: checkpoint() rejects read-only checkouts before here.
         KnowledgeMode::Read => {
-            return Err(CheckpointError::from("a read-only checkout does not checkpoint".to_string()))
+            return Err(CheckpointError::from(
+                "a read-only checkout does not checkpoint".to_string(),
+            ))
         }
         KnowledgeMode::Append => {
             let new_records = validate_append(
@@ -537,7 +546,8 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
 }
 
 pub fn quarantine(checkout: &Checkout, reason: &str) {
-    let _ = crate::run::runlog::update_knowledge(&checkout.run_id, "quarantined", None, Some(reason));
+    let _ =
+        crate::run::runlog::update_knowledge(&checkout.run_id, "quarantined", None, Some(reason));
     let _ = crate::imp::journal::append_required(
         &journal_imp(&checkout.imp),
         &checkout.run_id,
@@ -1065,7 +1075,7 @@ pub fn initialize(imp: &str) -> Result<String, String> {
     let imp = short_imp(imp);
     safe_component(imp, "imp")?;
     let repo = ensure_repo(imp)?;
-    Ok(head(&repo)?)
+    head(&repo)
 }
 
 pub fn repo_path(imp: &str) -> Result<PathBuf, String> {

@@ -4,7 +4,6 @@
 //! org-global scope. See docs/budget-spec.md.
 
 use crate::gateway::budget::{Limit, Window};
-use crate::paths;
 use crate::util::{now_ms, now_rfc3339};
 use serde_json::json;
 use std::collections::HashMap;
@@ -36,7 +35,7 @@ fn usage_path() -> std::path::PathBuf {
     #[cfg(test)]
     return std::env::temp_dir().join(format!("impyard-test-usage-{}.jsonl", std::process::id()));
     #[cfg(not(test))]
-    paths::usage_log()
+    crate::paths::usage_log()
 }
 
 /// A budget refusal: why, and when the window resets (for `Retry-After`).
@@ -48,7 +47,12 @@ pub struct Refusal {
 /// Would this call breach any limit? Checks the CURRENT balance (semantics: the
 /// call that crosses the line completes; the next one is refused). Returns the
 /// first breached limit's refusal, or None.
-pub fn check(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now: i64) -> Option<Refusal> {
+pub fn check(
+    subject: &str,
+    spend: &HashMap<String, f64>,
+    limits: &[Limit],
+    now: i64,
+) -> Option<Refusal> {
     let c = counters().lock().unwrap();
     for limit in limits {
         if !scope_applies(&limit.scope, subject) || !spend.contains_key(&limit.currency) {
@@ -89,7 +93,13 @@ pub fn over_any_limit(subject: &str, limits: &[Limit], now: i64) -> Option<Strin
             _ => 0.0,
         };
         if used >= limit.max {
-            return Some(format!("{} over {} cap ({:.4}/{:.4})", limit.currency, limit.window.label(), used, limit.max));
+            return Some(format!(
+                "{} over {} cap ({:.4}/{:.4})",
+                limit.currency,
+                limit.window.label(),
+                used,
+                limit.max
+            ));
         }
     }
     None
@@ -102,11 +112,17 @@ pub fn debit(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now:
     {
         let mut c = counters().lock().unwrap();
         for (currency, amount) in spend {
-            for limit in limits.iter().filter(|l| scope_applies(&l.scope, subject) && &l.currency == currency) {
+            for limit in limits
+                .iter()
+                .filter(|l| scope_applies(&l.scope, subject) && &l.currency == currency)
+            {
                 let ws = limit.window.start(now);
                 let ct = c
                     .entry(key(&limit.scope, currency, limit.window))
-                    .or_insert(Counter { window_start: ws, used: 0.0 });
+                    .or_insert(Counter {
+                        window_start: ws,
+                        used: 0.0,
+                    });
                 if ct.window_start != ws {
                     ct.window_start = ws;
                     ct.used = 0.0;
@@ -161,12 +177,18 @@ pub fn rehydrate(limits: &[Limit]) {
         let cur = ev.get("currency").and_then(|v| v.as_str()).unwrap_or("");
         let amt = ev.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let ts_ms = ev.get("ts_ms").and_then(|v| v.as_i64()).unwrap_or(0);
-        for limit in limits.iter().filter(|l| scope_applies(&l.scope, subj) && l.currency == cur) {
+        for limit in limits
+            .iter()
+            .filter(|l| scope_applies(&l.scope, subj) && l.currency == cur)
+        {
             let ws = limit.window.start(now);
             if ts_ms >= ws {
                 let ct = c
                     .entry(key(&limit.scope, cur, limit.window))
-                    .or_insert(Counter { window_start: ws, used: 0.0 });
+                    .or_insert(Counter {
+                        window_start: ws,
+                        used: 0.0,
+                    });
                 if ct.window_start != ws {
                     ct.window_start = ws;
                     ct.used = 0.0;
@@ -182,7 +204,12 @@ mod tests {
     use super::*;
 
     fn limit(currency: &str, window: Window, max: f64) -> Limit {
-        Limit { scope: "org".into(), currency: currency.into(), window, max }
+        Limit {
+            scope: "org".into(),
+            currency: currency.into(),
+            window,
+            max,
+        }
     }
 
     #[test]
@@ -195,7 +222,7 @@ mod tests {
         debit("org", &spend, &limits, now); // used = 1
         assert!(check("org", &spend, &limits, now).is_none());
         debit("org", &spend, &limits, now); // used = 2 (this call still went; it crossed)
-        // now at cap → next call refused
+                                            // now at cap → next call refused
         assert!(check("org", &spend, &limits, now).is_some());
     }
 
@@ -224,7 +251,7 @@ mod tests {
         let now = now_ms();
         debit("org/w1", &spend, &limits, now); // org counter = 1
         debit("org/w2", &spend, &limits, now); // org counter = 2 (crossed)
-        // a third call from any subject under org is now refused
+                                               // a third call from any subject under org is now refused
         assert!(check("org/w3", &spend, &limits, now).is_some());
     }
 }

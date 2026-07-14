@@ -85,9 +85,15 @@ pub fn now() -> String {
 /// removing any stale copy in the other directory (atomic move on transition).
 pub fn save(g: &Gate) -> Result<(), BErr> {
     let (dir, other) = if g.is_terminal() {
-        (paths::imp_gates_resolved_dir(&g.imp), paths::imp_gates_pending_dir(&g.imp))
+        (
+            paths::imp_gates_resolved_dir(&g.imp),
+            paths::imp_gates_pending_dir(&g.imp),
+        )
     } else {
-        (paths::imp_gates_pending_dir(&g.imp), paths::imp_gates_resolved_dir(&g.imp))
+        (
+            paths::imp_gates_pending_dir(&g.imp),
+            paths::imp_gates_resolved_dir(&g.imp),
+        )
     };
     std::fs::create_dir_all(&dir)?;
     let text = format!("{}\n", serde_json::to_string_pretty(g)?);
@@ -104,7 +110,9 @@ pub fn save(g: &Gate) -> Result<(), BErr> {
 pub fn load(id: &str) -> Option<Gate> {
     for imp in imp_dirs() {
         for sub in ["pending", "resolved"] {
-            if let Ok(s) = std::fs::read_to_string(imp.join("gates").join(sub).join(format!("{id}.json"))) {
+            if let Ok(s) =
+                std::fs::read_to_string(imp.join("gates").join(sub).join(format!("{id}.json")))
+            {
                 if let Ok(g) = serde_json::from_str::<Gate>(&s) {
                     return Some(g);
                 }
@@ -161,7 +169,10 @@ pub fn for_imp(imp: &str) -> Vec<Gate> {
 /// Still-pending gates filed by a given task's run (the supervisor uses this to
 /// decide whether a finished task needs review or is done).
 pub fn pending_for_task(task_id: &str) -> Vec<Gate> {
-    list_pending().into_iter().filter(|g| g.task_id == task_id).collect()
+    list_pending()
+        .into_iter()
+        .filter(|g| g.task_id == task_id)
+        .collect()
 }
 
 /// A (imp, intent)'s gate history as (executed, denied) — the numbers the
@@ -169,7 +180,10 @@ pub fn pending_for_task(task_id: &str) -> Vec<Gate> {
 pub fn history(imp: &str, intent: &str) -> (u32, u32) {
     let mut executed = 0;
     let mut denied = 0;
-    for g in list_all().into_iter().filter(|g| g.imp == imp && g.intent == intent) {
+    for g in list_all()
+        .into_iter()
+        .filter(|g| g.imp == imp && g.intent == intent)
+    {
         match g.state.as_str() {
             "executed" => executed += 1,
             "denied" => denied += 1,

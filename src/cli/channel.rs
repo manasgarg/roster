@@ -4,10 +4,11 @@
 //! channel's are content-only). Everything else is tuning, through one uniform
 //! `set <id> <key> <value>`. The Discord `/channel …` slash commands map here.
 
-use crate::util::BErr;
 use crate::channel::discord::{self, ChannelSettings};
+use crate::util::BErr;
 
-const SET_KEYS: &str = "mode, memory, memory-inferred, memory-kinds, memory-retention, memory-notes, memory-chars";
+const SET_KEYS: &str =
+    "mode, memory, memory-inferred, memory-kinds, memory-retention, memory-notes, memory-chars";
 
 pub fn ls(json: bool) -> Result<(), BErr> {
     let map = discord::channel_settings_all();
@@ -39,34 +40,60 @@ pub fn show(channel_id: &str) -> Result<(), BErr> {
     let configured = map.contains_key(channel_id);
     println!(
         "channel   {channel_id}{}",
-        if configured { "" } else { "   (not configured — defaults)" }
+        if configured {
+            ""
+        } else {
+            "   (not configured — defaults)"
+        }
     );
-    println!("trust     {}", if s.trusted { "trusted" } else { "untrusted" });
-    println!("mode      {:<10} (all = every message wakes the imp; mention = @mention/DM only)", s.mode);
+    println!(
+        "trust     {}",
+        if s.trusted { "trusted" } else { "untrusted" }
+    );
+    println!(
+        "mode      {:<10} (all = every message wakes the imp; mention = @mention/DM only)",
+        s.mode
+    );
     println!("memory    {}", if s.memory_enabled { "on" } else { "off" });
     println!(
         "  inferred   {:<10} (auto = inferred notes apply; review = they gate)",
-        if s.memory_inferred_auto { "auto" } else { "review" }
+        if s.memory_inferred_auto {
+            "auto"
+        } else {
+            "review"
+        }
     );
     println!(
         "  kinds      {}",
-        s.memory_allowed_kinds.as_ref().map(|v| v.join(",")).unwrap_or_else(|| "default".into())
+        s.memory_allowed_kinds
+            .as_ref()
+            .map(|v| v.join(","))
+            .unwrap_or_else(|| "default".into())
     );
     println!(
         "  retention  {}",
-        s.memory_retention_days.map(|n| format!("{n} days")).unwrap_or_else(|| "default".into())
+        s.memory_retention_days
+            .map(|n| format!("{n} days"))
+            .unwrap_or_else(|| "default".into())
     );
     println!(
         "  recall     {} notes / {} chars",
-        s.memory_recall_max_notes.map(|n| n.to_string()).unwrap_or_else(|| "default".into()),
-        s.memory_recall_char_budget.map(|n| n.to_string()).unwrap_or_else(|| "default".into())
+        s.memory_recall_max_notes
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "default".into()),
+        s.memory_recall_char_budget
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "default".into())
     );
     Ok(())
 }
 
 pub fn set_trust(channel_id: &str, trusted: bool) -> Result<(), BErr> {
     discord::set_channel_trust(channel_id, trusted);
-    println!("channel {channel_id} → {}", if trusted { "trusted" } else { "untrusted" });
+    println!(
+        "channel {channel_id} → {}",
+        if trusted { "trusted" } else { "untrusted" }
+    );
     Ok(())
 }
 
@@ -111,21 +138,30 @@ pub fn set(channel_id: &str, key: &str, value: &str) -> Result<(), BErr> {
         "memory-notes" => {
             let notes = budget_value(value)?;
             let current = current_settings(channel_id);
-            discord::set_channel_memory_budget(channel_id, notes, current.memory_recall_char_budget);
+            discord::set_channel_memory_budget(
+                channel_id,
+                notes,
+                current.memory_recall_char_budget,
+            );
         }
         "memory-chars" => {
             let chars = budget_value(value)?;
             let current = current_settings(channel_id);
             discord::set_channel_memory_budget(channel_id, current.memory_recall_max_notes, chars);
         }
-        other => return Err(format!("unknown channel setting \"{other}\" (keys: {SET_KEYS})").into()),
+        other => {
+            return Err(format!("unknown channel setting \"{other}\" (keys: {SET_KEYS})").into())
+        }
     }
     println!("channel {channel_id} → {key} {value}");
     Ok(())
 }
 
 fn current_settings(channel_id: &str) -> ChannelSettings {
-    discord::channel_settings_all().get(channel_id).cloned().unwrap_or_default()
+    discord::channel_settings_all()
+        .get(channel_id)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn memory_summary(s: &ChannelSettings) -> String {
@@ -134,11 +170,24 @@ fn memory_summary(s: &ChannelSettings) -> String {
     }
     format!(
         "on ({}, kinds={}, retention={}, recall={}/{})",
-        if s.memory_inferred_auto { "auto" } else { "review" },
-        s.memory_allowed_kinds.as_ref().map(|v| v.join(",")).unwrap_or_else(|| "default".into()),
-        s.memory_retention_days.map(|n| format!("{n}d")).unwrap_or_else(|| "default".into()),
-        s.memory_recall_max_notes.map(|n| n.to_string()).unwrap_or_else(|| "default".into()),
-        s.memory_recall_char_budget.map(|n| n.to_string()).unwrap_or_else(|| "default".into()),
+        if s.memory_inferred_auto {
+            "auto"
+        } else {
+            "review"
+        },
+        s.memory_allowed_kinds
+            .as_ref()
+            .map(|v| v.join(","))
+            .unwrap_or_else(|| "default".into()),
+        s.memory_retention_days
+            .map(|n| format!("{n}d"))
+            .unwrap_or_else(|| "default".into()),
+        s.memory_recall_max_notes
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "default".into()),
+        s.memory_recall_char_budget
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "default".into()),
     )
 }
 
@@ -174,7 +223,11 @@ pub fn parse_memory_kinds(value: &str) -> Result<Option<Vec<String>>, BErr> {
         .map(String::from)
         .collect();
     if kinds.is_empty() || kinds.iter().any(|kind| !allowed.contains(&kind.as_str())) {
-        return Err(format!("memory kinds must be a comma-separated subset of {}", allowed.join(",")).into());
+        return Err(format!(
+            "memory kinds must be a comma-separated subset of {}",
+            allowed.join(",")
+        )
+        .into());
     }
     Ok(Some(kinds))
 }

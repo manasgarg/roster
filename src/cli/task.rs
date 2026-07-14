@@ -32,7 +32,11 @@ pub fn add(
             .into());
         }
     }
-    let knowledge_mode = if reorganize { "reorganization" } else { "append" };
+    let knowledge_mode = if reorganize {
+        "reorganization"
+    } else {
+        "append"
+    };
     let kind = if reorganize {
         "reorganization"
     } else if repo.is_some() {
@@ -60,7 +64,8 @@ pub fn add(
 
 fn resolve(id_or_prefix: &str) -> Result<queue::Task, BErr> {
     let tasks = queue::list_all();
-    let id = crate::util::resolve_prefix("task", id_or_prefix, tasks.iter().map(|t| t.id.as_str()))?;
+    let id =
+        crate::util::resolve_prefix("task", id_or_prefix, tasks.iter().map(|t| t.id.as_str()))?;
     Ok(tasks.into_iter().find(|t| t.id == id).unwrap())
 }
 

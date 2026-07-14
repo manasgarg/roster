@@ -55,18 +55,16 @@ pub async fn run_once(imp: &str, ceiling_min: f64, prompt: String) -> Result<(),
             return Err(error.into());
         }
     };
-    let (run_id, run_dir, ended_by, exit_code) = match run_box(
-        &compiled,
+    let spec = RunSpec {
+        imp: &imp,
+        run_id: &run_id,
+        task_id: "",
         ceiling_min,
-        &imp,
-        "",
-        &run_id,
-        None,
-        &run_context,
-        "append",
-    )
-    .await
-    {
+        code: None,
+        run_context: &run_context,
+        knowledge_mode: "append",
+    };
+    let (run_id, run_dir, ended_by, exit_code) = match run_box(&compiled, &spec).await {
         Ok(outcome) => outcome,
         Err(error) => {
             crate::run::runlog::fail(&run_id);
@@ -120,58 +118,54 @@ pub struct SessionMessage {
     pub context: crate::imp::memory::RunContext,
 }
 
+/// Everything one boxed run needs to know about itself. Bundled because the
+/// dispatch → run → provision chain threads the same facts all the way down.
+pub struct RunSpec<'a> {
+    pub imp: &'a str,
+    pub run_id: &'a str,
+    /// Empty for runs with no queued task behind them.
+    pub task_id: &'a str,
+    pub ceiling_min: f64,
+    pub code: Option<&'a CodeSpec>,
+    pub run_context: &'a crate::imp::memory::RunContext,
+    pub knowledge_mode: &'a str,
+}
+
 /// Run one box session for a queued task (the supervisor's entry point). Same
 /// machinery as the CLI, but returns the outcome instead of exiting, and passes
 /// the task id into the box so proposed actions carry their provenance.
 pub async fn dispatch(
-    imp: &str,
+    spec: RunSpec<'_>,
     task: crate::imp::context::TaskInput,
-    run_context: &crate::imp::memory::RunContext,
-    ceiling_min: f64,
-    task_id: &str,
-    run_id: &str,
-    code: Option<&CodeSpec>,
-    knowledge_mode: &str,
 ) -> Result<Outcome, BErr> {
-    let kind = if knowledge_mode == "reorganization" {
+    let kind = if spec.knowledge_mode == "reorganization" {
         "reorganization"
-    } else if code.is_some() {
+    } else if spec.code.is_some() {
         "code"
     } else {
         "task"
     };
-    crate::run::runlog::start(run_id, imp, kind, Some(task_id))?;
+    crate::run::runlog::start(spec.run_id, spec.imp, kind, Some(spec.task_id))?;
     let request = crate::imp::context::ContextRequest {
-        run_id: run_id.to_string(),
+        run_id: spec.run_id.to_string(),
         phase: crate::imp::context::ContextPhase::Start,
         surface: crate::imp::context::RunSurface::QueuedTask,
-        imp: imp.to_string(),
-        run_context: run_context.clone(),
+        imp: spec.imp.to_string(),
+        run_context: spec.run_context.clone(),
         task: Some(task),
         message: None,
     };
     let compiled = match crate::imp::context::compile_and_trace(&request) {
         Ok(compiled) => compiled,
         Err(error) => {
-            crate::run::runlog::fail(run_id);
+            crate::run::runlog::fail(spec.run_id);
             return Err(error.into());
         }
     };
-    let (run_id, _run_dir, ended_by, exit_code) = match run_box(
-        &compiled,
-        ceiling_min,
-        imp,
-        task_id,
-        run_id,
-        code,
-        run_context,
-        knowledge_mode,
-    )
-    .await
-    {
+    let (run_id, _run_dir, ended_by, exit_code) = match run_box(&compiled, &spec).await {
         Ok(outcome) => outcome,
         Err(error) => {
-            crate::run::runlog::fail(run_id);
+            crate::run::runlog::fail(spec.run_id);
             return Err(error);
         }
     };
@@ -220,14 +214,10 @@ pub fn new_run_id() -> String {
 
 async fn run_box(
     compiled: &crate::imp::context::CompiledContext,
-    ceiling_min: f64,
-    imp: &str,
-    task_id: &str,
-    run_id: &str,
-    code: Option<&CodeSpec>,
-    run_context: &crate::imp::memory::RunContext,
-    knowledge_mode: &str,
+    spec: &RunSpec<'_>,
 ) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
+    let (imp, run_id, task_id, ceiling_min) =
+        (spec.imp, spec.run_id, spec.task_id, spec.ceiling_min);
     let Provisioned {
         mut args,
         identity_file,
@@ -240,9 +230,9 @@ async fn run_box(
         imp,
         run_id,
         task_id,
-        code,
-        run_context,
-        knowledge_mode,
+        spec.code,
+        spec.run_context,
+        spec.knowledge_mode,
         Some(ceiling_min),
     )
     .await?;
@@ -475,7 +465,11 @@ pub async fn run_session(
 fn pi_prefix(engine: &Engine, mode: &str, session_dir: &Path) -> Result<Vec<String>, BErr> {
     let mut v = match engine {
         // The wrapper supplies --no-extensions and the baked extension list.
-        Engine::Baked => vec!["/opt/impyard/engine/run-pi".into(), "--mode".into(), mode.into()],
+        Engine::Baked => vec![
+            "/opt/impyard/engine/run-pi".into(),
+            "--mode".into(),
+            mode.into(),
+        ],
         Engine::Mounted(repo) => {
             let mut v = vec![
                 "node".into(),
@@ -555,7 +549,8 @@ async fn provision_box(
     let pihome = run_dir.join(".pihome");
     std::fs::create_dir_all(&workspace)?;
     std::fs::create_dir_all(&session)?;
-    let storage = crate::imp::knowledge::provision(imp, run_id, knowledge_mode, run_context.tainted())?;
+    let storage =
+        crate::imp::knowledge::provision(imp, run_id, knowledge_mode, run_context.tainted())?;
 
     // Code task: a writable git worktree on a fresh per-run branch.
     let worktree: Option<PathBuf> = match code {
@@ -633,7 +628,11 @@ async fn provision_box(
         mount(&pihome),
     ]);
     if let Some(knowledge) = storage.knowledge.as_ref() {
-        let ro = if knowledge.mode == crate::imp::knowledge::KnowledgeMode::Read { ":ro" } else { "" };
+        let ro = if knowledge.mode == crate::imp::knowledge::KnowledgeMode::Read {
+            ":ro"
+        } else {
+            ""
+        };
         args.extend([
             "-v".into(),
             format!(
@@ -980,6 +979,9 @@ mod tests {
     fn cache_route_key_becomes_the_pi_session_id() {
         let mut args = vec!["node".into(), "pi".into()];
         append_cache_session_id(&mut args, "impyard-pc-abc123");
-        assert_eq!(args, vec!["node", "pi", "--session-id", "impyard-pc-abc123"]);
+        assert_eq!(
+            args,
+            vec!["node", "pi", "--session-id", "impyard-pc-abc123"]
+        );
     }
 }

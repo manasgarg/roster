@@ -5,10 +5,14 @@ use std::fs;
 
 pub fn run(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let ok = !name.is_empty()
-        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         && name.as_bytes()[0] != b'-';
     if !ok {
-        return Err(format!("imp name must be lowercase letters/numbers/hyphens: \"{name}\"").into());
+        return Err(
+            format!("imp name must be lowercase letters/numbers/hyphens: \"{name}\"").into(),
+        );
     }
 
     let dir = paths::imp_dir(name);

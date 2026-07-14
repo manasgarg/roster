@@ -21,7 +21,11 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
         for e in &errors {
             eprintln!("config: {e}");
         }
-        return Err(format!("invalid config ({} error(s)) — fix and retry, or: impyard server validate", errors.len()).into());
+        return Err(format!(
+            "invalid config ({} error(s)) — fix and retry, or: impyard server validate",
+            errors.len()
+        )
+        .into());
     }
 
     if let Ok(c) = crate::config::snapshot() {
@@ -46,7 +50,9 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
             eprintln!("listeners: none configured (an imp opts in via [channels] in its imp.toml)");
         }
         for (imp, platform, credential) in plan {
-            listeners.push(tokio::spawn(crate::channel::listen::supervised(imp, platform, credential)));
+            listeners.push(tokio::spawn(crate::channel::listen::supervised(
+                imp, platform, credential,
+            )));
         }
     }
 
@@ -78,9 +84,15 @@ pub fn validate() -> Result<(), BErr> {
             );
             match &c.engine_dir {
                 Some(dir) if !dir.join("box").is_dir() => {
-                    println!("warning: [engine] dir {} has no box/ — sessions will fail", dir.display())
+                    println!(
+                        "warning: [engine] dir {} has no box/ — sessions will fail",
+                        dir.display()
+                    )
                 }
-                Some(dir) => println!("engine: dev override {} (mounted over the baked engine)", dir.display()),
+                Some(dir) => println!(
+                    "engine: dev override {} (mounted over the baked engine)",
+                    dir.display()
+                ),
                 None => println!("engine: baked into the impyard-box image"),
             }
             if !c.connections.is_empty() {
@@ -113,7 +125,10 @@ pub async fn status(json: bool) -> Result<(), BErr> {
     // Config parses? (It loads live — no staleness concept.)
     let config = match crate::config::load() {
         Ok(c) => format!("valid ({} imp(s))", c.imps.len()),
-        Err(errors) => format!("INVALID — {} error(s); run: impyard server validate", errors.len()),
+        Err(errors) => format!(
+            "INVALID — {} error(s); run: impyard server validate",
+            errors.len()
+        ),
     };
 
     let mut queue_by_state: BTreeMap<String, usize> = BTreeMap::new();
@@ -173,7 +188,11 @@ pub async fn status(json: bool) -> Result<(), BErr> {
         for (imp, pid, since, alive) in listeners {
             println!(
                 "listener   {imp}: {} (pid {pid}, since {since})",
-                if alive { "up" } else { "STALE LOCK — process gone" }
+                if alive {
+                    "up"
+                } else {
+                    "STALE LOCK — process gone"
+                }
             );
         }
     }

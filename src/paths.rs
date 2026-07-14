@@ -150,6 +150,9 @@ pub fn decisions_log() -> PathBuf {
     audit_dir().join("decisions.jsonl")
 }
 
+// Test builds redirect the ledger to a temp file (see gateway::ledger), so the
+// real audit path goes unused there.
+#[cfg_attr(test, allow(dead_code))]
 pub fn usage_log() -> PathBuf {
     audit_dir().join("usage.jsonl")
 }

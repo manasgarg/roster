@@ -11,11 +11,11 @@ mod cli;
 mod config;
 mod credential;
 mod gateway;
+mod imp;
 mod paths;
 mod run;
 mod util;
 mod work;
-mod imp;
 
 use clap::{Parser, Subcommand};
 
@@ -140,17 +140,11 @@ enum ChannelCmd {
         json: bool,
     },
     /// One channel's settings, readable
-    Show {
-        channel_id: String,
-    },
+    Show { channel_id: String },
     /// Trust a channel: its participants may administer; replies need no gate
-    Trust {
-        channel_id: String,
-    },
+    Trust { channel_id: String },
     /// Untrust a channel: participants are content-only
-    Untrust {
-        channel_id: String,
-    },
+    Untrust { channel_id: String },
     /// Tune a setting: mode, memory, memory-inferred, memory-kinds,
     /// memory-retention, memory-notes, memory-chars
     Set {
@@ -164,9 +158,7 @@ enum ChannelCmd {
 enum VaultCmd {
     /// Create a credential via a provider's login flow (no argument: list providers)
     #[command(after_help = credential::connect::provider_help())]
-    Connect {
-        provider: Option<String>,
-    },
+    Connect { provider: Option<String> },
     /// Import an existing pi login into the vault
     Sync,
     /// Credential names and types (never values)
@@ -179,9 +171,7 @@ enum VaultCmd {
 #[derive(Subcommand)]
 enum ImpCmd {
     /// Scaffold an imp: spec, identity, knowledge repo
-    Init {
-        name: String,
-    },
+    Init { name: String },
     /// List imps and their state
     Ls {
         #[arg(long)]
@@ -222,9 +212,7 @@ enum ImpCmd {
     #[command(subcommand)]
     Memory(MemoryCmd),
     /// Print the knowledge repo path (then use git)
-    Knowledge {
-        name: String,
-    },
+    Knowledge { name: String },
 }
 
 #[derive(Subcommand)]
@@ -423,11 +411,7 @@ async fn main() {
                 VaultCmd::Ls { json } => cli::vault::ls(json),
             },
             ServerCmd::Runs(cmd) => match cmd {
-                RunsCmd::Ls {
-                    imp,
-                    limit,
-                    json,
-                } => cli::runs::ls(imp.as_deref(), limit, json),
+                RunsCmd::Ls { imp, limit, json } => cli::runs::ls(imp.as_deref(), limit, json),
                 RunsCmd::Show { run } => cli::runs::show(&run),
                 RunsCmd::Context { run, all } => cli::runs::context(&run, all),
                 RunsCmd::Recall { run } => cli::runs::recall(&run),
@@ -462,11 +446,9 @@ async fn main() {
                     &base,
                     prompt.join(" "),
                 ),
-                TaskCmd::Relay {
-                    imp,
-                    from,
-                    message,
-                } => channel::relay::run(&imp, from.as_deref(), message.join(" ")),
+                TaskCmd::Relay { imp, from, message } => {
+                    channel::relay::run(&imp, from.as_deref(), message.join(" "))
+                }
                 TaskCmd::Ls { json } => cli::task::ls(json),
                 TaskCmd::Show { id } => cli::task::show(&id),
                 TaskCmd::Requeue { id } => cli::task::requeue(&id),

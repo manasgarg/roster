@@ -31,7 +31,11 @@ All assets are flat SVG and render crisp at any size.
 
 ## Type
 
-The wordmark is set in a monospace face to keep the CLI feel — the lockups
-reference a JetBrains Mono → system-monospace stack. Swap in a licensed
-monospace and convert the wordmark to outlines before shipping a final,
-render-independent asset.
+The wordmark is set in **JetBrains Mono Bold** to keep the CLI feel. In the
+lockups it is **converted to vector outlines**, so the SVGs carry no font
+dependency and render identically everywhere — GitHub, browsers, design
+tools — with no font to install.
+
+JetBrains Mono is free, under the [SIL Open Font License 1.1](https://github.com/JetBrains/JetBrainsMono/blob/master/OFL.txt).
+To re-typeset the wordmark (different text or weight), set it in JetBrains
+Mono and flatten the text to a path.

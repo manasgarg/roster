@@ -7,7 +7,7 @@ session scope (mrkdwn), `message_user` Slack-DM fallback. Deferred as
 specced: interactions/slash commands, webhook mode, multi-workspace,
 reaction acks.
 
-**Two different "Slack integrations" — one already exists.** A worker calling
+**Two different "Slack integrations" — one already exists.** An imp calling
 the Slack *API* as a capability (read a channel's history, look up a user) is
 a **service connection** and shipped with docs/connections.md — it needs only
 a catalog entry. This spec is the other thing: **Slack as a channel** — the
@@ -24,7 +24,7 @@ and get different names.
 ## Connection mode: Socket Mode
 
 Slack offers two inbound transports. **Events API webhooks** require a public
-HTTPS endpoint — rejected: roster's posture is outbound-only dialing (the
+HTTPS endpoint — rejected: impyard's posture is outbound-only dialing (the
 Discord listener dials a websocket out; nothing listens on the internet).
 **Socket Mode** matches: `apps.connections.open` returns a wss URL, events
 arrive as envelopes over the websocket, each acked within ~3s. Reconnect on
@@ -59,8 +59,8 @@ trust designation, response mode, memory settings, purpose, history recording
 under `data/channels/<id>/` — Slack ids (`C…`, `D…`) drop straight in. Same
 authority rules: a DM party is trusted; a workspace member in an untrusted
 channel is content-only; `server channel trust <id>` is the escalation.
-One credential serves one worker (same validation as Discord — a second
-worker on the same bot would double-file every message).
+One credential serves one imp (same validation as Discord — a second
+imp on the same bot would double-file every message).
 
 **What is new code:**
 
@@ -68,18 +68,18 @@ worker on the same bot would double-file every message).
   ack, reconnect), event → `handle_message` (same shape: record history,
   route to warm session or file a relay task), Web API helpers.
 - `listen.rs`: the listener plan gains the platform dimension —
-  `[channels]` entries become `(worker, platform, credential)`; supervision
+  `[channels]` entries become `(imp, platform, credential)`; supervision
   is unchanged.
 - `action/mod.rs`: `slack_send` executor + trusted-channel auto-send (the
   `discord_channel_trusted` check generalizes: same settings store).
 - `box/extensions/actions.ts`: `slack_send` tool mirroring `discord_send`
   (compose full message; may auto-send in trusted channels, else gates).
-- `worker/context.rs`: the Discord session scope text generalizes to a
+- `imp/context.rs`: the Discord session scope text generalizes to a
   channel-session scope parameterized by platform + send-tool name, plus one
   Slack-specific line: output is mrkdwn (`*bold*`, `<url|label>` links), not
   Markdown.
 - `message_user` executor: today it falls back to a Discord DM; it learns to
-  try whichever channel credential the worker is bound to.
+  try whichever channel credential the imp is bound to.
 
 **Deliberately deferred:** slash commands and interactions (Discord's
 `/purpose` etc. — purpose edits stay CLI/trusted-message only for Slack v1);
@@ -90,7 +90,7 @@ Events API webhook mode; multi-workspace installs; emoji-reaction acks.
 1. **Provider + credential** (S): `auth = "slack"` connect flow (two tokens),
    `slack-api` rename in the catalog.
 2. **Inbound, tasks only** (M): Socket Mode client, history recording, relay
-   task filing. A worker can be written to in Slack; it answers via gates.
+   task filing. An imp can be written to in Slack; it answers via gates.
 3. **`slack_send` + trusted channels** (S): executor, action grant, trust
    auto-send. Conversational loop closes.
 4. **Warm sessions** (M): route `message` events into live sessions like

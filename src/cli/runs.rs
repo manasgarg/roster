@@ -1,20 +1,20 @@
-//! `roster server runs` inspection — every execution, including warm Discord
+//! `impyard server runs` inspection — every execution, including warm Discord
 //! sessions that intentionally bypass the durable task queue.
 
 use crate::util::BErr;
-use crate::worker::context as context_compiler;
-use crate::worker::journal;
-use crate::worker::memory;
+use crate::imp::context as context_compiler;
+use crate::imp::journal;
+use crate::imp::memory;
 use crate::work::queue;
 use crate::run::runlog;
 
-pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
+pub fn ls(imp: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
     if limit == 0 {
         return Err("--limit wants a positive integer".into());
     }
     let runs: Vec<_> = runlog::list()
         .into_iter()
-        .filter(|run| worker.map(|w| run.worker == w).unwrap_or(true))
+        .filter(|run| imp.map(|w| run.imp == w).unwrap_or(true))
         .take(limit)
         .collect();
     if json {
@@ -22,7 +22,7 @@ pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
             .iter()
             .map(|run| {
                 serde_json::json!({
-                    "id": run.id, "worker": run.worker, "kind": run.kind,
+                    "id": run.id, "imp": run.imp, "kind": run.kind,
                     "state": run.state, "started_at": run.started_at,
                     "ended_at": run.ended_at, "task_id": run.task_id,
                     "channel_id": run.channel_id,
@@ -38,7 +38,7 @@ pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
     }
     println!(
         "{:<29}  {:<10}  {:<9}  {:<10}  {:<17}  SCOPE/TASK",
-        "RUN", "WORKER", "KIND", "STATE", "STARTED (UTC)"
+        "RUN", "IMP", "KIND", "STATE", "STARTED (UTC)"
     );
     for run in runs {
         let scope = run
@@ -50,7 +50,7 @@ pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
         println!(
             "{:<29}  {:<10}  {:<9}  {:<10}  {:<17}  {}",
             run.id,
-            run.worker,
+            run.imp,
             run.kind,
             run.state,
             short_time(&run.started_at),
@@ -63,7 +63,7 @@ pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
 pub fn show(id: &str) -> Result<(), BErr> {
     let run = runlog::resolve(id).map_err(|e| -> BErr { e.into() })?;
     println!("run       {}", run.id);
-    println!("worker    {}", run.worker);
+    println!("imp    {}", run.imp);
     println!("kind      {}", run.kind);
     println!("state     {}", run.state);
     println!("started   {}", run.started_at);
@@ -123,10 +123,10 @@ pub fn show(id: &str) -> Result<(), BErr> {
         }
     }
 
-    let subject = if run.worker == "?" {
+    let subject = if run.imp == "?" {
         None
     } else {
-        Some(format!("org/{}", run.worker))
+        Some(format!("org/{}", run.imp))
     };
     let events = subject
         .as_deref()
@@ -221,7 +221,7 @@ pub fn show(id: &str) -> Result<(), BErr> {
                 if blocks.is_empty() { "-" } else { &blocks }
             );
         }
-        println!("  exact prompts: roster server runs context {}", run.id);
+        println!("  exact prompts: impyard server runs context {}", run.id);
     }
 
     let files = runlog::files(&run.run_dir);
@@ -294,7 +294,7 @@ pub fn context(id: &str, all: bool) -> Result<(), BErr> {
     Ok(())
 }
 
-/// The memory recall trace for one session (was: `roster memory explain`).
+/// The memory recall trace for one session (was: `impyard memory explain`).
 pub fn recall(id: &str) -> Result<(), BErr> {
     let run = runlog::resolve(id).map_err(|e| -> BErr { e.into() })?;
     let trace = memory::recall_trace(&run.id);

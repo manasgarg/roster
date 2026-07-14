@@ -8,4 +8,4 @@ target/
 .env.*
 
 # No config or runtime state lives in this repo — the deployment follows the
-# XDG base dirs (see docs/layout.md). ROSTER_ROOT gives a self-contained root.
+# XDG base dirs (see docs/layout.md). IMPYARD_ROOT gives a self-contained root.

@@ -34,7 +34,7 @@ fn usage_path() -> std::path::PathBuf {
     // Unit tests exercise debit(); they must never append to the real audit
     // log of a deployment on the same machine.
     #[cfg(test)]
-    return std::env::temp_dir().join(format!("roster-test-usage-{}.jsonl", std::process::id()));
+    return std::env::temp_dir().join(format!("impyard-test-usage-{}.jsonl", std::process::id()));
     #[cfg(not(test))]
     paths::usage_log()
 }
@@ -77,7 +77,7 @@ pub fn check(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now:
 
 /// Is the subject already at/over any limit that applies to it (any currency)?
 /// The supervisor uses this for D6's soft stop: proactive work is skipped when
-/// the worker is tapped out; admin-filed/chat work is never checked here.
+/// the imp is tapped out; admin-filed/chat work is never checked here.
 pub fn over_any_limit(subject: &str, limits: &[Limit], now: i64) -> Option<String> {
     let c = counters().lock().unwrap();
     for limit in limits {
@@ -127,7 +127,7 @@ pub fn debit(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now:
     }
 }
 
-/// Current balance per limit — for inspection (`server status`, `worker show`).
+/// Current balance per limit — for inspection (`server status`, `imp show`).
 /// A fresh CLI process must call `rehydrate()` first.
 pub fn balances(limits: &[Limit], now: i64) -> Vec<(Limit, f64)> {
     let c = counters().lock().unwrap();
@@ -213,12 +213,12 @@ mod tests {
         assert!(scope_applies("org", "org/team/yuko"));
         assert!(scope_applies("org/team", "org/team/yuko"));
         assert!(!scope_applies("org/team", "org/other"));
-        assert!(!scope_applies("org/yuko", "org")); // a worker limit doesn't govern the org
+        assert!(!scope_applies("org/yuko", "org")); // an imp limit doesn't govern the org
     }
 
     #[test]
     fn org_aggregate_rolls_up_across_subjects() {
-        // One org-wide cap; two different workers draw against the same counter.
+        // One org-wide cap; two different imps draw against the same counter.
         let limits = vec![limit("rollup_cur", Window::Hour, 2.0)];
         let spend: HashMap<String, f64> = [("rollup_cur".to_string(), 1.0)].into();
         let now = now_ms();

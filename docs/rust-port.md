@@ -3,7 +3,7 @@
 **Superseded by D20 (2026-07-09): the *entire* trusted host-side is now Rust.**
 The gateway port (P0–P4) below was the first half; D20 then folded the
 orchestration (box runner, lockdown, `create`/`deploy`/`connect`/`vault-sync`)
-into the same `roster` binary and retired all of `src/*.ts`. TypeScript now
+into the same `impyard` binary and retired all of `src/*.ts`. TypeScript now
 lives only inside the box (pi + extensions). One binary, one schema set — the
 D17 "Rust gateway / TS orchestration" split (referenced below) no longer holds.
 
@@ -37,11 +37,11 @@ premise. CEL has a mature Rust implementation (`cel-interpreter`). See D17/D18.
 | metering, ledgers, budgets | |
 
 Seam: the **container contract** (§7.3) and the **JSON policy/config files** +
-`~/.roster/{ca,vault}` layout — all already language-agnostic.
+`~/.impyard/{ca,vault}` layout — all already language-agnostic.
 
 ## What carries over unchanged
 
-Policy/config file formats, `~/.roster/{ca,vault}` and `runs/*.jsonl` layouts,
+Policy/config file formats, `~/.impyard/{ca,vault}` and `runs/*.jsonl` layouts,
 the box runner's behavior, every design doc/spec (box, judge, injection,
 budget), and all invariants (§5). The port changes the *implementation* of one
 process behind unchanged interfaces.
@@ -57,7 +57,7 @@ and later `cel-interpreter`.
 ## Port increments (each builds + is verified before the next)
 
 - **P0 — scaffold + CA/leaf minting (rcgen).** `gateway/` cargo binary; ensure
-  the CA at `~/.roster/ca`, mint per-host leaf certs. Unit test: a minted leaf
+  the CA at `~/.impyard/ca`, mint per-host leaf certs. Unit test: a minted leaf
   carries the right SAN and verifies against the CA. *(This is where the CA's
   ownership moves: the Rust gateway generates/owns it; `box.ts` stops
   generating and just mounts the known `ca.crt` path.)*
@@ -69,7 +69,7 @@ and later `cel-interpreter`.
   matcher — CEL comes with metering, D18), default-deny, first-match, wildcard
   host / glob tool / MCP lifting, `tunnel` escape hatch, decision log to
   `runs/decisions.jsonl`.
-- **P3 — vault + injection + OAuth refresh parity.** Read `~/.roster/vault`,
+- **P3 — vault + injection + OAuth refresh parity.** Read `~/.impyard/vault`,
   render + inject auth headers, refresh-if-expired (single-flight, atomic
   write), `runs/credentials.jsonl`, fail-closed.
 - **P4 — cut over.** Point `box.ts` / `lockdown.ts` at the Rust gateway binary

@@ -1,4 +1,4 @@
-# Worker knowledge repository (implemented specification)
+# Imp knowledge repository (implemented specification)
 
 **Status: implemented.** This document describes the system that currently
 ships. It does not specify a scratch store, governed download archive, or
@@ -6,16 +6,16 @@ publication system.
 
 ## Outcome
 
-Each worker has one private Git repository for durable knowledge about the
+Each imp has one private Git repository for durable knowledge about the
 world. Each run receives an isolated plain checkout of that repository. The
-worker may add research notes concurrently with other runs, while the trusted
+imp may add research notes concurrently with other runs, while the trusted
 host validates and integrates changes.
 
 Temporary files are ordinary container files. Pi uses `/tmp` for downloads,
 extracted documents, intermediate calculations, and other disposable work.
-`/tmp` is not a Roster storage product and is not a durable content address.
+`/tmp` is not a Impyard storage product and is not a durable content address.
 
-Interaction memory remains separate. It stores continuity about workers,
+Interaction memory remains separate. It stores continuity about imps,
 channels, and users; research sources and world knowledge belong in the Git
 repository.
 
@@ -25,14 +25,14 @@ There is currently no publication blob store.
 
 | Surface | Purpose | Lifetime |
 | --- | --- | --- |
-| `/opt/roster/knowledge` | Structured world knowledge | Integrated into the worker's Git repository on a clean exit |
+| `/opt/impyard/knowledge` | Structured world knowledge | Integrated into the imp's Git repository on a clean exit |
 | `/tmp` | Downloads and disposable working files | Exists only for the life of the container |
-| `memory/<worker>.jsonl` | Worker, channel, and user interaction continuity | Durable interaction memory |
+| `memory/<imp>.jsonl` | Imp, channel, and user interaction continuity | Durable interaction memory |
 | Journal and run records | Activity, validation, and Git commit pointers | Durable operational history |
 
 The systems do not copy content into one another automatically. In particular:
 
-- temporary files do not become knowledge unless the worker writes a valid
+- temporary files do not become knowledge unless the imp writes a valid
   knowledge record;
 - knowledge files do not enter interaction memory;
 - interaction memories do not become research notes;
@@ -40,10 +40,10 @@ The systems do not copy content into one another automatically. In particular:
 
 ## Canonical repository
 
-Roster creates one bare Git repository per worker when the worker is created:
+Impyard creates one bare Git repository per imp when the imp is created:
 
 ```text
-knowledge/<worker>/repo.git
+knowledge/<imp>/repo.git
 ```
 
 The initial branch is `main`. The initial tree contains:
@@ -58,7 +58,7 @@ README.md
 `organization/` contains mutable indexes, topic maps, and navigation maintained
 by an exclusive reorganization job.
 
-The repository is not mounted into a worker container. A run receives a plain
+The repository is not mounted into an imp container. A run receives a plain
 checkout without `.git`, hooks, refs, credentials, or access to the canonical
 repository.
 
@@ -73,12 +73,12 @@ runs/<run-id>/knowledge/
 and mounts it at:
 
 ```text
-/opt/roster/knowledge
+/opt/impyard/knowledge
 ```
 
 The host records:
 
-- worker;
+- imp;
 - run and task identifiers;
 - base commit;
 - write mode;
@@ -88,10 +88,10 @@ The host records:
 The container receives these values through trusted environment variables:
 
 ```text
-ROSTER_KNOWLEDGE_DIR=/opt/roster/knowledge
-ROSTER_KNOWLEDGE_BASE=<commit>
-ROSTER_KNOWLEDGE_MODE=append|reorganization
-ROSTER_RECORD_NAMESPACE=<namespace>
+IMPYARD_KNOWLEDGE_DIR=/opt/impyard/knowledge
+IMPYARD_KNOWLEDGE_BASE=<commit>
+IMPYARD_KNOWLEDGE_MODE=append|reorganization
+IMPYARD_RECORD_NAMESPACE=<namespace>
 ```
 
 ## Append mode
@@ -138,28 +138,28 @@ remain available.
 
 Runs start from independent snapshots and may finish in any order. The trusted
 host validates a run against its recorded base, then enters a serialized
-per-worker integration lane.
+per-imp integration lane.
 
 Valid append runs add unique paths, so their commits can be replayed onto the
 latest `main` without textual merge conflicts. A path collision or invariant
 failure leaves canonical `main` unchanged and preserves the candidate for owner
 repair.
 
-The trusted commit message records worker, run, task, channel, base commit, and
+The trusted commit message records imp, run, task, channel, base commit, and
 write mode. Git therefore records the history of how knowledge was added and
 organized.
 
 ## Reorganization mode
 
 A queue task created with `--reorganize` obtains one exclusive reorganization
-lease for the worker. It may:
+lease for the imp. It may:
 
 - rebuild files below `organization/`;
 - add new immutable records using its own namespace;
 - leave all existing records unchanged.
 
 Append runs may continue while reorganization is active because their write
-sets are disjoint. Only one reorganization job may run for a worker at a time.
+sets are disjoint. Only one reorganization job may run for an imp at a time.
 The integration lane still serializes final Git updates.
 
 ## Checkpoint and failure behavior
@@ -177,7 +177,7 @@ repair commands are not implemented.
 
 ## Container temporary files
 
-Every worker container receives a private tmpfs mounted at `/tmp` with:
+Every imp container receives a private tmpfs mounted at `/tmp` with:
 
 ```text
 size=2147483648
@@ -186,14 +186,14 @@ nosuid
 nodev
 ```
 
-Roster sets `TMPDIR=/tmp`. Docker removes the tmpfs when the container exits,
+Impyard sets `TMPDIR=/tmp`. Docker removes the tmpfs when the container exits,
 including after a crash or timeout. There is no host-side scratch directory,
 scratch cleanup job, scratch run record, or scratch policy.
 
 Pi may use normal tools such as `curl` to download into `/tmp`. Network traffic
-still passes through Roster's governed gateway and is subject to its host,
+still passes through Impyard's governed gateway and is subject to its host,
 method, credential, and budget rules. The current gateway records the request
-and policy decision, but Roster does not retain the response body or produce a
+and policy decision, but Impyard does not retain the response body or produce a
 trusted receipt containing its hash.
 
 A temporary path must never be written into a note as though it were a durable
@@ -205,10 +205,10 @@ which is not currently implemented.
 
 The knowledge checkout is never read by the interaction-memory selector. A
 vendor fact, paper summary, or downloaded document cannot appear in the Memory
-block merely because the worker created it.
+block merely because the imp created it.
 
-Interaction memory uses `memory/<worker>.jsonl` and `roster memory`. The legacy
-`notes/` storage name and `roster notes` command remain read-compatible migration
+Interaction memory uses `memory/<imp>.jsonl` and `impyard memory`. The legacy
+`notes/` storage name and `impyard notes` command remain read-compatible migration
 aliases only.
 
 ## Configuration
@@ -225,35 +225,35 @@ checkpoint_on_clean_exit = true
 reorganization_requires_exclusive_lease = true
 ```
 
-Worker overrides may disable features or reduce limits. They cannot enlarge
+Imp overrides may disable features or reduce limits. They cannot enlarge
 org limits, enable a disabled feature, bypass validation, or remove the
 reorganization lease.
 
 The container temp size is currently a runtime constant rather than an owner
-or worker policy setting.
+or imp policy setting.
 
 ## Owner interface
 
 ```text
-roster knowledge <worker>
+impyard knowledge <imp>
 ```
 
 This prints the canonical bare repository path. The owner can then use normal
 Git commands:
 
 ```text
-git -C "$(roster knowledge yuko)" log --oneline
-git -C "$(roster knowledge yuko)" show HEAD
-git clone "$(roster knowledge yuko)" /tmp/yuko-knowledge
+git -C "$(impyard knowledge yuko)" log --oneline
+git -C "$(impyard knowledge yuko)" show HEAD
+git clone "$(impyard knowledge yuko)" /tmp/yuko-knowledge
 ```
 
-`roster runs show <run-id>` displays the run's knowledge mode, base commit,
+`impyard runs show <run-id>` displays the run's knowledge mode, base commit,
 record namespace, checkpoint state, produced commit, and validation error.
 
 ## Security invariants
 
-- Worker and run identity come from the trusted host, not tool arguments.
-- A worker cannot select its base commit or record namespace.
+- Imp and run identity come from the trusted host, not tool arguments.
+- An imp cannot select its base commit or record namespace.
 - The box cannot access canonical Git metadata, refs, hooks, or credentials.
 - Append and reorganization write sets remain disjoint.
 - Knowledge content never grants capabilities or changes runtime instructions.
@@ -283,14 +283,14 @@ Verify the container primitive directly:
 ```text
 docker run --rm --entrypoint /bin/sh \
   --tmpfs /tmp:rw,nosuid,nodev,size=2147483648,mode=1777 \
-  roster-box -lc 'echo ok >/tmp/probe; stat -f -c %T /tmp; df -h /tmp; cat /tmp/probe'
+  impyard-box -lc 'echo ok >/tmp/probe; stat -f -c %T /tmp; df -h /tmp; cat /tmp/probe'
 ```
 
 The output should identify `tmpfs`, show a 2 GiB filesystem, and print `ok`.
 Because the container uses `--rm`, `/tmp/probe` disappears with the container.
 
-For an end-to-end worker check, start `roster serve`, then ask a worker to print
+For an end-to-end imp check, start `impyard serve`, then ask an imp to print
 `$TMPDIR`, inspect `/tmp`, download a small HTTPS page there, and confirm that
-`/opt/roster/scratch` does not exist. After the run, `roster runs show <run-id>`
+`/opt/impyard/scratch` does not exist. After the run, `impyard runs show <run-id>`
 should contain knowledge checkpoint information but no scratch, fetch-receipt,
 or blob fields.

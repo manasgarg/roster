@@ -6,15 +6,15 @@ plus 2b: pi baked into the image; `[engine] dir` is now a dev override and
 the deployment runs without it — the box no longer mounts the checkout). Conformance:
 curl/python/node/gh all reached an allowed host through the gateway (gh got a
 real GitHub 401 for a dummy token — proxy, bundle TLS, and policy all held);
-an ungranted POST returned 403 with `x-roster-verdict: deny`; a raw socket to
+an ungranted POST returned 403 with `x-impyard-verdict: deny`; a raw socket to
 1.1.1.1:443 timed out; in-box DNS fails fast; the env held zero
 secret-looking vars; every probe appears attributed in decisions.jsonl.
 
 **Principle.** Capability and authority live in different layers. Inside the
-box, pi should have every tool a competent worker needs, and every byte it
+box, pi should have every tool a competent imp needs, and every byte it
 sends should reach the gateway *by convention* — inherited env vars, one trust
 bundle, protocols the proxy speaks. At the gateway, org.toml is the entire
-description of what a worker may do. A "no" is always a legible verdict, never
+description of what an imp may do. A "no" is always a legible verdict, never
 a missing package, an untrusted CA, or a hung socket. Enforcement continues to
 come from topology (the NAT-less network), not from starving the box.
 
@@ -31,18 +31,18 @@ come from topology (the NAT-less network), not from starving the box.
 
 ## 1. One trust bundle for every ecosystem  (S)
 
-Today only Node, curl, and Python requests trust the roster CA (three env
+Today only Node, curl, and Python requests trust the impyard CA (three env
 vars). Go, Rust, git, and anything reading the system store fail TLS against
 terminated connections — an illegible "no".
 
 - At CA mint time (`Ca::ensure`), also write `ca/bundle.crt` = the host's
   system roots (`/etc/ssl/certs/ca-certificates.crt`) + `ca.crt` appended.
   Regenerate whenever either input is newer.
-- Mount it at `/opt/roster/ca-bundle.crt` (keep the bare `ca.crt` mount).
+- Mount it at `/opt/impyard/ca-bundle.crt` (keep the bare `ca.crt` mount).
 - Point everything at the bundle: `SSL_CERT_FILE` (Go, OpenSSL, rustls),
   `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`, `PIP_CERT`;
   `NODE_EXTRA_CA_CERTS` stays on `ca.crt` (it is additive).
-- Why a bundle and not just the roster CA: `SSL_CERT_FILE` *replaces* default
+- Why a bundle and not just the impyard CA: `SSL_CERT_FILE` *replaces* default
   roots, and tunnel-verdict hosts (cert-pinning clients) present real
   certificates that still need real roots.
 
@@ -59,7 +59,7 @@ Rollback is removing one flag.
 
 ## 2. The toolbelt  (M)
 
-Bake the tools a worker actually reaches for into `box/Dockerfile`, chosen and
+Bake the tools an imp actually reaches for into `box/Dockerfile`, chosen and
 patched deliberately instead of fetched ad hoc into /tmp. On the dead network,
 more binaries add no egress power; the costs are image size and CVE cadence.
 
@@ -80,11 +80,11 @@ ca-certificates already present):
 
 **Tier 2 — org choice, behind a build arg** (`--build-arg TIER2=1`):
 `pandoc`, `imagemagick`, `ffmpeg`. Each is large; an admin who runs document/
-media workers turns them on.
+media imps turns them on.
 
 **Explicit non-defaults:** Go/Rust toolchains (heavy; add per-deployment if a
-worker's job is Go/Rust), headless browser/playwright (~400 MB and its own
-proxy/CA story — future increment if research workers need real browsing).
+imp's job is Go/Rust), headless browser/playwright (~400 MB and its own
+proxy/CA story — future increment if research imps need real browsing).
 
 Estimated image: ~220 MB (base) → ~650–700 MB tier 1.
 
@@ -92,7 +92,7 @@ Estimated image: ~220 MB (base) → ~650–700 MB tier 1.
 
 pi is the most important utility of all and is still bind-mounted from the
 checkout (`[engine] dir`). Move it into the image: build arg `PI_VERSION`,
-`npm ci` into `/opt/roster/engine` at build, extensions copied alongside.
+`npm ci` into `/opt/impyard/engine` at build, extensions copied alongside.
 `[engine] dir` becomes an optional dev override (mount wins when set);
 `engine_fingerprint` reads the image label instead of hashing the checkout.
 `server validate`'s "engine dir unset" note inverts into the happy path.
@@ -103,7 +103,7 @@ The pattern that lets pi call models — sentinel in the box, real key injected
 in transit — is bespoke today. Generalize it so any CLI can be *authenticated
 under policy*:
 
-- Config: a credential exposure list, org- or worker-scoped:
+- Config: a credential exposure list, org- or imp-scoped:
 
   ```toml
   [[expose]]
@@ -125,11 +125,11 @@ under policy*:
 The proxy already returns `403 {"error":"denied by gateway (deny)","rule":…}`
 and `402 {"error":"budget exceeded","detail":…}`. Finish the job:
 
-- Add `X-Roster-Verdict: deny|budget` and `X-Roster-Rule: <name>` headers so
+- Add `X-Impyard-Verdict: deny|budget` and `X-Impyard-Rule: <name>` headers so
   CLIs that print only status lines still surface the reason.
 - Add a `hint` field: deny → "this is policy, not an outage — propose an
   action or ask your lead"; budget → include the window and `Retry-After`.
-- Actions (`actions.roster.internal`) already speak in sentences; no change.
+- Actions (`actions.impyard.internal`) already speak in sentences; no change.
 - One line in the runtime policy's gateway paragraph: the response itself
   names the rule.
 
@@ -143,7 +143,7 @@ and `402 {"error":"budget exceeded","detail":…}`. Finish the job:
 
 ## Verification
 
-A conformance task run inside a real box (`worker run`), asserting each layer:
+A conformance task run inside a real box (`imp run`), asserting each layer:
 
 - `curl`, `python3 -c` (urllib), `node -e` (fetch), and `gh api` GET an
   allowed host → 200 through the gateway.

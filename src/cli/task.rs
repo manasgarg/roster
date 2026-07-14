@@ -1,10 +1,10 @@
-//! `roster worker task` — file, list, and inspect tasks for dispatch.
+//! `impyard imp task` — file, list, and inspect tasks for dispatch.
 
 use crate::util::BErr;
 use crate::work::queue;
 
 pub fn add(
-    worker: &str,
+    imp: &str,
     ceiling: f64,
     proactive: bool,
     reorganize: bool,
@@ -12,7 +12,7 @@ pub fn add(
     base: &str,
     prompt: String,
 ) -> Result<(), BErr> {
-    crate::worker::require_worker(worker)?;
+    crate::imp::require_imp(imp)?;
     if prompt.trim().is_empty() {
         return Err("task add needs a prompt".into());
     }
@@ -24,9 +24,9 @@ pub fn add(
     });
     let base = repo.as_ref().map(|_| base.to_string());
     if reorganize {
-        if let Some(active) = queue::active_reorganization(worker) {
+        if let Some(active) = queue::active_reorganization(imp) {
             return Err(format!(
-                "worker {worker} already has reorganization task {} in state {}",
+                "imp {imp} already has reorganization task {} in state {}",
                 active.id, active.state
             )
             .into());
@@ -43,7 +43,7 @@ pub fn add(
         "owner-filed"
     };
     let t = queue::create(
-        worker,
+        imp,
         &prompt,
         "manual",
         proactive,
@@ -54,7 +54,7 @@ pub fn add(
         base,
     )
     .map_err(|e| e.to_string())?;
-    println!("queued {} for {} ({kind})", t.id, t.worker);
+    println!("queued {} for {} ({kind})", t.id, t.imp);
     Ok(())
 }
 
@@ -84,11 +84,11 @@ pub fn requeue(id: &str) -> Result<(), BErr> {
     }
     if t.knowledge_mode == "reorganization" {
         if let Some(active) =
-            queue::active_reorganization(&t.worker).filter(|active| active.id != t.id)
+            queue::active_reorganization(&t.imp).filter(|active| active.id != t.id)
         {
             return Err(format!(
-                "worker {} already has reorganization task {} in state {}",
-                t.worker, active.id, active.state
+                "imp {} already has reorganization task {} in state {}",
+                t.imp, active.id, active.state
             )
             .into());
         }
@@ -103,7 +103,7 @@ pub fn requeue(id: &str) -> Result<(), BErr> {
 pub fn show(id: &str) -> Result<(), BErr> {
     let t = resolve(id)?;
     println!("task     {}", t.id);
-    println!("worker   {}", t.worker);
+    println!("imp   {}", t.imp);
     println!("state    {}", t.state);
     println!(
         "origin   {}{}",
@@ -136,9 +136,9 @@ pub fn show(id: &str) -> Result<(), BErr> {
         println!("context  {}", serde_json::to_string_pretty(&t.context)?);
     }
 
-    // The full timeline from this task's run — the worker's own (run-tagged) journal.
+    // The full timeline from this task's run — the imp's own (run-tagged) journal.
     if let Some(run) = &t.run_id {
-        let events = crate::worker::journal::for_run(&t.subject(), run);
+        let events = crate::imp::journal::for_run(&t.subject(), run);
         if !events.is_empty() {
             println!(
                 "\njournal (run {run}, {} event{}):",
@@ -177,7 +177,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
     }
     println!(
         "{:<12}  {:<10}  {:<12}  {:<17}  {:<29}  {:<12}  PROMPT",
-        "TASK", "WORKER", "STATE", "UPDATED (UTC)", "RUN", "ORIGIN"
+        "TASK", "IMP", "STATE", "UPDATED (UTC)", "RUN", "ORIGIN"
     );
     for t in tasks {
         let prompt = crate::run::runlog::one_line(&t.prompt, 48);
@@ -189,7 +189,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         println!(
             "{:<12}  {:<10}  {:<12}  {:<17}  {:<29}  {:<12}  {}",
             t.id,
-            t.worker,
+            t.imp,
             t.state,
             updated,
             t.run_id.as_deref().unwrap_or("-"),

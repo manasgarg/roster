@@ -1,4 +1,4 @@
-//! `roster connect <provider>` — create a credential via the provider's login
+//! `impyard connect <provider>` — create a credential via the provider's login
 //! flow (our own implementation). Generalized over the provider registry
 //! (providers.json): api-key providers take a key; OAuth providers run
 //! device-code or PKCE. The result lands in the vault; refresh keeps it alive.
@@ -14,7 +14,7 @@ type BErr = Box<dyn std::error::Error>;
 
 /// The provider list for `vault connect --help`: one line per registered
 /// provider and what its login flow will ask of you. Best-effort — outside a
-/// roster root there is no registry, so the help points at where it looks.
+/// impyard root there is no registry, so the help points at where it looks.
 pub fn provider_help() -> String {
     let Ok(registry) = read_registry() else {
         return format!(
@@ -50,7 +50,7 @@ pub fn provider_help() -> String {
 /// login flow works, then point at the usage.
 pub fn list() -> Result<(), BErr> {
     println!("{}", provider_help());
-    println!("\nusage: roster server vault connect <provider>");
+    println!("\nusage: impyard server vault connect <provider>");
     Ok(())
 }
 
@@ -92,7 +92,7 @@ pub fn store(name: &str, cred: &Value) -> Result<(), BErr> {
     write_vault(name, cred)
 }
 
-/// One line of input from the terminal — the wizard's worker prompt.
+/// One line of input from the terminal — the wizard's imp prompt.
 pub fn ask(question: &str) -> Result<String, BErr> {
     prompt(question)
 }
@@ -345,7 +345,7 @@ fn read_registry() -> Result<serde_json::Map<String, Value>, BErr> {
 }
 
 fn write_vault(name: &str, cred: &Value) -> Result<(), BErr> {
-    // Same dir logic the gateway reads from (honors ROSTER_VAULT_DIR), so a
+    // Same dir logic the gateway reads from (honors IMPYARD_VAULT_DIR), so a
     // connected credential always lands where injection/executors look for it.
     let dir = crate::credential::vault::vault_dir();
     std::fs::create_dir_all(&dir)?;

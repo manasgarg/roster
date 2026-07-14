@@ -1,8 +1,8 @@
 {
-  "name": "roster",
+  "name": "impyard",
   "version": "0.0.1",
   "private": true,
-  "description": "pi (the engine) is the only Node dependency — mounted read-only into the box. All host-side code is Rust (the `roster` binary). Run `npm install` once to provide pi to the box.",
+  "description": "pi (the engine) is the only Node dependency — mounted read-only into the box. All host-side code is Rust (the `impyard` binary). Run `npm install` once to provide pi to the box.",
   "engines": {
     "node": ">=24"
   },

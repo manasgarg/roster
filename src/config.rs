@@ -1,4 +1,4 @@
-//! Live config. `org.toml` + `workers/*/worker.toml` parse straight into the
+//! Live config. `org.toml` + `imps/*/imp.toml` parse straight into the
 //! gateway's OWN types (schema::Policy, budget::BudgetPolicy, …), scope-tagged
 //! in memory — there is no compile step and no intermediate artifact. This is
 //! still the payoff of one language, one schema (D20): what validates is
@@ -6,22 +6,22 @@
 //!
 //! Consumers call `snapshot()` (mtime-fingerprint cache, so admin edits are
 //! live). Invalid config fails closed: the gateway denies, dispatch pauses,
-//! `server start` refuses to boot — and `roster server validate` prints every
+//! `server start` refuses to boot — and `impyard server validate` prints every
 //! error. `load()` is side-effect free.
 
 use crate::action::ActionPolicy;
 use crate::gateway::budget::BudgetPolicy;
-use crate::worker::context::{CompiledContextPolicy, ContextPolicy};
-use crate::worker::memory::{CompiledMemoryPolicy, MemoryPolicy};
+use crate::imp::context::{CompiledContextPolicy, ContextPolicy};
+use crate::imp::memory::{CompiledMemoryPolicy, MemoryPolicy};
 use crate::paths;
 use crate::gateway::schema::Policy;
-use crate::worker::storage::{CompiledStoragePolicy, StoragePolicy};
+use crate::imp::storage::{CompiledStoragePolicy, StoragePolicy};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// A service connection (`connections/<name>.toml`): one intent — "this
-/// worker may act on that service" — compiled into a grant with injection,
+/// imp may act on that service" — compiled into a grant with injection,
 /// an env exposure, and a provider template, all keyed by one name that is
 /// also the vault credential. Missing secret ⇒ disabled with a warning, not
 /// a config failure (nothing forwards a sentinel either way).
@@ -29,8 +29,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub struct Connection {
     pub name: String,
     pub provider: String,
-    /// None = org-wide; Some = these workers only.
-    pub workers: Option<Vec<String>>,
+    /// None = org-wide; Some = these imps only.
+    pub imps: Option<Vec<String>>,
     pub hosts: Vec<String>,
     pub methods: Vec<String>,
     pub env: String,
@@ -40,7 +40,7 @@ pub struct Connection {
 
 #[derive(Clone, Debug)]
 pub struct Expose {
-    /// "org" or "org/<worker>" — which workers see this env var.
+    /// "org" or "org/<imp>" — which imps see this env var.
     pub scope: String,
     /// Vault credential name (must exist — fail closed, like listeners).
     pub credential: String,
@@ -56,7 +56,7 @@ pub struct Loaded {
     pub memory: CompiledMemoryPolicy,
     pub context: CompiledContextPolicy,
     pub storage: CompiledStoragePolicy,
-    /// (worker, platform, vault credential) — `server start` starts one
+    /// (imp, platform, vault credential) — `server start` starts one
     /// listener each. Platforms: "discord", "slack".
     pub listeners: Vec<(String, String, String)>,
     /// `[[expose]]` — env vars set in the box to the sentinel; the gateway's
@@ -69,15 +69,15 @@ pub struct Loaded {
     /// Non-fatal conditions (e.g. a disabled connection) — printed by
     /// `validate` and `server start`, never fail-closed.
     pub warnings: Vec<String>,
-    pub workers: Vec<String>,
+    pub imps: Vec<String>,
     /// `[engine] dir` in org.toml — a dev checkout mounted read-only over the
-    /// engine baked into the roster-box image. Unset (the default) runs the
+    /// engine baked into the impyard-box image. Unset (the default) runs the
     /// baked engine.
     pub engine_dir: Option<PathBuf>,
 }
 
 /// Parse and validate everything, collecting every error (not just the first).
-/// Side-effect free — this is also `roster server validate`.
+/// Side-effect free — this is also `impyard server validate`.
 pub fn load() -> Result<Loaded, Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
     let org_path = paths::org_file();
@@ -96,7 +96,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
     let mut triggers: Vec<Value> = Vec::new();
     let mut listeners: Vec<(String, String, String)> = Vec::new();
     let mut exposes: Vec<Expose> = Vec::new();
-    let mut workers: Vec<String> = Vec::new();
+    let mut imps: Vec<String> = Vec::new();
 
     let default_memory = memory_policy(org.get("memory"), None).unwrap_or_else(|e| {
         errors.push(format!("org.toml [memory]: {e}"));
@@ -110,9 +110,9 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         errors.push(format!("org.toml [knowledge]: {e}"));
         StoragePolicy::default()
     });
-    let mut worker_memory = std::collections::HashMap::new();
-    let mut worker_context = std::collections::HashMap::new();
-    let mut worker_storage = std::collections::HashMap::new();
+    let mut imp_memory = std::collections::HashMap::new();
+    let mut imp_context = std::collections::HashMap::new();
+    let mut imp_storage = std::collections::HashMap::new();
 
     for g in array(&org, "grant") {
         rules.push(with_scope(g, "org"));
@@ -137,9 +137,9 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         .and_then(|v| v.as_str())
         .map(PathBuf::from);
 
-    let workers_dir = paths::workers_dir();
-    if workers_dir.is_dir() {
-        let mut names: Vec<String> = std::fs::read_dir(&workers_dir)
+    let imps_dir = paths::imps_dir();
+    if imps_dir.is_dir() {
+        let mut names: Vec<String> = std::fs::read_dir(&imps_dir)
             .into_iter()
             .flatten()
             .flatten()
@@ -147,7 +147,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
             .collect();
         names.sort();
         for name in names {
-            let spec = workers_dir.join(&name).join("worker.toml");
+            let spec = imps_dir.join(&name).join("imp.toml");
             if !spec.exists() {
                 continue;
             }
@@ -164,23 +164,23 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                 continue;
             }
             let scope = format!("org/{name}");
-            workers.push(name.clone());
+            imps.push(name.clone());
             match memory_policy(w.get("memory"), Some(&default_memory)) {
                 Ok(p) => {
-                    worker_memory.insert(name.clone(), p);
+                    imp_memory.insert(name.clone(), p);
                 }
                 Err(e) => errors.push(format!("{name} [memory]: {e}")),
             }
             match context_policy(w.get("context"), Some(&default_context)) {
                 Ok(p) => {
-                    worker_context.insert(name.clone(), p);
+                    imp_context.insert(name.clone(), p);
                 }
                 Err(e) => errors.push(format!("{name} [context]: {e}")),
             }
             match storage_policy(&w, Some(&default_storage)) {
-                Ok(storage) => match crate::worker::storage::validate_worker_overlay(&default_storage, &storage) {
+                Ok(storage) => match crate::imp::storage::validate_imp_overlay(&default_storage, &storage) {
                     Ok(()) => {
-                        worker_storage.insert(name.clone(), storage);
+                        imp_storage.insert(name.clone(), storage);
                     }
                     Err(e) => errors.push(format!("{name} [knowledge]: {e}")),
                 },
@@ -196,10 +196,10 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                 trust.push(with_scope(t, &scope));
             }
             for tr in array(&w, "trigger") {
-                // Triggers name their worker so dispatch knows whose task to file.
+                // Triggers name their imp so dispatch knows whose task to file.
                 let mut j = to_json(tr);
                 if let Some(obj) = j.as_object_mut() {
-                    obj.insert("worker".to_string(), json!(name));
+                    obj.insert("imp".to_string(), json!(name));
                 }
                 triggers.push(j);
             }
@@ -211,7 +211,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
             for e in array(&w, "expose") {
                 parse_expose(e, &scope, &name, &mut exposes, &mut errors);
             }
-            // [channels] — which vault credential each of this worker's
+            // [channels] — which vault credential each of this imp's
             // inbound edges uses. Two listeners on one credential would
             // double-file every message, so that is a validation error, not a
             // runtime surprise.
@@ -223,7 +223,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                 {
                     if let Some((taken, _, _)) = listeners.iter().find(|(_, _, c)| c == credential) {
                         errors.push(format!(
-                            "workers {taken} and {name} both listen with credential \"{credential}\" — one bot cannot serve two listeners"
+                            "imps {taken} and {name} both listen with credential \"{credential}\" — one bot cannot serve two listeners"
                         ));
                     } else {
                         listeners.push((name.clone(), platform.to_string(), credential.to_string()));
@@ -261,7 +261,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         match compile_connection(
             &name,
             &v,
-            &workers,
+            &imps,
             |p| registry.contains_key(p),
             |c| crate::credential::vault::get_credential(c).is_some(),
         ) {
@@ -302,14 +302,14 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         budget,
         actions,
         triggers,
-        memory: CompiledMemoryPolicy { default: default_memory, workers: worker_memory },
-        context: CompiledContextPolicy { default: default_context, workers: worker_context },
-        storage: CompiledStoragePolicy { default: default_storage, workers: worker_storage },
+        memory: CompiledMemoryPolicy { default: default_memory, imps: imp_memory },
+        context: CompiledContextPolicy { default: default_context, imps: imp_context },
+        storage: CompiledStoragePolicy { default: default_storage, imps: imp_storage },
         listeners,
         exposes,
         connections,
         warnings,
-        workers,
+        imps,
         engine_dir,
     })
 }
@@ -319,7 +319,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
 fn compile_connection(
     name: &str,
     v: &toml::Value,
-    known_workers: &[String],
+    known_imps: &[String],
     provider_exists: impl Fn(&str) -> bool,
     secret_exists: impl Fn(&str) -> bool,
 ) -> Result<(Connection, Vec<Value>, Vec<Expose>, Option<String>), Vec<String>> {
@@ -339,18 +339,18 @@ fn compile_connection(
         })
     };
     let org_scoped = v.get("scope").and_then(|x| x.as_str()) == Some("org");
-    let workers = strings("workers");
-    match (&workers, org_scoped) {
-        (Some(_), true) => errors.push(format!("{ctx}: choose workers = [..] OR scope = \"org\", not both")),
-        (None, false) => errors.push(format!("{ctx}: needs workers = [\"<name>\", ..] or scope = \"org\"")),
+    let imps = strings("imps");
+    match (&imps, org_scoped) {
+        (Some(_), true) => errors.push(format!("{ctx}: choose imps = [..] OR scope = \"org\", not both")),
+        (None, false) => errors.push(format!("{ctx}: needs imps = [\"<name>\", ..] or scope = \"org\"")),
         (Some(list), false) => {
             for w in list {
-                if !known_workers.contains(w) {
-                    errors.push(format!("{ctx}: no such worker \"{w}\""));
+                if !known_imps.contains(w) {
+                    errors.push(format!("{ctx}: no such imp \"{w}\""));
                 }
             }
             if list.is_empty() {
-                errors.push(format!("{ctx}: workers = [] grants nothing — use scope = \"org\" or name workers"));
+                errors.push(format!("{ctx}: imps = [] grants nothing — use scope = \"org\" or name imps"));
             }
         }
         (None, true) => {}
@@ -373,7 +373,7 @@ fn compile_connection(
     let connection = Connection {
         name: name.to_string(),
         provider,
-        workers: workers.clone(),
+        imps: imps.clone(),
         hosts: hosts.clone(),
         methods: methods.clone(),
         env: env.clone(),
@@ -383,15 +383,15 @@ fn compile_connection(
         // Disabled, not broken: no grant, no exposure, nothing to inject —
         // and the rest of the config keeps working.
         let fix = if name == connection.provider {
-            format!("roster server connect {name}")
+            format!("impyard server connect {name}")
         } else {
-            format!("roster server connect {} --as {name}", connection.provider)
+            format!("impyard server connect {} --as {name}", connection.provider)
         };
         let warning = format!("{ctx} is disabled — no \"{name}\" credential in the vault (run: {fix})");
         return Ok((connection, Vec::new(), Vec::new(), Some(warning)));
     }
 
-    let scopes: Vec<String> = match &workers {
+    let scopes: Vec<String> = match &imps {
         Some(list) => list.iter().map(|w| format!("org/{w}")).collect(),
         None => vec!["org".to_string()],
     };
@@ -433,7 +433,7 @@ fn parse_expose(v: &toml::Value, scope: &str, source: &str, exposes: &mut Vec<Ex
 
 /// Every exposure must name a real credential (fail closed, like listener
 /// credentials), a well-formed env name outside the reserved wiring, and no
-/// two exposures that could reach the same worker may claim one env name.
+/// two exposures that could reach the same imp may claim one env name.
 fn validate_exposes(exposes: &[Expose], credential_exists: impl Fn(&str) -> bool, errors: &mut Vec<String>) {
     for (i, e) in exposes.iter().enumerate() {
         let well_formed = !e.env.is_empty()
@@ -442,12 +442,12 @@ fn validate_exposes(exposes: &[Expose], credential_exists: impl Fn(&str) -> bool
         if !well_formed {
             errors.push(format!("[[expose]] env \"{}\": use UPPER_SNAKE_CASE", e.env));
         }
-        if RESERVED_ENV.contains(&e.env.as_str()) || e.env.starts_with("ROSTER_") {
+        if RESERVED_ENV.contains(&e.env.as_str()) || e.env.starts_with("IMPYARD_") {
             errors.push(format!("[[expose]] env \"{}\" is reserved box wiring", e.env));
         }
         if !credential_exists(&e.credential) {
             errors.push(format!(
-                "[[expose]] {}: no \"{}\" credential in the vault — run: roster server vault connect",
+                "[[expose]] {}: no \"{}\" credential in the vault — run: impyard server vault connect",
                 e.env, e.credential
             ));
         }
@@ -504,11 +504,11 @@ fn fingerprint() -> String {
             .unwrap_or_else(|_| format!("{}:absent", path.display()))
     }
     let mut parts = vec![stamp(&paths::org_file())];
-    let mut names: Vec<PathBuf> = std::fs::read_dir(paths::workers_dir())
+    let mut names: Vec<PathBuf> = std::fs::read_dir(paths::imps_dir())
         .into_iter()
         .flatten()
         .flatten()
-        .map(|e| e.path().join("worker.toml"))
+        .map(|e| e.path().join("imp.toml"))
         .collect();
     names.sort();
     for spec in names {
@@ -562,11 +562,11 @@ fn memory_policy(value: Option<&toml::Value>, base: Option<&MemoryPolicy>) -> Re
     if let Some(kind) = policy
         .allowed_kinds
         .iter()
-        .find(|kind| !crate::worker::memory::SUPPORTED_MEMORY_KINDS.contains(&kind.as_str()))
+        .find(|kind| !crate::imp::memory::SUPPORTED_MEMORY_KINDS.contains(&kind.as_str()))
     {
         return Err(format!(
             "memory policy kind \"{kind}\" is not interaction memory; supported kinds are {}",
-            crate::worker::memory::SUPPORTED_MEMORY_KINDS.join(", ")
+            crate::imp::memory::SUPPORTED_MEMORY_KINDS.join(", ")
         )
         .into());
     }
@@ -580,7 +580,7 @@ fn storage_policy(value: &toml::Value, base: Option<&StoragePolicy>) -> Result<S
     });
     merge_json(&mut merged, overlay);
     let policy: StoragePolicy = serde_json::from_value(merged).map_err(|error| format!("storage policy is invalid: {error}"))?;
-    crate::worker::storage::validate(&policy).map_err(|error| format!("storage policy is invalid: {error}"))?;
+    crate::imp::storage::validate(&policy).map_err(|error| format!("storage policy is invalid: {error}"))?;
     Ok(policy)
 }
 
@@ -637,16 +637,16 @@ mod tests {
     }
 
     #[test]
-    fn connection_compiles_per_worker_grants_and_exposes() {
+    fn connection_compiles_per_imp_grants_and_exposes() {
         let v = toml(r#"
             provider = "github"
-            workers = ["yuko", "kdemo"]
+            imps = ["yuko", "kdemo"]
             hosts = ["api.github.com"]
             env = "GH_TOKEN"
         "#);
-        let workers = vec!["yuko".to_string(), "kdemo".to_string()];
+        let imps = vec!["yuko".to_string(), "kdemo".to_string()];
         let (c, rules, exposes, warning) =
-            compile_connection("github", &v, &workers, |_| true, |_| true).unwrap();
+            compile_connection("github", &v, &imps, |_| true, |_| true).unwrap();
         assert!(c.enabled);
         assert_eq!(c.methods, vec!["GET"]); // the default
         assert_eq!(rules.len(), 2);
@@ -679,14 +679,14 @@ mod tests {
     fn connection_validation_catches_each_failure_mode() {
         let v = toml(r#"
             provider = "nope"
-            workers = ["ghost"]
+            imps = ["ghost"]
             env = ""
         "#);
         let errors =
             compile_connection("acme", &v, &["yuko".to_string()], |p| p == "github", |_| true)
                 .unwrap_err();
         assert!(errors.iter().any(|e| e.contains("unknown provider")));
-        assert!(errors.iter().any(|e| e.contains("no such worker \"ghost\"")));
+        assert!(errors.iter().any(|e| e.contains("no such imp \"ghost\"")));
         assert!(errors.iter().any(|e| e.contains("needs hosts")));
         assert!(errors.iter().any(|e| e.contains("needs env")));
     }
@@ -695,7 +695,7 @@ mod tests {
     fn expose_validation_catches_each_failure_mode() {
         let vault = |name: &str| name == "github";
 
-        // Well-formed, distinct workers sharing an env name: fine.
+        // Well-formed, distinct imps sharing an env name: fine.
         let mut errors = Vec::new();
         let ok = [expose("org/a", "github", "GH_TOKEN"), expose("org/b", "github", "GH_TOKEN")];
         validate_exposes(&ok, vault, &mut errors);
@@ -705,7 +705,7 @@ mod tests {
         let mut errors = Vec::new();
         let bad = [
             expose("org", "github", "HTTP_PROXY"),
-            expose("org", "github", "ROSTER_X"),
+            expose("org", "github", "IMPYARD_X"),
             expose("org", "github", "lower"),
             expose("org", "nope", "A_TOKEN"),
             expose("org", "github", "B_TOKEN"),
@@ -714,7 +714,7 @@ mod tests {
         validate_exposes(&bad, vault, &mut errors);
         assert_eq!(errors.len(), 5, "{errors:?}");
         assert!(errors.iter().any(|e| e.contains("reserved") && e.contains("HTTP_PROXY")));
-        assert!(errors.iter().any(|e| e.contains("reserved") && e.contains("ROSTER_X")));
+        assert!(errors.iter().any(|e| e.contains("reserved") && e.contains("IMPYARD_X")));
         assert!(errors.iter().any(|e| e.contains("UPPER_SNAKE_CASE")));
         assert!(errors.iter().any(|e| e.contains("no \"nope\" credential")));
         assert!(errors.iter().any(|e| e.contains("claimed twice")));

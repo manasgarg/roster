@@ -1,7 +1,7 @@
 //! Slack — the Web API client for outbound messages and the Socket Mode
 //! (WebSocket) client for inbound (docs/slack-channel.md). Trusted-side code
 //! holds both tokens (from the vault); the box never does. Socket Mode keeps
-//! roster's posture: dial out, never listen on the internet. Base URL is
+//! impyard's posture: dial out, never listen on the internet. Base URL is
 //! overridable via SLACK_API_BASE so the executor can be tested against a mock.
 //!
 //! Channel machinery (trust, mode, memory settings, history) is shared with
@@ -63,12 +63,12 @@ struct SmError {
     msg: String,
 }
 
-/// Run Socket Mode for one worker: dial out, ack envelopes, dispatch events.
+/// Run Socket Mode for one imp: dial out, ack envelopes, dispatch events.
 /// Reconnects on transient errors (Slack refreshes connections routinely);
 /// stops on fatal ones (bad tokens).
-pub async fn run_socket_mode(worker: &str, bot_token: &str, app_token: &str) {
+pub async fn run_socket_mode(imp: &str, bot_token: &str, app_token: &str) {
     loop {
-        match connect_once(worker, bot_token, app_token).await {
+        match connect_once(imp, bot_token, app_token).await {
             Ok(()) => {} // routine disconnect envelope — reconnect immediately
             Err(e) if e.fatal => {
                 eprintln!("slack socket-mode: {} — stopping.", e.msg);
@@ -82,7 +82,7 @@ pub async fn run_socket_mode(worker: &str, bot_token: &str, app_token: &str) {
     }
 }
 
-async fn connect_once(worker: &str, bot_token: &str, app_token: &str) -> Result<(), SmError> {
+async fn connect_once(imp: &str, bot_token: &str, app_token: &str) -> Result<(), SmError> {
     let transient = |m: String| SmError { fatal: false, msg: m };
     let fatal = |m: String| SmError { fatal: true, msg: m };
 
@@ -144,7 +144,7 @@ async fn connect_once(worker: &str, bot_token: &str, app_token: &str) -> Result<
                 }
                 let event = &v["payload"]["event"];
                 if event["type"].as_str() == Some("message") {
-                    handle_message(worker, event, &bot_user_id, bot_token, &mut admins).await;
+                    handle_message(imp, event, &bot_user_id, bot_token, &mut admins).await;
                 }
             }
             _ => {}
@@ -169,7 +169,7 @@ async fn is_workspace_admin(token: &str, user_id: &str, cache: &mut HashMap<Stri
     admin
 }
 
-async fn handle_message(worker: &str, event: &Value, bot_user_id: &str, bot_token: &str, admins: &mut HashMap<String, bool>) {
+async fn handle_message(imp: &str, event: &Value, bot_user_id: &str, bot_token: &str, admins: &mut HashMap<String, bool>) {
     // Never react to bots (including ourselves) — avoids reply loops. Skip
     // subtypes too (edits, joins, thread broadcasts): only fresh plain messages.
     if event["bot_id"].as_str().is_some() || event["subtype"].as_str().is_some() {
@@ -222,7 +222,7 @@ async fn handle_message(worker: &str, event: &Value, bot_user_id: &str, bot_toke
     } else {
         " [group chat; you were not directly addressed — reply only if useful]"
     };
-    let context = crate::worker::memory::RunContext {
+    let context = crate::imp::memory::RunContext {
         provider: "slack".into(),
         channel_id: Some(channel_id.to_string()),
         user_id: Some(user_id.to_string()),
@@ -232,7 +232,7 @@ async fn handle_message(worker: &str, event: &Value, bot_user_id: &str, bot_toke
         inbound: false, // live channel context carries ids; inbound marks relay tasks
     };
     eprintln!("slack: {user_id} ({role}) in {channel_id} → session");
-    route_to_session(worker, channel_id, user_id.to_string(), format!("{text}{hint}"), context).await;
+    route_to_session(imp, channel_id, user_id.to_string(), format!("{text}{hint}"), context).await;
 }
 
 // ── conversation sessions: one warm box per active channel ────────────────────
@@ -248,11 +248,11 @@ const SESSION_IDLE_SECS: u64 = 90;
 /// the same warm-box pattern as Discord (idle exit, sender replaced on next
 /// message). No typing indicator: Socket Mode has none.
 async fn route_to_session(
-    worker: &str,
+    imp: &str,
     channel_id: &str,
     author_label: String,
     text: String,
-    context: crate::worker::memory::RunContext,
+    context: crate::imp::memory::RunContext,
 ) {
     let start_context = context.clone();
     let message = crate::run::boxed::SessionMessage { text, author_label, context };
@@ -275,12 +275,12 @@ async fn route_to_session(
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::run::boxed::SessionMessage>(64);
     let _ = tx.try_send(message);
     sessions().lock().unwrap().insert(channel_id.to_string(), tx);
-    let (w, run_id) = (worker.to_string(), crate::run::boxed::new_run_id());
+    let (w, run_id) = (imp.to_string(), crate::run::boxed::new_run_id());
     tokio::spawn(async move {
         if let Err(e) = crate::run::boxed::run_session(
             &w,
             &run_id,
-            crate::worker::context::RunSurface::SlackSession,
+            crate::imp::context::RunSurface::SlackSession,
             start_context,
             rx,
             SESSION_IDLE_SECS,

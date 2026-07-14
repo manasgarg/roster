@@ -1,6 +1,6 @@
 //! The enforcement pipe: intercept a governed call, attribute it, judge it,
 //! meter it. The wire (proxy/tls/ca), policy evaluation (judge/schema/scope),
-//! and metering (budget/ledger) — everything between a worker's request and
+//! and metering (budget/ledger) — everything between an imp's request and
 //! the world.
 
 pub mod budget;

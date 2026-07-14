@@ -22,7 +22,7 @@ pub struct SmtpConfig {
     pub port: u16,
     pub user: String,
     pub pass: String,
-    /// The pinned sender ("Name <addr@domain>" or "addr@domain"). The worker
+    /// The pinned sender ("Name <addr@domain>" or "addr@domain"). The imp
     /// never chooses this — governance owns the identity mail goes out under.
     pub from: String,
 }
@@ -52,7 +52,7 @@ async fn send_inner(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) 
     if implicit {
         expect(&mut r, 220).await?; // greeting (over TLS)
     }
-    say(&mut wr, &mut r, "EHLO roster", 250).await?;
+    say(&mut wr, &mut r, "EHLO impyard", 250).await?;
     say(&mut wr, &mut r, "AUTH LOGIN", 334).await?;
     say(&mut wr, &mut r, &b64(&cfg.user), 334).await?;
     say(&mut wr, &mut r, &b64(&cfg.pass), 235).await?;
@@ -83,7 +83,7 @@ async fn starttls(cfg: &SmtpConfig, tcp: TcpStream) -> Result<tokio_rustls::clie
     let (rd, mut wr) = tokio::io::split(tcp);
     let mut r = BufReader::new(rd);
     expect(&mut r, 220).await?; // plaintext greeting
-    say(&mut wr, &mut r, "EHLO roster", 250).await?;
+    say(&mut wr, &mut r, "EHLO impyard", 250).await?;
     say(&mut wr, &mut r, "STARTTLS", 220).await?;
     if !r.buffer().is_empty() {
         return Err("server pipelined data before the STARTTLS handshake — refusing".into());
@@ -103,8 +103,8 @@ fn connector() -> TlsConnector {
             let _ = roots.add(cert);
         }
         // Extra trust anchor for an SMTP relay behind a private CA (set
-        // ROSTER_SMTP_CA to a PEM file). Public relays like Mailgun don't need it.
-        if let Ok(path) = std::env::var("ROSTER_SMTP_CA") {
+        // IMPYARD_SMTP_CA to a PEM file). Public relays like Mailgun don't need it.
+        if let Ok(path) = std::env::var("IMPYARD_SMTP_CA") {
             for cert in load_pem_certs(&path) {
                 let _ = roots.add(cert);
             }
@@ -186,7 +186,7 @@ fn addr_of(s: &str) -> String {
 }
 
 fn domain_of(addr: &str) -> String {
-    addr.rsplit('@').next().unwrap_or("roster.local").to_string()
+    addr.rsplit('@').next().unwrap_or("impyard.local").to_string()
 }
 
 fn build_message(cfg: &SmtpConfig, to: &[String], subject: &str, body: &str) -> String {

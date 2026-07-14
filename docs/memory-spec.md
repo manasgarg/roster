@@ -1,16 +1,16 @@
 # Interaction memory — scoped memories with governed recall (spec)
 
-**Status: implemented.** Memory is what a worker has learned from its
+**Status: implemented.** Memory is what an imp has learned from its
 interactions with people and channels. It is descriptive, scoped, inspectable, and
-correctable. It helps the worker resume work and adapt to people without changing
+correctable. It helps the imp resume work and adapt to people without changing
 its identity, purpose, capabilities, or gates.
 
 This spec defines three memory scopes:
 
-1. **Worker** — knowledge that applies across the worker's conversations.
+1. **Imp** — knowledge that applies across the imp's conversations.
 2. **Channel** — shared context that applies only in one channel or workstream.
 3. **User** — knowledge about one person across their interactions with the
-   worker.
+   imp.
 
 In a DM, the user is the only participant and the DM acts as their channel. The
 channel and user scopes remain distinct: the channel holds conversation or
@@ -19,11 +19,11 @@ person.
 
 ## Memory is not authority
 
-Roster has three different kinds of context:
+Impyard has three different kinds of context:
 
-- **Identity** (`identity.md`) is the worker's constitution. It is owner-authored,
-  changed rarely, and never learned or edited by the worker.
-- **Purpose** (`purpose.md`, per channel) is the role assigned to the worker by a
+- **Identity** (`identity.md`) is the imp's constitution. It is owner-authored,
+  changed rarely, and never learned or edited by the imp.
+- **Purpose** (`purpose.md`, per channel) is the role assigned to the imp by a
   trusted human. It is directive: "what should I do here?"
 - **Memory** is learned context. It is descriptive: "what have I learned that may
   help here?"
@@ -35,17 +35,17 @@ or a procedure. Such changes use their existing trusted paths.
 
 ## The three scopes
 
-### Worker memory
+### Imp memory
 
-Worker memory applies across the worker's runs. Examples include a recurring
+Imp memory applies across the imp's runs. Examples include a recurring
 interaction lesson or a broadly applicable communication convention.
 
-Worker memory has the widest blast radius. The owner/admin controls its write,
-retention, and recall policy. The worker may write or propose worker memories
+Imp memory has the widest blast radius. The owner/admin controls its write,
+retention, and recall policy. The imp may write or propose imp memories
 only when that policy allows it. The recommended default is review for inferred
-worker-wide memories.
+imp-wide memories.
 
-Worker memory is not a place for standing instructions. A learned procedure may
+Imp memory is not a place for standing instructions. A learned procedure may
 be proposed for promotion through a trusted admin path, but remains an advisory
 observation until then.
 
@@ -86,7 +86,7 @@ require repeated evidence or review for inferred personal facts.
 A DM run recalls:
 
 ```text
-worker memory
+imp memory
 + DM channel memory
 + the DM user's memory
 ```
@@ -101,16 +101,16 @@ channel:discord:456
   "This conversation uses a weekly written status update."
 ```
 
-Even if an adapter exposes a DM as a user-addressed channel, Roster preserves
+Even if an adapter exposes a DM as a user-addressed channel, Impyard preserves
 both scope meanings. This prevents every fact mentioned in a DM from becoming a
 permanent fact about the user.
 
 ## Research knowledge is separate
 
-Interaction memory does not store the worker's research about the world.
+Interaction memory does not store the imp's research about the world.
 
 - Sources, extracted material, claims, research notes, syntheses, and briefs
-  belong in the worker's Git-backed knowledge repository or container `/tmp`.
+  belong in the imp's Git-backed knowledge repository or container `/tmp`.
 - Memory holds continuity about people, channels, and their interactions. It is
   never an automatically recalled index of research artifacts.
 
@@ -120,11 +120,11 @@ between interaction memory and the knowledge repository.
 
 ## Stored record
 
-Memory is stored per worker, off the box, as an append-only event log:
-`memory/<worker>.jsonl`. The box's repo mount remains read-only; the worker never
+Memory is stored per imp, off the box, as an append-only event log:
+`memory/<imp>.jsonl`. The box's repo mount remains read-only; the imp never
 writes this file directly.
 
-Deployments upgraded from the older `notes/<worker>.jsonl` path continue to read
+Deployments upgraded from the older `notes/<imp>.jsonl` path continue to read
 that legacy log. New events use `memory/`, and owner compaction completes the
 physical migration. Existing records with the retired `research` kind remain
 inspectable but are not recalled and cannot be newly created.
@@ -152,8 +152,8 @@ A created note has at least:
 
 Required fields and meanings:
 
-- `scope` is `worker`, `channel`, or `user`.
-- `scope_id` is absent for worker memory and is a provider-qualified stable ID
+- `scope` is `imp`, `channel`, or `user`.
+- `scope_id` is absent for imp memory and is a provider-qualified stable ID
   for channel and user memory.
 - `kind` is `preference`, `fact`, `decision`, or `interaction`.
 - `basis` is `explicit` or `inferred`.
@@ -179,7 +179,7 @@ The box exposes governed actions rather than filesystem access:
 - `disable(note_id)` / `enable(note_id)`
 - `pin(note_id)` / `unpin(note_id)`
 
-The trusted executor derives the worker, current channel, actor, and available
+The trusted executor derives the imp, current channel, actor, and available
 subjects from the run envelope. Tool arguments do not grant access. For example,
 a model cannot gain access to another user's memory by supplying their ID.
 
@@ -187,7 +187,7 @@ Safe defaults reduce tool-call ceremony:
 
 - An explicit preference about the current speaker defaults to user scope.
 - Shared conversation state defaults to the current channel.
-- Worker scope is never inferred merely because no user or channel was supplied;
+- Imp scope is never inferred merely because no user or channel was supplied;
   it must be selected deliberately and allowed by admin policy.
 
 Every action is journaled and audited. Auto-approved note creation is permitted
@@ -201,12 +201,12 @@ be more restrictive but cannot relax them.
 
 ### Owner/admin controls
 
-The owner/admin controls the memory system and worker-wide behavior:
+The owner/admin controls the memory system and imp-wide behavior:
 
 - allowed and prohibited memory kinds;
 - sensitive-data rules;
 - whether inferred memories are allowed or require review;
-- worker-scope writes and recall;
+- imp-scope writes and recall;
 - cross-channel user recall;
 - maximum note size, count, retention, and recall token budget;
 - ranking and consolidation mechanisms;
@@ -229,7 +229,7 @@ Within the admin limits, a channel steward controls:
 
 An ordinary participant may:
 
-- explicitly ask the worker to remember something about themselves;
+- explicitly ask the imp to remember something about themselves;
 - choose whether that memory is user-wide or only shared in the current channel;
 - inspect, correct, disable, or forget memories about themselves;
 - opt out of inferred personal memory or cross-channel recall;
@@ -237,16 +237,16 @@ An ordinary participant may:
 - ask which memories were used in a response.
 
 A participant cannot change another person's memory, another channel's memory,
-worker-wide policy, or the worker's identity, purpose, grants, gates, or budgets.
+imp-wide policy, or the imp's identity, purpose, grants, gates, or budgets.
 
 ### Precedence
 
 ```text
 admin hard limits
-  → worker defaults
+  → imp defaults
     → channel policy
       → participant choices about themselves
-        → worker inference
+        → imp inference
 ```
 
 For privacy and safety, the more restrictive rule wins. For two advisory notes
@@ -265,17 +265,17 @@ input:  Memory → Briefing → Task or current message
 
 Memory is placed after authoritative context, clearly labeled as untrusted,
 advisory observations. The compiled context and selected note IDs are logged so
-"what did the worker see?" is answerable. The exact rendering and cache
+"what did the imp see?" is answerable. The exact rendering and cache
 boundaries are defined in `docs/context-compiler-spec.md`.
 
 Recall is contextual:
 
-- A DM receives worker + DM channel + DM user memory.
-- A group channel receives worker + channel memory. Relevant user memories may be
+- A DM receives imp + DM channel + DM user memory.
+- A group channel receives imp + channel memory. Relevant user memories may be
   included only when allowed for shared-context recall; private user notes remain
   out of group context.
-- A one-shot channel task receives worker + that channel's memory.
-- A worker-only task receives worker memory. Naming a user or channel in task text
+- A one-shot channel task receives imp + that channel's memory.
+- An imp-only task receives imp memory. Naming a user or channel in task text
   never authorizes access to that scope.
 
 Recall is bounded from v1. The context compiler enforces admin and channel
@@ -300,7 +300,7 @@ privacy policy.
 - A note cannot alter identity, purpose, capabilities, gates, or budgets.
 - The host authorizes memory actions from trusted run metadata, not model-supplied
   subject IDs.
-- Worker-wide and cross-channel recall follow admin policy.
+- Imp-wide and cross-channel recall follow admin policy.
 - Channel membership does not grant access to another person's private memory.
 - Secrets, credentials, and prohibited sensitive data are rejected by the write
   policy.
@@ -319,12 +319,12 @@ therefore stays out of group-channel prompts.
 The owner CLI supports at least:
 
 ```text
-roster memory ls [--worker <id>] [--scope worker|channel|user] [--scope-id <id>]
-roster memory show <id>
-roster memory rm <id>
-roster memory correct <id>
-roster memory pin <id>
-roster memory explain <run-id>
+impyard memory ls [--imp <id>] [--scope imp|channel|user] [--scope-id <id>]
+impyard memory show <id>
+impyard memory rm <id>
+impyard memory correct <id>
+impyard memory pin <id>
+impyard memory explain <run-id>
 ```
 
 Equivalent participant operations may be requested conversationally:
@@ -343,7 +343,7 @@ does not bypass the governed action path.
 
 ## Implementation
 
-1. **Scoped core (built)** — append-only event schema; worker/channel/user scopes;
+1. **Scoped core (built)** — append-only event schema; imp/channel/user scopes;
    `remember` and `forget`; provenance; host-side authorization; bounded
    contextual recall; owner `ls`, `show`, `rm`, and recall trace.
 2. **Correction and participant control (built)** — correct/disable/pin events;
@@ -353,7 +353,7 @@ does not bypass the governed action path.
    overrides, expiry and retention, duplicate detection, compaction, and recall
    traces are built. Automated consolidation proposals remain future work.
 
-Remove the worker's `propose_identity_edit` tool as part of the scoped core. The
+Remove the imp's `propose_identity_edit` tool as part of the scoped core. The
 existing admin/owner identity-edit path remains unchanged.
 
 ## Recommended defaults
@@ -362,7 +362,7 @@ existing admin/owner identity-edit path remains unchanged.
 - Inferred user facts: review or repeated evidence; never sensitive traits.
 - Channel observations: automatic only for low-risk kinds; channel decisions are
   explicit or steward-approved.
-- Worker-wide inferred memory: review.
+- Imp-wide inferred memory: review.
 - Cross-channel user recall: off unless the user and admin policy permit it.
 - Group recall of private user memory: off.
 - Recall: bounded and logged from the first version.

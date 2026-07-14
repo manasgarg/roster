@@ -1,4 +1,4 @@
-//! `roster server vault sync` — import an existing pi login into the vault
+//! `impyard server vault sync` — import an existing pi login into the vault
 //! (the shortcut alternative to `vault connect`) — and `vault ls`, which shows
 //! credential names and types only. Never values.
 
@@ -72,7 +72,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         return Ok(());
     }
     if rows.is_empty() {
-        println!("the vault is empty — create a credential: roster server vault connect <provider>");
+        println!("the vault is empty — create a credential: impyard server vault connect <provider>");
         return Ok(());
     }
     println!("{:<16}  {:<10}  UPDATED (UTC)", "CREDENTIAL", "TYPE");

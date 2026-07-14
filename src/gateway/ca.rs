@@ -1,6 +1,6 @@
 //! Host-minted CA + per-host leaf minting (the Rust port of `src/ca.ts`).
 //!
-//! The CA key lives at `~/.roster/ca` (override with `ROSTER_CA_DIR`), never on
+//! The CA key lives at `~/.impyard/ca` (override with `IMPYARD_CA_DIR`), never on
 //! the box. Per-host leaf certs are minted on demand and signed by the CA so the
 //! gateway can terminate TLS for any host the box dials. `rcgen` replaces the
 //! `openssl` shell-outs the TS version used. See docs/rust-port.md (P0).
@@ -19,7 +19,7 @@ const SYSTEM_ROOTS: &str = "/etc/ssl/certs/ca-certificates.crt";
 
 /// Ensure `ca/bundle.crt` — the one trust file the box points every TLS stack
 /// at (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`, …). It must carry BOTH the system
-/// roots and the roster CA: `SSL_CERT_FILE` *replaces* a client's default
+/// roots and the impyard CA: `SSL_CERT_FILE` *replaces* a client's default
 /// roots, and tunnel-verdict hosts (cert-pinning clients) present real
 /// certificates while terminated hosts present ours. Rebuilt whenever either
 /// input is newer. Errors if the CA itself is missing — the gateway mints it.
@@ -28,7 +28,7 @@ pub fn ensure_bundle() -> Result<PathBuf, Box<dyn Error>> {
     let ca_cert = dir.join("ca.crt");
     if !ca_cert.exists() {
         return Err(format!(
-            "no CA at {} — start the gateway first (roster server start creates it)",
+            "no CA at {} — start the gateway first (impyard server start creates it)",
             ca_cert.display()
         )
         .into());
@@ -38,7 +38,7 @@ pub fn ensure_bundle() -> Result<PathBuf, Box<dyn Error>> {
     Ok(bundle)
 }
 
-/// Concatenate system roots + the roster CA into `bundle`, only when stale.
+/// Concatenate system roots + the impyard CA into `bundle`, only when stale.
 /// A host without system roots gets a CA-only bundle (tunneled hosts would
 /// fail verification there, but nothing terminated breaks) with a warning.
 fn write_bundle(system_roots: &Path, ca_cert: &Path, bundle: &Path) -> Result<(), Box<dyn Error>> {
@@ -56,7 +56,7 @@ fn write_bundle(system_roots: &Path, ca_cert: &Path, bundle: &Path) -> Result<()
         Ok(r) => r,
         Err(e) => {
             eprintln!(
-                "ca: no system roots at {} ({e}) — bundle will carry the roster CA only",
+                "ca: no system roots at {} ({e}) — bundle will carry the impyard CA only",
                 system_roots.display()
             );
             String::new()
@@ -89,7 +89,7 @@ impl Ca {
             params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
             params
                 .distinguished_name
-                .push(DnType::CommonName, "Roster Box CA");
+                .push(DnType::CommonName, "Impyard Box CA");
             let cert = params.self_signed(&key)?;
             fs::write(&key_path, key.serialize_pem())?;
             fs::write(&cert_path, cert.pem())?;
@@ -150,14 +150,14 @@ mod tests {
 
     fn temp_ca_dir() -> PathBuf {
         let mut dir = std::env::temp_dir();
-        dir.push(format!("roster-ca-test-{}", std::process::id()));
+        dir.push(format!("impyard-ca-test-{}", std::process::id()));
         dir
     }
 
     #[test]
     fn bundle_concatenates_roots_and_ca_and_rebuilds_when_stale() {
         // A sibling of temp_ca_dir(), which the leaf test removes recursively.
-        let dir = std::env::temp_dir().join(format!("roster-bundle-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("impyard-bundle-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let roots = dir.join("roots.crt");
         let ca = dir.join("ca.crt");
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn mints_a_leaf_with_correct_san_signed_by_the_ca() {
         let dir = temp_ca_dir();
-        std::env::set_var("ROSTER_CA_DIR", &dir);
+        std::env::set_var("IMPYARD_CA_DIR", &dir);
 
         let ca = Ca::ensure().expect("ensure CA");
         let (key_pem, chain_pem) = ca.mint_leaf("chatgpt.com").expect("mint leaf");
@@ -200,10 +200,10 @@ mod tests {
         assert!(key_pem.contains("PRIVATE KEY"));
         assert_eq!(chain_pem.matches("BEGIN CERTIFICATE").count(), 2);
 
-        // The leaf carries SAN=chatgpt.com and is issued by "Roster Box CA".
+        // The leaf carries SAN=chatgpt.com and is issued by "Impyard Box CA".
         let leaf_der = pem::parse_x509_pem(chain_pem.as_bytes()).unwrap().1;
         let (_, leaf) = parse_x509_certificate(&leaf_der.contents).unwrap();
-        assert!(leaf.issuer().to_string().contains("Roster Box CA"));
+        assert!(leaf.issuer().to_string().contains("Impyard Box CA"));
         let san = leaf
             .get_extension_unique(&oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME)
             .unwrap()

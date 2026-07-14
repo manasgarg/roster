@@ -3,21 +3,21 @@
 **Status: increments 1–3 implemented and verified live.** Taint is one
 predicate (`RunContext::tainted()`: channel/user context, or `inbound` for
 relay tasks whose prompt embeds third-party content). Tainted runs mount the
-shelf `:ro` with `ROSTER_KNOWLEDGE_MODE=read` and no namespace; clean runs get
+shelf `:ro` with `IMPYARD_KNOWLEDGE_MODE=read` and no namespace; clean runs get
 no memory recall. `file_task` bridges; the participant scan polices it.
 
-Verified in the live deployment (worker kdemo, relay tasks):
+Verified in the live deployment (imp kdemo, relay tasks):
 
 - Tainted run: `docker inspect` shows the knowledge mount `RW=false mode=ro`;
   run record `mode: "read", state: "read-only"`; the box reported `MODE=read`.
 - The bridge, end to end: a tainted run called `file_task` → filed a
-  worker-only task → that clean task ran with `mode: "append"` and integrated
+  imp-only task → that clean task ran with `mode: "append"` and integrated
   a commit (453b0dc). Person-space read the shelf; world-space wrote it.
 - The deny branch is unit-tested at the exact call site
-  (`boundary::check_task_prompt`), because the live worker declined to even
+  (`boundary::check_task_prompt`), because the live imp declined to even
   attempt the refused calls — correct behavior, but not a test of enforcement.
 
-Deferred as specced: receipts-for-records, `worker knowledge redact`.
+Deferred as specced: receipts-for-records, `imp knowledge redact`.
 
 **The problem.** Memory (person-space: consent, scopes, forget, retention) and
 knowledge (world-space: immutable records, Git history, org-visible) have
@@ -42,10 +42,10 @@ A run is **tainted** when interaction content or context enters it:
   context for reply routing) — always
 - continuation runs inheriting a channel context
 - any run with interaction-memory recall injected (memory is person-space
-  by definition; worker-scoped notes included)
+  by definition; imp-scoped notes included)
 
-A run is **clean** when it is worker-only scope: trigger-fired, admin-filed
-(`worker task add`), self-filed (below), or adhoc `worker run` — prompt only,
+A run is **clean** when it is imp-only scope: trigger-fired, admin-filed
+(`imp task add`), self-filed (below), or adhoc `imp run` — prompt only,
 no recall, no participants.
 
 | Run | Knowledge mount | Recall |
@@ -53,7 +53,7 @@ no recall, no participants.
 | tainted | **read-only** (`KnowledgeMode::Read`) | as today |
 | clean | **read-write** (append, or reorganization) | none |
 
-Read-only mechanics: the checkout mounts `:ro`, `ROSTER_KNOWLEDGE_MODE=read`,
+Read-only mechanics: the checkout mounts `:ro`, `IMPYARD_KNOWLEDGE_MODE=read`,
 no record namespace, no checkpoint, run record notes `mode: "read"`.
 Consulting the shelf mid-conversation is unchanged — world→person is the safe
 direction.
@@ -67,12 +67,12 @@ writing records. New governed action:
 file_task — executor "task"; payload { prompt, ceiling_min? }
 ```
 
-The filed task is **worker-only by construction** (no channel/user context
+The filed task is **imp-only by construction** (no channel/user context
 attached — a channel id may appear in the prompt as a delivery *address*;
 addresses are not content, and outbound sends stay governed by channel trust).
-Default trust: auto for the worker's own queue, like `remember` — the
+Default trust: auto for the imp's own queue, like `remember` — the
 crossing is controlled by the scan below, and admins can ladder it to "gate"
-per worker.
+per imp.
 
 This makes the task prompt the **entire residual leak surface**: one
 paragraph per crossing — journaled, scannable, gateable — instead of a wide
@@ -80,7 +80,7 @@ border of bulk file writes.
 
 ## The scan: participants, not PII
 
-Generic PII detection is mushy; roster has an unfair advantage — the host
+Generic PII detection is mushy; impyard has an unfair advantage — the host
 knows exactly who was in the filing run. Scan two places:
 
 1. **`file_task` payloads filed from tainted runs** (the choke point).
@@ -91,7 +91,7 @@ Match, exactly: the run's channel id, `user_id`, author ids and display names
 from that channel's history; mechanically: Slack member ids (`U…`/`W…`),
 Discord snowflakes in mention syntax, `<@…>`, email addresses. A hit **denies
 with a legible reason** ("names a conversation participant — that belongs in
-memory") and journals the event; the worker rephrases. Policy can escalate
+memory") and journals the event; the imp rephrases. Policy can escalate
 deny → gate for human review.
 
 Known limit, stated honestly: paraphrase still passes the scan. The scan
@@ -105,13 +105,13 @@ cannot write records at all, scanned or not.
 write_from = "clean-room"   # default; "any-run" = legacy behavior (scan-only)
 ```
 
-Per-worker overlay as usual. Turning `clean-room` on for an existing
+Per-imp overlay as usual. Turning `clean-room` on for an existing
 deployment should be paired with a one-time audit of existing records (a
 leaked person-fact propagates into every future clean room via the base
-clone). A later `worker knowledge redact` (audited git-filter surgery) is the
+clone). A later `imp knowledge redact` (audited git-filter surgery) is the
 repair path — specced here, deferred.
 
-## Worker-facing text
+## Imp-facing text
 
 The knowledge-shelf paragraph of the runtime policy gains the rule and the
 recipe: records describe the world, never the people you talk with — no
@@ -137,15 +137,15 @@ what its task prompt smuggled in. Deferred until the boundary above is live.
    journal event per crossing.
 3. **Participant scan** (M): shared matcher over (channel history authors +
    mechanical patterns); wired at file_task submit and checkpoint validate.
-4. Later: receipts-for-records; audit pass + `worker knowledge redact`.
+4. Later: receipts-for-records; audit pass + `imp knowledge redact`.
 
 ## Verification
 
-- Session run (live channel): `ROSTER_KNOWLEDGE_MODE=read`, write to the
+- Session run (live channel): `IMPYARD_KNOWLEDGE_MODE=read`, write to the
   mount fails with EROFS, no checkpoint attempted, run record says read.
 - Relay task: same.
 - Trigger/admin task: writable, checkpoint commits as today.
-- `file_task` from a session: task appears worker-only; prompt containing a
+- `file_task` from a session: task appears imp-only; prompt containing a
   participant's name is denied with the legible reason and journaled.
 - Checkpoint of a record naming a run participant (any-run mode): quarantine
   with the same reason.

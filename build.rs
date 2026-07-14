@@ -1,4 +1,4 @@
-//! Embed the git hash in `roster --version` so a running daemon can be told
+//! Embed the git hash in `impyard --version` so a running daemon can be told
 //! apart from a stale binary (ops scar: a detached gateway serving old code).
 
 fn main() {
@@ -17,7 +17,7 @@ fn main() {
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false);
     println!(
-        "cargo:rustc-env=ROSTER_BUILD={hash}{}",
+        "cargo:rustc-env=IMPYARD_BUILD={hash}{}",
         if dirty { "+dirty" } else { "" }
     );
     println!("cargo:rerun-if-changed=.git/HEAD");

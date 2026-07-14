@@ -1,6 +1,6 @@
-# Roster — implementation handoff
+# Impyard — implementation handoff
 
-**Audience: a coding agent** starting implementation of Roster with no prior
+**Audience: a coding agent** starting implementation of Impyard with no prior
 context. This document is self-contained. Where it references the working
 reference implementation ("Yuko", the repo this doc was authored in), the path
 is `/home/manas/projects/yuko/1` and its KB is `~/research-kb`; if you have
@@ -8,7 +8,7 @@ read access, port from it — if not, this document plus the design doc are
 sufficient to rebuild.
 
 **Companion documents** (same `docs/` dir, read in this order):
-1. `digital-worker-platform.md` — the design, plain-English, owner-approved
+1. `digital-imp-platform.md` — the design, plain-English, owner-approved
    structure (the 13 pieces). **The design is settled; do not re-litigate it.**
 2. `vendor-nanoclaw.md`, `spike-nanoclaw-2026-07-06.md`, `vendor-letta.md` —
    evaluated references with borrow/reject verdicts.
@@ -19,10 +19,10 @@ sufficient to rebuild.
 
 ## 1. What you are building
 
-**Roster**: a platform where the owner describes a "digital worker" in a
-folder of config files, deploys it in minutes, and the worker does proactive,
+**Impyard**: a platform where the owner describes a "imp" in a
+folder of config files, deploys it in minutes, and the imp does proactive,
 ongoing agentic work (research, monitoring, curation, correspondence) — while
-**every action passes through governance machinery the worker cannot touch**:
+**every action passes through governance machinery the imp cannot touch**:
 a policy judge with default-deny, budget ledgers, per-action-class trust that
 is *earned*, human approval gates on everything irreversible, and a permanent
 audit record.
@@ -31,7 +31,7 @@ One line: **rented intelligence, owned governance.** The LLM harness is a
 swappable-in-principle, pinned-in-practice engine; the product is the
 organization around it.
 
-What differentiates Roster from every existing framework (verified by four
+What differentiates Impyard from every existing framework (verified by four
 evaluations — pi, NanoClaw, OpenClaw, Letta): runtimes, channels, and memory
 tricks exist off the shelf; **governed identity, earned trust,
 budgets-as-ledgers, and decisions-as-records exist nowhere.** That is the
@@ -46,31 +46,31 @@ build.
 | D1 | Design doc first; code only when owner green-lights | 2026-07-08 | Owner call |
 | D2 | **Productizable / multi-tenant trust model from day one** | 2026-07-08 | Owner call; org = hard boundary; but build order still starts single-org |
 | D3 | **pi is the only engine. No provider seam, no adapter layer** | 2026-07-08 | Owner call. The container contract (§7.3) is the de-facto coarse boundary; do not design an in-process abstraction |
-| D4 | **TypeScript everywhere** is the destination | 2026-07-08 | pi extensions force TS worker-side; shared contract types; Node 24 type-stripping = no build step |
+| D4 | **TypeScript everywhere** is the destination | 2026-07-08 | pi extensions force TS imp-side; shared contract types; Node 24 type-stripping = no build step |
 | D5 | Existing Rust judge (PDP) stays **until first major surgery** (org-boundary increment), then ports to TS | 2026-07-08 | It works; it parses no hostile input (memory-safety argument void); live policy corpus uses only `true`, `==`, `!=`, `\|\|`, `in` → ~80-line TS evaluator replaces CEL; `node:sqlite` replaces the Rust SQLite ledgers |
 | D6 | **Budget gates proactive work only** — owner-filed/chat work ALWAYS runs | 2026-07-07 | Owner correction, now invariant. Classification happens at dispatch (supervisor), not in-run |
 | D7 | Budget/spend caps live in **owner-only config**; agent may propose pace (cadence) but never money | 2026-07-07 | The agent must never be able to raise its own budget |
 | D8 | Enforcement never lives in pi extensions | 2026-07-08 | Extensions run inside the container (untrusted zone). Soft budget stop = supervisor at dispatch; hard stop = gateway stops serving credentials (incl. the model key) |
 | D9 | Briefs (finished deliverables) live in the **disk cache**, not the KB git repo | 2026-07-08 | Owner call. Notes are the durable substrate; briefs are derived artifacts |
-| D10 | **Promotion rule** (from Letta, repurposed for security): workers append notes; only the curator session promotes into the always-loaded core; charter edits always gate to owner | 2026-07-08 | Closes the injection→self-programming hole |
-| D11 | Trust **never ports** on worker export/import; imported workers restart at T0 | 2026-07-08 | Track record only means something where earned |
+| D10 | **Promotion rule** (from Letta, repurposed for security): imps append notes; only the curator session promotes into the always-loaded core; charter edits always gate to owner | 2026-07-08 | Closes the injection→self-programming hole |
+| D11 | Trust **never ports** on imp export/import; imported imps restart at T0 | 2026-07-08 | Track record only means something where earned |
 | D12 | Channels **relay, never act**; inbound email = content, never commands (spoofable); outbound email gated at T0 | 2026-07-08 | Security invariant |
 | D13 | Adopt-vs-build verdicts: NanoClaw **declined**, Letta **declined**, OpenClaw never a candidate. Borrow ideas only | 2026-07-06/08 | See vendor docs; revisit triggers recorded there |
 | D14 | Owner's 13-piece model is the build structure; six-block view is the work-division view | 2026-07-08 | Owner call |
 | D15 | **No invented action-class taxonomy.** Governed requests are matched on the standard HTTP vocabulary (protocol/method/host/port/path/headers/payload) + MCP's own terms (`tools/call`, tool name); deployment-specific meaning attaches to owner-named rule `name`s. Replaces the reference's fixed classes (`acquire-source`, …). Budgets/trust/gates will bind to rule names | 2026-07-08 | Owner call. Standard vocabulary ports across deployments; invented taxonomies don't. See `docs/judge-spec.md` |
-| D16 | **The gateway terminates TLS with a host-minted CA** (key at `~/.roster/ca/`, never on the box) to see full requests; `tunnel` verdict is the escape hatch for cert-pinning clients / interception-breaks-pi fallback | 2026-07-08 | Follows from D15 — matching all params requires seeing inside TLS. Verified: pi honors `NODE_EXTRA_CA_CERTS`, so `tunnel` is unused for pi |
+| D16 | **The gateway terminates TLS with a host-minted CA** (key at `~/.impyard/ca/`, never on the box) to see full requests; `tunnel` verdict is the escape hatch for cert-pinning clients / interception-breaks-pi fallback | 2026-07-08 | Follows from D15 — matching all params requires seeing inside TLS. Verified: pi honors `NODE_EXTRA_CA_CERTS`, so `tunnel` is unused for pi |
 | D17 | **The gateway is Rust; orchestration stays TypeScript.** The trusted core (TLS termination, CA/cert minting, judge, vault + OAuth refresh, injection, metering, call log) is a Rust binary; the box runner, docker lockdown, CLI, and future supervisor stay TS. Seam = the container contract (§7.3) + the JSON policy/config files. **Reverses D5's deferral and expands it** (D5 kept the Rust judge only "until first major surgery"; the surgery is now — the gateway parses hostile request/response bodies and evaluates expressions over them, so the memory-safety argument D5 called void is back), and **refines D3/D4** (TS is the destination for orchestration, not the trusted request path) | 2026-07-08 | Owner call. The gateway now terminates TLS and parses attacker-controlled bodies on the hot path — exactly the hostile-input parser Rust is for; CEL (D18) has a mature Rust impl. Port-first: port the working TS gateway to parity, then build metering on the Rust base |
 | D18 | **CEL is the one expression language** — judge conditions, derived-field extraction from bodies, and currency/spend mapping all evaluate CEL against a shared context (`request.*`, `response.*`, `decision.*`, `subject`, `trust.*`, `environment.*`, `vars`). **Reverses D5's plan to shrink CEL** to a ~80-line matcher | 2026-07-08 | Owner call. Metering needs arbitrary currency = f(request, response) expressions; one language across judge/extract/meter beats three ad-hoc matchers. cel-interpreter (Rust) is mature. The structured judge matcher ports first (parity); CEL lands with the metering increment and can retrofit the judge |
-| D19 | **WorkerSpec is TOML, compiled at `deploy`.** Owner authors `org.toml` (shared grants + fleet-aggregate caps + metering) and `workers/<name>/worker.toml` (per-worker overlay); `deploy` validates and compiles them into the runtime config the gateway reads (`runs/compiled/{policy,budget}.json`), tagging each rule and limit with its **scope** (`org` or `org/<name>`). The gateway applies rules/limits to a call's subject by the same ancestor match the ledger uses. Lifecycle verbs use infrastructure vocabulary, not HR: `create`, `deploy`, `suspend`/`resume`, `archive` (was hire/retire) | 2026-07-09 | Owner call: TOML over YAML; no anthropomorphic verbs; compile-at-deploy (a validation/provision gate, keeps the gateway lean, source-of-truth is the TOML). Scope-tagged rules reuse the ledger's ancestor logic |
-| D20 | **The language boundary = the trust boundary.** The entire *trusted host-side* control plane is Rust — one `roster` binary with subcommands (`serve`, `create`, `deploy`, `box`, `connect`, `vault-sync`, and the future supervisor). TypeScript is confined to the *untrusted box*: pi (vendored) and the pi extensions, which talk to the Rust side over the serialized container contract (§7.3). **Reverses D4** ("TS everywhere is the destination" — written before the gateway went Rust) and **supersedes D17's split** (which drew the line at "hostile input on the hot path"; the orchestration is also trusted and shares the gateway's schemas, so the real line is host vs box) | 2026-07-09 | Owner call. The gateway↔orchestration split was an *artificial* boundary inside the trusted zone forcing every governance schema (policy/budget/credential/provider/identity) to be declared twice; unifying kills the duplication and yields one binary + one toolchain. The one remaining cross-language boundary now coincides with the trust edge, where serialization is mandatory anyway. Decided before building the supervisor/queue/channels to avoid a second port |
+| D19 | **ImpSpec is TOML, compiled at `deploy`.** Owner authors `org.toml` (shared grants + fleet-aggregate caps + metering) and `imps/<name>/imp.toml` (per-imp overlay); `deploy` validates and compiles them into the runtime config the gateway reads (`runs/compiled/{policy,budget}.json`), tagging each rule and limit with its **scope** (`org` or `org/<name>`). The gateway applies rules/limits to a call's subject by the same ancestor match the ledger uses. Lifecycle verbs use infrastructure vocabulary, not HR: `create`, `deploy`, `suspend`/`resume`, `archive` (was hire/retire) | 2026-07-09 | Owner call: TOML over YAML; no anthropomorphic verbs; compile-at-deploy (a validation/provision gate, keeps the gateway lean, source-of-truth is the TOML). Scope-tagged rules reuse the ledger's ancestor logic |
+| D20 | **The language boundary = the trust boundary.** The entire *trusted host-side* control plane is Rust — one `impyard` binary with subcommands (`serve`, `create`, `deploy`, `box`, `connect`, `vault-sync`, and the future supervisor). TypeScript is confined to the *untrusted box*: pi (vendored) and the pi extensions, which talk to the Rust side over the serialized container contract (§7.3). **Reverses D4** ("TS everywhere is the destination" — written before the gateway went Rust) and **supersedes D17's split** (which drew the line at "hostile input on the hot path"; the orchestration is also trusted and shares the gateway's schemas, so the real line is host vs box) | 2026-07-09 | Owner call. The gateway↔orchestration split was an *artificial* boundary inside the trusted zone forcing every governance schema (policy/budget/credential/provider/identity) to be declared twice; unifying kills the duplication and yields one binary + one toolchain. The one remaining cross-language boundary now coincides with the trust edge, where serialization is mandatory anyway. Decided before building the supervisor/queue/channels to avoid a second port |
 
-**Note (2026-07-08):** build is proceeding **from scratch** in the Roster
+**Note (2026-07-08):** build is proceeding **from scratch** in the Impyard
 repo in small increments (owner call), not porting Yuko as §6 suggests. D5's
 ~80-line TS judge is now the live `src/judge.ts` (built fresh, not ported);
 its match language is D15's, not CEL. Shipped so far: CLI scaffold, the box
 (§3.3), the judge + inspecting gateway (§3.7/§3.9 seed), and **credential
 injection** — the model key now lives in a host-side vault
-(`~/.roster/vault/`) and is injected in transit; the box carries only a
+(`~/.impyard/vault/`) and is injected in transit; the box carries only a
 sentinel; and **gateway-owned OAuth refresh** (the gateway refreshes expired
 tokens itself via a provider table — no pi dependency in the credential path;
 single-flight, atomic vault write, fail-closed, audit to
@@ -134,9 +134,9 @@ Per-session Docker container:
   (model key behind gateway).
 
 ### 3.4 Filing system (four stores)
-- **Config**: read-only mounted (the WorkerSpec).
-- **Cache** (`~/loop-store` pattern in reference; per-worker namespace in
-  Roster): raw fetched pages/searches (`sources/<kind>-<hash>.md`), channel
+- **Config**: read-only mounted (the ImpSpec).
+- **Cache** (`~/loop-store` pattern in reference; per-imp namespace in
+  Impyard): raw fetched pages/searches (`sources/<kind>-<hash>.md`), channel
   logs (`discord/YYYY-MM-DD.jsonl`), finished briefs. Off-git. TTL + size
   caps (new requirement, not in reference).
 - **Store** (git): linked atomic notes — one idea per note, `[[links]]`,
@@ -146,8 +146,8 @@ Per-session Docker container:
   context compiler** (new component — increment 0): labeled, size-budgeted
   blocks (charter / working set / procedures / note index / org context /
   task). Same assembly every session; log the compiled result so "what did
-  the worker see" is answerable.
-- **Promotion rule** (D10): workers append; a separate curator session (which
+  the imp see" is answerable.
+- **Promotion rule** (D10): imps append; a separate curator session (which
   never fetches raw web content) promotes into core; charter → owner gate.
 
 ### 3.5 Wake-ups
@@ -156,21 +156,21 @@ schedule fire). **A wake-up never does work inline — it files a task** (§3.6)
 Cadence in the agent-proposable `cadence.yaml` (owner approves).
 
 ### 3.6 Task queue
-One durable queue per worker; states `waiting → running → needs-review →
+One durable queue per imp; states `waiting → running → needs-review →
 done`. All work becomes a task: owner-filed (reactive), heartbeat/planner
 /schedule-filed (proactive, labeled as such — reference uses a
-`loop:proactive` label). Queue is readable by the worker (dedup: "don't
+`loop:proactive` label). Queue is readable by the imp (dedup: "don't
 re-propose what's queued"). Reference uses GitHub Issues
 (`q/research`, `loop:in-progress`, `loop:needs-review` labels) — see open
 question Q3 for built-in queue vs GitHub mirror.
 
 ### 3.7 Gateway (keys + judge)
 One trusted host process (reference splits it: `broker/` TS on :7213 +
-`pdp/` Rust on :7212; Roster may keep the split until D5's port merges them
+`pdp/` Rust on :7212; Impyard may keep the split until D5's port merges them
 functionally):
-- holds all credentials (vault); injects **in transit**; workers never see keys
+- holds all credentials (vault); injects **in transit**; imps never see keys
 - default-deny; verdicts: `allow | deny | gate | budget-and-deduct`
-- consults per-(worker, action-class) trust + ledgers before answering
+- consults per-(imp, action-class) trust + ledgers before answering
 - **writes a decision record for every answer** with full context
   (reference: `pdp/data/decisions.jsonl`)
 - endpoints pattern (reference): `/v1/search`, `/v1/fetch`, `/v1/recall`
@@ -180,7 +180,7 @@ functionally):
 - increment 3: model calls also proxied here (hard budget + failover)
 
 ### 3.8 Budgets
-- Ledgers: tokens/hour, currency/day, searches/day per worker; org aggregate
+- Ledgers: tokens/hour, currency/day, searches/day per imp; org aggregate
   cap above (fleet cannot run away collectively).
 - **Soft stop (supervisor, dispatch-time)**: over-cap ⇒ don't start proactive
   work; reactive always runs (D6). Throttled owner notice when paused.
@@ -192,7 +192,7 @@ functionally):
   `totalTokens` + `cost.total`, skip `stdout*` files).
 
 ### 3.9 Approval desk (gates + trust)
-- Trust ladder per (worker, action-class): T0 all-irreversibles-gated (birth
+- Trust ladder per (imp, action-class): T0 all-irreversibles-gated (birth
   state) → T1 longer deadlines → T2 free + sampled review (pass rate decays
   sampling toward a 10% floor) → T3 audit-only.
 - Failed review ⇒ sampling back to 100%. `--incident` ⇒ automatic tier
@@ -216,16 +216,16 @@ functionally):
   dependency-free).
 - Email: inbound = content only (D12); outbound = `send-communication`, T0.
 
-### 3.11 WorkerSpec
+### 3.11 ImpSpec
 ```
-workers/<name>/
-  worker.yaml    # OWNER-ONLY: template, engine image pin, tool grants
+imps/<name>/
+  imp.yaml    # OWNER-ONLY: template, engine image pin, tool grants
                  # (= gateway endpoints + action classes), budgets, channels,
                  # kb/store namespaces, escalation routing
   charter.md     # AGENT-PROPOSABLE via propose_charter_edit → owner button
   cadence.yaml   # AGENT-PROPOSABLE via propose_cadence → owner button
   procedures/    # seed procedures; grow via store under promotion rule
-  policies/      # OWNER-ONLY worker overlay on org policy corpus
+  policies/      # OWNER-ONLY imp overlay on org policy corpus
 ```
 No credentials in specs, ever. No trust in specs, ever (trust = derived
 ledger state). Export/import = spec + knowledge snapshot, secrets nulled,
@@ -237,11 +237,11 @@ decision records immutable forever).
 ### 3.12 Supervisor
 One long-running process, **no model**. Watches queues, dispatches sessions,
 enforces concurrency, fires heartbeats/schedules, runs digest clock, owns
-worker lifecycles. Two laws from shipped bugs (§8):
+imp lifecycles. Two laws from shipped bugs (§8):
 1. **Every timer/cursor is durable** (disk-persisted; restart-at-any-moment
    is the normal case).
 2. **One writer lane per surface** (journal relay, queue dispatch, ledger
-   append, store commit — serialized per worker).
+   append, store commit — serialized per imp).
 
 ### 3.13 Observability
 - Append-only journal per session (every search/fetch/decision/narration/file
@@ -249,7 +249,7 @@ worker lifecycles. Two laws from shipped bugs (§8):
   ledgers** — never model-written.
 - Digest cadence (reference: 12h + `/digest` on demand + spend line in
   `/status`): ran-by-kind, tokens+$ vs cap, queue/gates/reviews pending.
-- Fleet view (later): per worker — state, queue depth, spend, per-class trust,
+- Fleet view (later): per imp — state, queue depth, spend, per-class trust,
   gates waiting.
 
 ---
@@ -261,7 +261,7 @@ For subdividing work: **A Definition** (spec/templates/lifecycle),
 (supervisor/queue/box/journal/engine), **D Custody** (vault/injection/egress/
 endpoints), **E Knowledge** (store/core/recall/curation/retention),
 **F Front Office** (channels/approvals/digests/fleet/roles). Contracts:
-WorkerSpec (A→all), Task (→queue), DecisionRequest→Decision (C,D→B), Journal
+ImpSpec (A→all), Task (→queue), DecisionRequest→Decision (C,D→B), Journal
 events (C→E,F), Human verdicts (F→B), Container contract (inside C). Tenancy
 is a property of all six, not a block. **Subdivide B then A first** — they own
 the vocabulary (action classes) and the input (spec) everything else consumes.
@@ -270,11 +270,11 @@ the vocabulary (action classes) and the input (spec) everything else consumes.
 
 ## 5. Invariants (testable; violating any is a bug)
 
-1. Nothing the worker ingests is trusted — including notes it wrote after
+1. Nothing the imp ingests is trusted — including notes it wrote after
    ingesting (attacker-reachable via prompt injection).
-2. No secrets in any worker, spec, or container. Injection in transit only.
+2. No secrets in any imp, spec, or container. Injection in transit only.
 3. No egress except through the gateway (NAT-disabled bridge).
-4. Code/config mounts read-only; a worker cannot edit its rules, extensions,
+4. Code/config mounts read-only; an imp cannot edit its rules, extensions,
    or spec.
 5. No matching rule ⇒ deny. Unanswered gate ⇒ deny (fail closed).
    `access-private-source` ⇒ owner gate with deny-on-timeout.
@@ -293,14 +293,14 @@ the vocabulary (action classes) and the input (spec) everything else consumes.
 
 Live and verified as of 2026-07-08. Port, don't rewrite, wherever it fits.
 
-| Path | What it is | Roster disposition |
+| Path | What it is | Impyard disposition |
 |---|---|---|
 | `packages/driver/src/run.ts` | Per-task runner: housekeeping, gate sweep, prompt builders (attend/plan/curate/research), PDP autostart, container spawn | Generalize into session-runner; prompt builders → context compiler (increment 0 replaces ad-hoc assembly) |
 | `packages/driver/src/usage.ts` | Token/cost tally from pi session JSONL | Port as-is |
 | `packages/driver/src/{gates,trust,review,reviews}.ts` | Gate sweep/resolve, trust CLI, review verdicts | Port; extend to promotion + send gates |
 | `packages/driver/src/{container,lockdown}.ts` | Docker run + egress lockdown (~40 lines, NAT-disabled bridge) | Port as-is |
 | `packages/driver/src/{tracker,kb,report,steer,journal-read}.ts` | GitHub Issues client, KB publish, report renderer, steering | Port; tracker behind queue abstraction (Q3) |
-| `packages/daemon/src/daemon.ts` | Supervisor: tick loop (20s poll), dispatch (issue/attend/plan/curate), journal relay w/ `processed` cursor + `supersedeJournal`, budget gate (`proactiveAllowed`), digest, cadence, proposals (charter/cadence buttons), usage recording | The Roster supervisor grows from this. Keep: durable stamps (`runs/.daemon/last-plan`, `last-curate`, `last-digest`), `loop:proactive` labeling, throttled pause notice |
+| `packages/daemon/src/daemon.ts` | Supervisor: tick loop (20s poll), dispatch (issue/attend/plan/curate), journal relay w/ `processed` cursor + `supersedeJournal`, budget gate (`proactiveAllowed`), digest, cadence, proposals (charter/cadence buttons), usage recording | The Impyard supervisor grows from this. Keep: durable stamps (`runs/.daemon/last-plan`, `last-curate`, `last-digest`), `loop:proactive` labeling, throttled pause notice |
 | `packages/daemon/src/discord.ts` | Hand-rolled Discord gateway (resume, reconnect, buttons) | Port as channel adapter #1 |
 | `packages/daemon/src/schedule.ts` | `schedules.json` timed research | Fold into wake-ups |
 | `packages/pi-extensions/src/*` | The behavior kit (§3.2) | Port; add tool-rules layer (protocol shape only) |
@@ -308,8 +308,8 @@ Live and verified as of 2026-07-08. Port, don't rewrite, wherever it fits.
 | `pdp/` (Rust, :7212) | Judge: YAML policies + 5-op conditions, SQLite ledgers/trust, decision records, `environment.yaml` mode dial | Keep running; port to TS at org-boundary increment (D5) |
 | `policies/*/*.yaml` | org/team/learned precedence, conditions | Port format as-is |
 | `schemas/` | DecisionRequest/Context/Decision + journal event schemas, action classes | **The narrow waist — port first, change least** |
-| `loop.json` | `tracker_repo, kb_dir, principal_id, pdp_url, gateway_mode (shadow/enforce/off), run_mode (host/container), egress_lockdown, token_budget_hourly` | Becomes org+worker config split |
-| `cadence.json` | `plan_every_hours, curate_every_hours, max_concurrent_research` | Becomes per-worker `cadence.yaml` |
+| `loop.json` | `tracker_repo, kb_dir, principal_id, pdp_url, gateway_mode (shadow/enforce/off), run_mode (host/container), egress_lockdown, token_budget_hourly` | Becomes org+imp config split |
+| `cadence.json` | `plan_every_hours, curate_every_hours, max_concurrent_research` | Becomes per-imp `cadence.yaml` |
 | State dir `runs/.daemon/` | `usage.jsonl`, `last-digest`, `last-plan`, `last-curate` | Pattern generalizes to the durable scheduler table |
 
 Env conventions: secrets in repo-root `.env` (gitignored), loaded by driver;
@@ -390,30 +390,30 @@ reset cadence stamps). Nothing applies without the button.
 
 ## 9. Build plan (increments; each live + tested before the next)
 
-**Increment 0 — prove two pieces inside Yuko (no Roster scaffolding):**
+**Increment 0 — prove two pieces inside Yuko (no Impyard scaffolding):**
 - Context compiler: replace ad-hoc `build*Prompt` with deterministic budgeted
   blocks; log compiled context per session. Accept: existing runs behave the
   same; "what did it see" is answerable from the log. The concrete contract,
   security boundary, and migration are in `docs/context-compiler-spec.md`.
-- Promotion rule: split store writes (worker append-only) from core promotion
+- Promotion rule: split store writes (imp append-only) from core promotion
   (curator only); charter already gates. Accept: a planted "malicious" note
   cannot enter the compiled core without a curator run; curator diff is
   git-visible.
 
-**Increment 1 — WorkerSpec + hire/deploy (single org):**
-CLI scaffolds `workers/<name>/` from a template; deploy validates spec,
+**Increment 1 — ImpSpec + hire/deploy (single org):**
+CLI scaffolds `imps/<name>/` from a template; deploy validates spec,
 provisions surfaces (queue, journal dir, store namespace, ledger rows, T0
-trust), registers with supervisor. Re-express Yuko as `workers/yuko/`.
+trust), registers with supervisor. Re-express Yuko as `imps/yuko/`.
 Accept: **zero behavior change** for Yuko running from its spec.
 
-**Increment 2 — second worker (monitor template):**
+**Increment 2 — second imp (monitor template):**
 Shares gateway/supervisor/judge; own identity, budgets, trust, namespaces.
-Accept: two workers run concurrently; ledgers and trust records never bleed;
-per-worker digest correct.
+Accept: two imps run concurrently; ledgers and trust records never bleed;
+per-imp digest correct.
 
 **Increment 3 — model key behind gateway (hard budget):**
 Proxy model calls; serve credential only while ledger positive; failover
-here. Accept: an over-hard-cap worker's model call fails at the gateway
+here. Accept: an over-hard-cap imp's model call fails at the gateway
 mid-run; reactive soft-cap behavior unchanged (D6).
 
 **Increment 4 — queue as first-class (Q3):**
@@ -474,7 +474,7 @@ answer needed) · OpenClaw-derived ideas were never code-verified.
 
 ## 12. Open questions for the owner
 
-Q1 name ("Roster" is placeholder) · Q2 third/fourth templates (correspondent
+Q1 name ("Impyard" is placeholder) · Q2 third/fourth templates (correspondent
 vs ops-runner) · Q3 queue: built-in day one vs GitHub-backed until
 increment 4 · Q4 inbound email authn: any scheme trustworthy, or content-only
 permanent · Q5 journal cold storage: local archive vs object storage.

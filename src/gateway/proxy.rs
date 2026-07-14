@@ -91,7 +91,7 @@ fn record(
         "verdict": verdict.as_str(),
         "rule": rule,
         "request": {
-            "worker": gr.worker,
+            "imp": gr.imp,
             "protocol": gr.protocol,
             "method": gr.method,
             "host": gr.host,
@@ -181,7 +181,7 @@ fn empty() -> Body {
 /// Resolve the call's subject and run from the CONNECT's Proxy-Authorization. The
 /// trusted runner sets `HTTP(S)_PROXY=http://<token>@…` and registers
 /// `<state>/identity/<token>.json = {subject}` (never mounted into the box), so the box
-/// can present only its own random token — it can't claim another worker's
+/// can present only its own random token — it can't claim another imp's
 /// identity. Unknown/absent ⇒ "org" (host-side tools with no creds).
 fn resolve_identity(proxy_auth: Option<&hyper::header::HeaderValue>) -> (String, String) {
     let default = || ("org".to_string(), String::new());
@@ -225,10 +225,10 @@ fn deny_response(verdict: Verdict, rule: Option<&str>) -> Response<Body> {
     )));
     *resp.status_mut() = StatusCode::FORBIDDEN;
     let headers = resp.headers_mut();
-    headers.insert("x-roster-verdict", "deny".parse().unwrap());
+    headers.insert("x-impyard-verdict", "deny".parse().unwrap());
     if let Some(rule) = rule {
         if let Ok(v) = rule.parse() {
-            headers.insert("x-roster-rule", v);
+            headers.insert("x-impyard-rule", v);
         }
     }
     resp
@@ -264,7 +264,7 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
         // Tunnel escape hatch: judge host+port only; if the rule says tunnel,
         // raw-pipe without terminating (host-only visibility).
         let pre = GovernedRequest {
-            worker: Some(subject.clone()),
+            imp: Some(subject.clone()),
             protocol: "https".into(),
             method: "CONNECT".into(),
             host: host.clone(),
@@ -371,7 +371,7 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
             )));
             *resp.status_mut() = StatusCode::PAYMENT_REQUIRED;
             let headers = resp.headers_mut();
-            headers.insert("x-roster-verdict", "budget".parse().unwrap());
+            headers.insert("x-impyard-verdict", "budget".parse().unwrap());
             if let Ok(v) = refusal.retry_after_secs.to_string().parse() {
                 headers.insert(hyper::header::RETRY_AFTER, v);
             }
@@ -411,7 +411,7 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: S
     if is_ws {
         // A WebSocket handshake carries no body; judge on headers, then tunnel.
         let gr = GovernedRequest {
-            worker: Some(subject.clone()),
+            imp: Some(subject.clone()),
             protocol: protocol.into(),
             method,
             host: host.clone(),
@@ -433,7 +433,7 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: S
     let body_bytes = incoming.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
     let mcp = lift_mcp(&headers, &body_bytes);
     let gr = GovernedRequest {
-        worker: Some(subject.clone()),
+        imp: Some(subject.clone()),
         protocol: protocol.into(),
         method: parts.method.as_str().to_string(),
         host: host.clone(),

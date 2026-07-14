@@ -16,7 +16,7 @@ pub type BErr = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Gate {
     pub id: String,
-    pub worker: String,
+    pub imp: String,
     /// The owner-named action (intent = rule/action name, D15).
     pub intent: String,
     /// Which trusted-side executor performs it once approved.
@@ -50,10 +50,10 @@ impl Gate {
     pub fn is_terminal(&self) -> bool {
         matches!(self.state.as_str(), "executed" | "failed" | "denied")
     }
-    /// A compact view for `gates ls` and the worker briefing.
+    /// A compact view for `gates ls` and the imp briefing.
     pub fn summary(&self) -> Value {
         serde_json::json!({
-            "id": self.id, "worker": self.worker, "intent": self.intent,
+            "id": self.id, "imp": self.imp, "intent": self.intent,
             "state": self.state, "filed_at": self.filed_at,
             "decided_by": self.decided_by, "decided_at": self.decided_at,
             "executed_at": self.executed_at,
@@ -61,10 +61,10 @@ impl Gate {
     }
 }
 
-// Gates live under their worker's subtree; scans walk every worker. A worker
+// Gates live under their imp's subtree; scans walk every imp. An imp
 // handle may be a bare name or a subject — paths normalizes.
-fn worker_dirs() -> Vec<PathBuf> {
-    std::fs::read_dir(paths::workers_data_dir())
+fn imp_dirs() -> Vec<PathBuf> {
+    std::fs::read_dir(paths::imps_data_dir())
         .into_iter()
         .flatten()
         .flatten()
@@ -85,9 +85,9 @@ pub fn now() -> String {
 /// removing any stale copy in the other directory (atomic move on transition).
 pub fn save(g: &Gate) -> Result<(), BErr> {
     let (dir, other) = if g.is_terminal() {
-        (paths::worker_gates_resolved_dir(&g.worker), paths::worker_gates_pending_dir(&g.worker))
+        (paths::imp_gates_resolved_dir(&g.imp), paths::imp_gates_pending_dir(&g.imp))
     } else {
-        (paths::worker_gates_pending_dir(&g.worker), paths::worker_gates_resolved_dir(&g.worker))
+        (paths::imp_gates_pending_dir(&g.imp), paths::imp_gates_resolved_dir(&g.imp))
     };
     std::fs::create_dir_all(&dir)?;
     let text = format!("{}\n", serde_json::to_string_pretty(g)?);
@@ -102,9 +102,9 @@ pub fn save(g: &Gate) -> Result<(), BErr> {
 }
 
 pub fn load(id: &str) -> Option<Gate> {
-    for worker in worker_dirs() {
+    for imp in imp_dirs() {
         for sub in ["pending", "resolved"] {
-            if let Ok(s) = std::fs::read_to_string(worker.join("gates").join(sub).join(format!("{id}.json"))) {
+            if let Ok(s) = std::fs::read_to_string(imp.join("gates").join(sub).join(format!("{id}.json"))) {
                 if let Ok(g) = serde_json::from_str::<Gate>(&s) {
                     return Some(g);
                 }
@@ -128,7 +128,7 @@ fn read_dir(dir: PathBuf) -> Vec<Gate> {
 }
 
 pub fn list_pending() -> Vec<Gate> {
-    let mut out: Vec<Gate> = worker_dirs()
+    let mut out: Vec<Gate> = imp_dirs()
         .into_iter()
         .flat_map(|w| read_dir(w.join("gates").join("pending")))
         .collect();
@@ -137,7 +137,7 @@ pub fn list_pending() -> Vec<Gate> {
 }
 
 pub fn list_all() -> Vec<Gate> {
-    let mut all: Vec<Gate> = worker_dirs()
+    let mut all: Vec<Gate> = imp_dirs()
         .into_iter()
         .flat_map(|w| {
             let mut gates = read_dir(w.join("gates").join("pending"));
@@ -149,11 +149,11 @@ pub fn list_all() -> Vec<Gate> {
     all
 }
 
-/// A worker's own gates (for the run-start briefing and the box's read tool).
-/// Accepts a bare name or a subject — reads that worker's subtree directly.
-pub fn for_worker(worker: &str) -> Vec<Gate> {
-    let mut out = read_dir(paths::worker_gates_pending_dir(worker));
-    out.extend(read_dir(paths::worker_gates_resolved_dir(worker)));
+/// An imp's own gates (for the run-start briefing and the box's read tool).
+/// Accepts a bare name or a subject — reads that imp's subtree directly.
+pub fn for_imp(imp: &str) -> Vec<Gate> {
+    let mut out = read_dir(paths::imp_gates_pending_dir(imp));
+    out.extend(read_dir(paths::imp_gates_resolved_dir(imp)));
     out.sort_by(|a, b| a.filed_at.cmp(&b.filed_at));
     out
 }
@@ -164,12 +164,12 @@ pub fn pending_for_task(task_id: &str) -> Vec<Gate> {
     list_pending().into_iter().filter(|g| g.task_id == task_id).collect()
 }
 
-/// A (worker, intent)'s gate history as (executed, denied) — the numbers the
+/// A (imp, intent)'s gate history as (executed, denied) — the numbers the
 /// earned-trust ladder reads. A denial is a reversal signal.
-pub fn history(worker: &str, intent: &str) -> (u32, u32) {
+pub fn history(imp: &str, intent: &str) -> (u32, u32) {
     let mut executed = 0;
     let mut denied = 0;
-    for g in list_all().into_iter().filter(|g| g.worker == worker && g.intent == intent) {
+    for g in list_all().into_iter().filter(|g| g.imp == imp && g.intent == intent) {
         match g.state.as_str() {
             "executed" => executed += 1,
             "denied" => denied += 1,

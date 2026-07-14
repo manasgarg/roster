@@ -1,8 +1,8 @@
-//! `roster server start` — the composition root of the one daemon: bring up
+//! `impyard server start` — the composition root of the one daemon: bring up
 //! the governed-egress gateway, the channel listeners, and the task-dispatch
 //! loop as supervised siblings in one process (one thing to start, one thing
 //! to restart after a rebuild). The machinery lives in its blocks; this file
-//! only wires it. And `roster server status` — health, computed, never
+//! only wires it. And `impyard server status` — health, computed, never
 //! model-written.
 
 use crate::action::gate;
@@ -11,7 +11,7 @@ use crate::work::queue;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("ROSTER_BUILD"), ")");
+const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("IMPYARD_BUILD"), ")");
 
 pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<(), BErr> {
     // Refuse to boot on broken config — better loud at start than silently
@@ -21,7 +21,7 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
         for e in &errors {
             eprintln!("config: {e}");
         }
-        return Err(format!("invalid config ({} error(s)) — fix and retry, or: roster server validate", errors.len()).into());
+        return Err(format!("invalid config ({} error(s)) — fix and retry, or: impyard server validate", errors.len()).into());
     }
 
     if let Ok(c) = crate::config::snapshot() {
@@ -32,21 +32,21 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
 
     let gateway = crate::gateway::start(addr).await?;
     eprintln!(
-        "roster server {BUILD} — gateway on {addr}; dispatch cap {cap}{}{}",
+        "impyard server {BUILD} — gateway on {addr}; dispatch cap {cap}{}{}",
         if once { "; once" } else { "" },
         if no_listen { "; listeners off" } else { "" }
     );
 
-    // Channel listeners: one supervised task per worker that declares one
+    // Channel listeners: one supervised task per imp that declares one
     // ([channels] in its spec).
     let mut listeners = Vec::new();
     if !no_listen && !once {
         let plan = crate::channel::listen::plan();
         if plan.is_empty() {
-            eprintln!("listeners: none configured (a worker opts in via [channels] in its worker.toml)");
+            eprintln!("listeners: none configured (an imp opts in via [channels] in its imp.toml)");
         }
-        for (worker, platform, credential) in plan {
-            listeners.push(tokio::spawn(crate::channel::listen::supervised(worker, platform, credential)));
+        for (imp, platform, credential) in plan {
+            listeners.push(tokio::spawn(crate::channel::listen::supervised(imp, platform, credential)));
         }
     }
 
@@ -60,14 +60,14 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
     result
 }
 
-/// `roster server validate` — parse everything, print every error.
+/// `impyard server validate` — parse everything, print every error.
 pub fn validate() -> Result<(), BErr> {
     match crate::config::load() {
         Ok(c) => {
             println!(
-                "config valid: {} worker(s) [{}], {} grant(s), {} action(s), {} trust rule(s), {} limit(s), {} trigger(s), {} listener(s), {} exposure(s)",
-                c.workers.len(),
-                c.workers.join(", "),
+                "config valid: {} imp(s) [{}], {} grant(s), {} action(s), {} trust rule(s), {} limit(s), {} trigger(s), {} listener(s), {} exposure(s)",
+                c.imps.len(),
+                c.imps.join(", "),
                 c.policy.rules.len(),
                 c.actions.actions.len(),
                 c.actions.trust.len(),
@@ -81,7 +81,7 @@ pub fn validate() -> Result<(), BErr> {
                     println!("warning: [engine] dir {} has no box/ — sessions will fail", dir.display())
                 }
                 Some(dir) => println!("engine: dev override {} (mounted over the baked engine)", dir.display()),
-                None => println!("engine: baked into the roster-box image"),
+                None => println!("engine: baked into the impyard-box image"),
             }
             if !c.connections.is_empty() {
                 println!("connections: {}", c.connections.len());
@@ -112,8 +112,8 @@ pub async fn status(json: bool) -> Result<(), BErr> {
 
     // Config parses? (It loads live — no staleness concept.)
     let config = match crate::config::load() {
-        Ok(c) => format!("valid ({} worker(s))", c.workers.len()),
-        Err(errors) => format!("INVALID — {} error(s); run: roster server validate", errors.len()),
+        Ok(c) => format!("valid ({} imp(s))", c.imps.len()),
+        Err(errors) => format!("INVALID — {} error(s); run: impyard server validate", errors.len()),
     };
 
     let mut queue_by_state: BTreeMap<String, usize> = BTreeMap::new();
@@ -130,8 +130,8 @@ pub async fn status(json: bool) -> Result<(), BErr> {
             "config": config,
             "queue": queue_by_state,
             "gates_pending": gates_pending,
-            "listeners": listeners.iter().map(|(worker, pid, since, alive)| serde_json::json!({
-                "worker": worker, "pid": pid, "since": since, "alive": alive,
+            "listeners": listeners.iter().map(|(imp, pid, since, alive)| serde_json::json!({
+                "imp": imp, "pid": pid, "since": since, "alive": alive,
             })).collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
@@ -139,13 +139,13 @@ pub async fn status(json: bool) -> Result<(), BErr> {
     }
 
     let port = crate::gateway::PORT;
-    println!("roster {BUILD}");
+    println!("impyard {BUILD}");
     println!(
         "gateway    {}",
         if gateway_up {
             format!("up on :{port}")
         } else {
-            format!("DOWN (nothing on :{port}) — run: roster server start")
+            format!("DOWN (nothing on :{port}) — run: impyard server start")
         }
     );
     println!("config     {config}");
@@ -164,15 +164,15 @@ pub async fn status(json: bool) -> Result<(), BErr> {
         if gates_pending == 0 {
             "none pending".to_string()
         } else {
-            format!("{gates_pending} PENDING — review: roster server gates ls")
+            format!("{gates_pending} PENDING — review: impyard server gates ls")
         }
     );
     if listeners.is_empty() {
         println!("listeners  none");
     } else {
-        for (worker, pid, since, alive) in listeners {
+        for (imp, pid, since, alive) in listeners {
             println!(
-                "listener   {worker}: {} (pid {pid}, since {since})",
+                "listener   {imp}: {} (pid {pid}, since {since})",
                 if alive { "up" } else { "STALE LOCK — process gone" }
             );
         }

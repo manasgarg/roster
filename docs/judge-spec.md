@@ -15,7 +15,7 @@ tests below pass. Findings from building it:
   `tools/call create_pull_request` hits default-deny.
 - Method/path discrimination works: with only `POST` to `chatgpt.com`
   allowed, a `GET` is denied and the record names the method that lost.
-- The CA private key is absent from the box (lives at `~/.roster/ca/`,
+- The CA private key is absent from the box (lives at `~/.impyard/ca/`,
   outside the mount); only `ca.crt` is mounted. A broken policy denies
   everything (fail closed).
 
@@ -51,7 +51,7 @@ Today HTTPS traffic tunnels through the gateway encrypted — it sees
 gateway must be the TLS endpoint:
 
 - **A host-minted CA.** One CA key + cert generated once, stored at
-  `~/.roster/ca/` — **outside the repo, never under the box's mount.** The
+  `~/.impyard/ca/` — **outside the repo, never under the box's mount.** The
   CA *private key* never enters the box. Only the public `ca.crt` is mounted
   read-only into the box, and the box is told to trust it
   (`NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`).
@@ -137,7 +137,7 @@ the real decision record now):
 
 ```json
 { "decision_id": "<uuid>", "ts": "<iso>", "verdict": "allow", "rule": "model-api",
-  "request": { "worker": null, "protocol": "https", "method": "POST",
+  "request": { "imp": null, "protocol": "https", "method": "POST",
     "host": "chatgpt.com", "port": 443, "path": "/backend-api/codex/responses",
     "query": "", "headers": { "authorization": "<redacted>", ... },
     "bodySize": 14231, "mcp": null } }
@@ -154,8 +154,8 @@ stored, only `bodySize` (+ lifted MCP fields).
 |---|---|---|---|
 | 1 | `src/schema.ts` | ~50 | Types: `GovernedRequest`, `Match`, `Rule`, `Policy`, `Verdict`, `Decision`. The narrow waist. |
 | 2 | `src/judge.ts` | ~70 | Pure `judge(req, policy) → {verdict, rule}`. First-match-wins, default-deny, wildcard host + glob tool matching. Repo's first unit tests. |
-| 3 | `policies/gateway.json` | small | The ordered rule list, owner-editable, under the read-only mount (worker can't edit it). Seeds with the `model-api` rule = today's two hosts. |
-| 4 | `src/ca.ts` | ~60 | CA + per-host leaf minting via `openssl`, `SecureContext` cache. Stores at `~/.roster/ca/`. |
+| 3 | `policies/gateway.json` | small | The ordered rule list, owner-editable, under the read-only mount (imp can't edit it). Seeds with the `model-api` rule = today's two hosts. |
+| 4 | `src/ca.ts` | ~60 | CA + per-host leaf minting via `openssl`, `SecureContext` cache. Stores at `~/.impyard/ca/`. |
 | 5 | `src/gateway.ts` | rewrite | Terminate TLS (SNI → minted cert), buffer + inspect body, lift MCP, consult judge, record decision, forward on allow. `tunnel` short-circuit at CONNECT. Loads policy per request (live edits; **fail closed** on unparseable policy). |
 | 6 | `src/box.ts` | +few | `ensureCA()`, mount `ca.crt` read-only, set the three CA-trust env vars. |
 
@@ -179,7 +179,7 @@ the box) holds.
 4. **MCP lifting**: a JSON-RPC `tools/call` POST to an allowed host is judged
    with `mcp.method: "tools/call"` and the tool name in its decision record;
    a unit test covers the lifting directly.
-5. **CA key never in the box**: from inside the box, `~/.roster/ca/ca.key`
+5. **CA key never in the box**: from inside the box, `~/.impyard/ca/ca.key`
    does not exist (it's outside the mount); `ca.crt` is present and readable.
 6. **Fail closed on broken policy**: with `policies/gateway.json`
    unparseable, every request denies.

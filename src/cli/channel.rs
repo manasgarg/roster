@@ -1,6 +1,6 @@
-//! `roster server channel` — manage channel edges. `trust`/`untrust` is the
+//! `impyard server channel` — manage channel edges. `trust`/`untrust` is the
 //! security designation (a trusted channel's non-admin participants may
-//! administer, and the worker replies there without a gate; an untrusted
+//! administer, and the imp replies there without a gate; an untrusted
 //! channel's are content-only). Everything else is tuning, through one uniform
 //! `set <id> <key> <value>`. The Discord `/channel …` slash commands map here.
 
@@ -29,7 +29,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             memory_summary(&s),
         );
     }
-    println!("\ndetails: roster server channel show <id>");
+    println!("\ndetails: impyard server channel show <id>");
     Ok(())
 }
 
@@ -42,7 +42,7 @@ pub fn show(channel_id: &str) -> Result<(), BErr> {
         if configured { "" } else { "   (not configured — defaults)" }
     );
     println!("trust     {}", if s.trusted { "trusted" } else { "untrusted" });
-    println!("mode      {:<10} (all = every message wakes the worker; mention = @mention/DM only)", s.mode);
+    println!("mode      {:<10} (all = every message wakes the imp; mention = @mention/DM only)", s.mode);
     println!("memory    {}", if s.memory_enabled { "on" } else { "off" });
     println!(
         "  inferred   {:<10} (auto = inferred notes apply; review = they gate)",
@@ -166,7 +166,7 @@ pub fn parse_memory_kinds(value: &str) -> Result<Option<Vec<String>>, BErr> {
     if value == "default" {
         return Ok(None);
     }
-    let allowed = crate::worker::memory::SUPPORTED_MEMORY_KINDS;
+    let allowed = crate::imp::memory::SUPPORTED_MEMORY_KINDS;
     let kinds: Vec<String> = value
         .split(',')
         .map(str::trim)

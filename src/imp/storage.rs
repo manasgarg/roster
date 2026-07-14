@@ -1,4 +1,4 @@
-//! Admin-controlled policy for the worker knowledge repository. These settings
+//! Admin-controlled policy for the imp knowledge repository. These settings
 //! are enforcement inputs; they are compiled off-box and are never learned from
 //! prompt text.
 
@@ -46,16 +46,16 @@ pub struct CompiledStoragePolicy {
     #[serde(default)]
     pub default: StoragePolicy,
     #[serde(default)]
-    pub workers: HashMap<String, StoragePolicy>,
+    pub imps: HashMap<String, StoragePolicy>,
 }
 
-pub fn load(worker: &str) -> StoragePolicy {
+pub fn load(imp: &str) -> StoragePolicy {
     let compiled = crate::config::snapshot()
         .map(|c| c.storage.clone())
         .unwrap_or_default();
     compiled
-        .workers
-        .get(worker.strip_prefix("org/").unwrap_or(worker))
+        .imps
+        .get(imp.strip_prefix("org/").unwrap_or(imp))
         .cloned()
         .unwrap_or(compiled.default)
 }
@@ -79,23 +79,23 @@ pub fn validate(policy: &StoragePolicy) -> Result<(), String> {
     Ok(())
 }
 
-/// A worker overlay may reduce capabilities and quotas but cannot broaden the
+/// An imp overlay may reduce capabilities and quotas but cannot broaden the
 /// fleet policy authored by the admin.
-pub fn validate_worker_overlay(base: &StoragePolicy, worker: &StoragePolicy) -> Result<(), String> {
-    validate(worker)?;
-    if worker.knowledge.enabled && !base.knowledge.enabled {
-        return Err("worker cannot enable knowledge disabled by org policy".into());
+pub fn validate_imp_overlay(base: &StoragePolicy, imp: &StoragePolicy) -> Result<(), String> {
+    validate(imp)?;
+    if imp.knowledge.enabled && !base.knowledge.enabled {
+        return Err("imp cannot enable knowledge disabled by org policy".into());
     }
-    if worker.knowledge.checkpoint_on_clean_exit && !base.knowledge.checkpoint_on_clean_exit {
-        return Err("worker cannot enable checkpoints disabled by org policy".into());
+    if imp.knowledge.checkpoint_on_clean_exit && !base.knowledge.checkpoint_on_clean_exit {
+        return Err("imp cannot enable checkpoints disabled by org policy".into());
     }
-    if worker.knowledge.max_file_chars > base.knowledge.max_file_chars
-        || worker.knowledge.max_repo_bytes > base.knowledge.max_repo_bytes
+    if imp.knowledge.max_file_chars > base.knowledge.max_file_chars
+        || imp.knowledge.max_repo_bytes > base.knowledge.max_repo_bytes
     {
-        return Err("worker knowledge limits cannot exceed org limits".into());
+        return Err("imp knowledge limits cannot exceed org limits".into());
     }
-    if worker.knowledge.write_from == "any-run" && base.knowledge.write_from == "clean-room" {
-        return Err("worker cannot relax the clean-room knowledge boundary set by org policy".into());
+    if imp.knowledge.write_from == "any-run" && base.knowledge.write_from == "clean-room" {
+        return Err("imp cannot relax the clean-room knowledge boundary set by org policy".into());
     }
     Ok(())
 }
@@ -105,13 +105,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn worker_storage_policy_can_only_narrow() {
+    fn imp_storage_policy_can_only_narrow() {
         let base = StoragePolicy::default();
-        let mut worker = base.clone();
-        worker.knowledge.max_repo_bytes -= 1;
-        assert!(validate_worker_overlay(&base, &worker).is_ok());
+        let mut imp = base.clone();
+        imp.knowledge.max_repo_bytes -= 1;
+        assert!(validate_imp_overlay(&base, &imp).is_ok());
 
-        worker.knowledge.max_repo_bytes = base.knowledge.max_repo_bytes + 1;
-        assert!(validate_worker_overlay(&base, &worker).is_err());
+        imp.knowledge.max_repo_bytes = base.knowledge.max_repo_bytes + 1;
+        assert!(validate_imp_overlay(&base, &imp).is_err());
     }
 }

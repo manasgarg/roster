@@ -53,7 +53,7 @@ and while it ran:
 ## Non-goals (this increment)
 
 No policy judge, budgets, or trust. No pi extensions, journal, or mailbox.
-No task queue or supervisor. No channels. One worker, one session, run by
+No task queue or supervisor. No channels. One imp, one session, run by
 hand. The gateway here is a **seed**: hardcoded allowlist + a log — the real
 judge grows in its place later without moving the door.
 
@@ -91,7 +91,7 @@ spawn an agent with open egress"). The Yuko reference gets this wrong — its
 `run.ts` logs a warning and runs with open egress when the network can't be
 created. Do not inherit that.
 
-## How the two references do it (and what Roster takes from each)
+## How the two references do it (and what Impyard takes from each)
 
 Both implement the same idea — no internet route + proxy env pointed at the
 one governed door — with different Docker mechanisms:
@@ -108,7 +108,7 @@ one governed door — with different Docker mechanisms:
   credential injection (HTTPS_PROXY plus a CA certificate and credential
   stubs mounted into the box) — keys never enter the container at all.
 
-**Roster takes:** Yuko's network mechanism (masquerade-off bridge + host
+**Impyard takes:** Yuko's network mechanism (masquerade-off bridge + host
 gateway process — no gateway container to build and manage yet; verified
 live with pi specifically); NanoClaw's fail-closed spawn behavior, its
 non-root/no-added-capabilities stance (the agent can't undo the lockdown
@@ -117,12 +117,12 @@ without `NET_ADMIN`), and — later, not this increment — its opt-in
 model, which is exactly where the "model key behind the gateway" increment
 (handoff §9, increment 3) is headed.
 
-**Roster rejects** (per the settled adopt-vs-build verdict, handoff D13):
+**Impyard rejects** (per the settled adopt-vs-build verdict, handoff D13):
 NanoClaw's runtime itself, its two-SQLite-DB host↔container IO contract
-(Roster keeps the file-based task/journal/mailbox contract, §7.3), and the
+(Impyard keeps the file-based task/journal/mailbox contract, §7.3), and the
 OneCLI dependency. One deliberate difference: NanoClaw has **no hard
 per-session ceiling** — a host sweep detects stale sessions instead, to
-avoid killing long legitimate work. Roster's design requires a hard ceiling
+avoid killing long legitimate work. Impyard's design requires a hard ceiling
 (§3.3); we keep it, per-run configurable, and can add sweep-style nuance at
 the supervisor increment.
 
@@ -139,8 +139,8 @@ into the container env — same exposure, same caveat.
 | # | File | ~Size | What it is |
 |---|---|---|---|
 | 1 | `package.json` | +2 lines | Pin the engine: `@earendil-works/pi-coding-agent` at exact `0.80.3` (the maintained fork — **not** `@mariozechner/*`; version verified live in the reference). npm with committed lockfile. |
-| 2 | `box/Dockerfile` | ~10 lines | Image `roster-box`: `node:24-bookworm-slim` + `bash ca-certificates git ripgrep curl python3 jq`. pi is **not** baked in — it comes from the read-only repo mount, so the box always runs the exact pinned version on disk and can't tamper with it. |
-| 3 | `src/lockdown.ts` | ~30 lines | Ensure the NAT-disabled bridge exists: `docker network create -o com.docker.network.bridge.enable_ip_masquerade=false roster-locked`. Idempotent. **Fail closed** (NanoClaw's pattern): if the network can't be ensured or the gateway isn't answering on :7300, throw — the runner never spawns a box with open egress. |
+| 2 | `box/Dockerfile` | ~10 lines | Image `impyard-box`: `node:24-bookworm-slim` + `bash ca-certificates git ripgrep curl python3 jq`. pi is **not** baked in — it comes from the read-only repo mount, so the box always runs the exact pinned version on disk and can't tamper with it. |
+| 3 | `src/lockdown.ts` | ~30 lines | Ensure the NAT-disabled bridge exists: `docker network create -o com.docker.network.bridge.enable_ip_masquerade=false impyard-locked`. Idempotent. **Fail closed** (NanoClaw's pattern): if the network can't be ensured or the gateway isn't answering on :7300, throw — the runner never spawns a box with open egress. |
 | 4 | `src/gateway.ts` | ~100 lines | The seed gateway, hand-rolled on `node:http`/`node:net`, zero deps. `CONNECT host:443` → tunnel iff host ∈ `{api.anthropic.com}` (hardcoded for now); anything else → 403. Plain HTTP requests → 403. Appends one JSON line per decision (`{ts, method, host, verdict}`) to `runs/gateway.jsonl`. Must bind `0.0.0.0` (or the bridge IP) — `127.0.0.1` is unreachable from the box. Port 7300. |
 | 5 | `src/box.ts` | ~90 lines | The runner: prepare `runs/<id>/` dirs and `.pihome`, resolve pi's real JS entrypoint out of `node_modules`, build the `docker run` args, spawn, arm the ceiling timer (`docker kill` on expiry), report how the run ended. |
 | 6 | `src/cli.ts` | +few lines | New dev verb `box` (not one of the six lifecycle verbs): `node src/cli.ts box "<prompt>" [--ceiling <minutes>]`. |
@@ -159,9 +159,9 @@ runs/<run-id>/
 ## The docker invocation (shape, mirroring the verified reference)
 
 ```
-docker run --rm --name roster-box-<id>
+docker run --rm --name impyard-box-<id>
   --add-host=host.docker.internal:host-gateway
-  --network roster-locked
+  --network impyard-locked
   -u <host-uid>:<host-gid>                        # outputs come out host-owned
   -v <repoRoot>:<repoRoot>:ro                     # code + node_modules, read-only, same path
   -v /dev/null:<repoRoot>/.env:ro                 # shadow the secrets file
@@ -172,7 +172,7 @@ docker run --rm --name roster-box-<id>
   -e HTTP_PROXY=http://host.docker.internal:7300  # + HTTPS_PROXY, lowercase forms
   -e NODE_USE_ENV_PROXY=1 -e NO_PROXY=
   -w <runs/<id>/workspace>
-  roster-box
+  impyard-box
   node <pi-entrypoint> --mode json --no-extensions --session-dir <runs/<id>/session> "<prompt>"
 ```
 
@@ -217,7 +217,7 @@ a reduced form. Deltas, so we know what we're deferring:
 6. **Gateway is honest**: every model call in run 1 appears as an allow
    line for `api.anthropic.com`; nothing else was allowed all session.
 7. **Fail closed**: with the gateway process not running (and separately,
-   with the `roster-locked` network deleted and Docker unable to recreate
+   with the `impyard-locked` network deleted and Docker unable to recreate
    it), `node src/cli.ts box …` refuses to start, says why, and `docker ps`
    shows no container was ever spawned.
 
@@ -236,8 +236,8 @@ a reduced form. Deltas, so we know what we're deferring:
 ## Choices made here (small, reversible — flag disagreement early)
 
 - **npm** (not pnpm) — one less tool; lockfile committed.
-- Gateway port **7300**; network name **roster-locked**; image
-  **roster-box**; container names **roster-box-<run-id>**.
+- Gateway port **7300**; network name **impyard-locked**; image
+  **impyard-box**; container names **impyard-box-<run-id>**.
 - Ceiling default **30 minutes**, per-run override via `--ceiling`.
 - Allowlist hardcoded to `api.anthropic.com` until the judge exists.
 - `box` is a dev verb; it will fold into `deploy`/the supervisor's session

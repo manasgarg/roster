@@ -1,5 +1,5 @@
-//! The task queue — one durable per-worker list the supervisor dispatches from
-//! (§3.6). Tasks are files under `queue/<worker>/<id>.json`; the state field
+//! The task queue — one durable per-imp list the supervisor dispatches from
+//! (§3.6). Tasks are files under `queue/<imp>/<id>.json`; the state field
 //! drives the lifecycle `waiting → running → needs-review | done | failed`.
 //! Owned locally (not a GitHub mirror, Q3): core control flow stays off any
 //! external dependency. See docs/supervisor-spec.md.
@@ -15,8 +15,8 @@ pub type BErr = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
-    /// Short worker name (the box's `--worker`); subject is `org/<worker>`.
-    pub worker: String,
+    /// Short imp name (the box's `--imp`); subject is `org/<imp>`.
+    pub imp: String,
     pub prompt: String,
     /// manual | schedule | continuation | event
     pub origin: String,
@@ -55,7 +55,7 @@ fn default_knowledge_mode() -> String {
 
 impl Task {
     pub fn subject(&self) -> String {
-        format!("org/{}", self.worker)
+        format!("org/{}", self.imp)
     }
 }
 
@@ -63,13 +63,13 @@ pub fn new_id() -> String {
     format!("t-{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
 }
 
-fn dir(worker: &str) -> PathBuf {
-    paths::worker_queue_dir(worker)
+fn dir(imp: &str) -> PathBuf {
+    paths::imp_queue_dir(imp)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn create(
-    worker: &str,
+    imp: &str,
     prompt: &str,
     origin: &str,
     proactive: bool,
@@ -88,7 +88,7 @@ pub fn create(
     let now = now_rfc3339();
     let t = Task {
         id: new_id(),
-        worker: worker.to_string(),
+        imp: imp.to_string(),
         prompt: prompt.to_string(),
         origin: origin.to_string(),
         proactive,
@@ -106,9 +106,9 @@ pub fn create(
     Ok(t)
 }
 
-pub fn active_reorganization(worker: &str) -> Option<Task> {
+pub fn active_reorganization(imp: &str) -> Option<Task> {
     list_all().into_iter().find(|task| {
-        task.worker == worker
+        task.imp == imp
             && task.knowledge_mode == "reorganization"
             && matches!(
                 task.state.as_str(),
@@ -118,7 +118,7 @@ pub fn active_reorganization(worker: &str) -> Option<Task> {
 }
 
 pub fn save(t: &Task) -> Result<(), BErr> {
-    let d = dir(&t.worker);
+    let d = dir(&t.imp);
     std::fs::create_dir_all(&d)?;
     let text = format!("{}\n", serde_json::to_string_pretty(t)?);
     let tmp = d.join(format!("{}.json.tmp", t.id));
@@ -134,14 +134,14 @@ pub fn set_state(t: &mut Task, state: &str) -> Result<(), BErr> {
 }
 
 pub fn list_all() -> Vec<Task> {
-    let base = paths::workers_data_dir();
+    let base = paths::imps_data_dir();
     let mut out: Vec<Task> = std::fs::read_dir(&base)
         .into_iter()
         .flatten()
         .flatten()
         .filter(|e| e.path().is_dir())
-        .flat_map(|worker_dir| {
-            std::fs::read_dir(worker_dir.path().join("queue"))
+        .flat_map(|imp_dir| {
+            std::fs::read_dir(imp_dir.path().join("queue"))
                 .into_iter()
                 .flatten()
                 .flatten()
@@ -169,7 +169,7 @@ pub fn claim_next() -> Option<Task> {
             task.state == "waiting"
                 && !(task.knowledge_mode == "reorganization"
                     && tasks.iter().any(|other| {
-                        other.worker == task.worker
+                        other.imp == task.imp
                             && other.knowledge_mode == "reorganization"
                             && other.state == "running"
                     }))
@@ -189,7 +189,7 @@ mod tests {
     fn old_tasks_default_to_append_mode() {
         let value = serde_json::json!({
             "id": "t-old",
-            "worker": "yuko",
+            "imp": "yuko",
             "prompt": "research",
             "origin": "manual",
             "proactive": false,

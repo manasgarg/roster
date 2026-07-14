@@ -23,7 +23,7 @@ pub struct KnowledgeRunRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub id: String,
-    pub worker: String,
+    pub imp: String,
     pub kind: String,
     pub state: String,
     pub started_at: String,
@@ -42,7 +42,7 @@ pub struct RunRecord {
 #[derive(Debug, Clone)]
 pub struct RunSummary {
     pub id: String,
-    pub worker: String,
+    pub imp: String,
     pub kind: String,
     pub state: String,
     pub started_at: String,
@@ -58,10 +58,10 @@ fn record_path(run_id: &str) -> PathBuf {
     paths::run_dir(run_id).join("run.json")
 }
 
-pub fn start(run_id: &str, worker: &str, kind: &str, task_id: Option<&str>) -> Result<(), String> {
+pub fn start(run_id: &str, imp: &str, kind: &str, task_id: Option<&str>) -> Result<(), String> {
     let record = RunRecord {
         id: run_id.to_string(),
-        worker: worker.to_string(),
+        imp: imp.to_string(),
         kind: kind.to_string(),
         state: "running".into(),
         started_at: now_rfc3339(),
@@ -147,7 +147,7 @@ pub fn list() -> Vec<RunSummary> {
         .iter()
         .filter_map(|task| task.run_id.as_ref().map(|id| (id.clone(), task.clone())))
         .collect();
-    let journal_workers = crate::worker::journal::run_workers();
+    let journal_imps = crate::imp::journal::run_imps();
     let base = paths::runs_dir();
     let mut runs: Vec<RunSummary> = std::fs::read_dir(base)
         .into_iter()
@@ -163,7 +163,7 @@ pub fn list() -> Vec<RunSummary> {
         })
         .filter_map(|entry| {
             let id = entry.file_name().to_string_lossy().to_string();
-            summarize(&entry.path(), by_run.get(&id), journal_workers.get(&id))
+            summarize(&entry.path(), by_run.get(&id), journal_imps.get(&id))
         })
         .collect();
     runs.sort_by(
@@ -182,7 +182,7 @@ pub fn list() -> Vec<RunSummary> {
 fn summarize(
     path: &Path,
     task: Option<&queue::Task>,
-    journal_worker: Option<&String>,
+    journal_imp: Option<&String>,
 ) -> Option<RunSummary> {
     let id = path.file_name()?.to_string_lossy().to_string();
     let record = load(&id);
@@ -205,11 +205,11 @@ fn summarize(
         .or_else(|| timestamp_from_id(&id))
         .or_else(|| modified_at(path))
         .unwrap_or_else(|| "unknown".into());
-    let worker = record
+    let imp = record
         .as_ref()
-        .map(|r| r.worker.clone())
-        .or_else(|| task.map(|t| t.worker.clone()))
-        .or_else(|| journal_worker.cloned())
+        .map(|r| r.imp.clone())
+        .or_else(|| task.map(|t| t.imp.clone()))
+        .or_else(|| journal_imp.cloned())
         .unwrap_or_else(|| "?".into());
     let kind = record.as_ref().map(|r| r.kind.clone()).unwrap_or_else(|| {
         if task.and_then(|t| t.repo.as_ref()).is_some() || path.join("worktree").exists() {
@@ -246,7 +246,7 @@ fn summarize(
         .or_else(|| task.map(|t| t.id.clone()));
     Some(RunSummary {
         id,
-        worker,
+        imp,
         kind,
         state,
         started_at,
@@ -453,7 +453,7 @@ mod tests {
     fn legacy_run_records_with_removed_artifact_fields_still_parse() {
         let record: RunRecord = serde_json::from_value(serde_json::json!({
             "id": "run-1",
-            "worker": "yuko",
+            "imp": "yuko",
             "kind": "task",
             "state": "done",
             "started_at": "2026-01-01T00:00:00Z",

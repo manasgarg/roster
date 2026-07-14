@@ -1,7 +1,7 @@
-//! Scoped, append-only worker memory.
+//! Scoped, append-only imp memory.
 //!
 //! The box can propose memory actions, but the trusted host derives the active
-//! worker/channel/user from the run context and owns the JSONL event log. Memories
+//! imp/channel/user from the run context and owns the JSONL event log. Memories
 //! are advisory prompt data, never authorization inputs.
 
 use crate::paths;
@@ -24,7 +24,7 @@ pub const SUPPORTED_MEMORY_KINDS: &[&str] =
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryScope {
-    Worker,
+    Imp,
     Channel,
     User,
 }
@@ -32,7 +32,7 @@ pub enum MemoryScope {
 impl MemoryScope {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Worker => "worker",
+            Self::Imp => "imp",
             Self::Channel => "channel",
             Self::User => "user",
         }
@@ -185,7 +185,7 @@ pub struct MemoryPolicy {
     pub recall_char_budget: usize,
     pub max_retention_days: Option<u64>,
     pub allow_inferred_user_auto: bool,
-    pub allow_worker_auto: bool,
+    pub allow_imp_auto: bool,
     pub cross_channel_user_recall: bool,
     pub user_memory_in_groups: bool,
 }
@@ -205,7 +205,7 @@ impl Default for MemoryPolicy {
             recall_char_budget: DEFAULT_RECALL_CHARS,
             max_retention_days: None,
             allow_inferred_user_auto: false,
-            allow_worker_auto: false,
+            allow_imp_auto: false,
             cross_channel_user_recall: false,
             user_memory_in_groups: false,
         }
@@ -217,22 +217,22 @@ pub struct CompiledMemoryPolicy {
     #[serde(default)]
     pub default: MemoryPolicy,
     #[serde(default)]
-    pub workers: HashMap<String, MemoryPolicy>,
+    pub imps: HashMap<String, MemoryPolicy>,
 }
 
-pub fn load_policy(worker: &str) -> MemoryPolicy {
+pub fn load_policy(imp: &str) -> MemoryPolicy {
     let compiled = crate::config::snapshot()
         .map(|c| c.memory.clone())
         .unwrap_or_default();
     compiled
-        .workers
-        .get(short_worker(worker))
+        .imps
+        .get(short_imp(imp))
         .cloned()
         .unwrap_or(compiled.default)
 }
 
-fn contextual_policy(worker: &str, context: &RunContext) -> MemoryPolicy {
-    let mut policy = load_policy(worker);
+fn contextual_policy(imp: &str, context: &RunContext) -> MemoryPolicy {
+    let mut policy = load_policy(imp);
     if let Some(channel) = context.channel_id.as_deref() {
         if !crate::channel::discord::channel_memory_enabled(channel) {
             policy.enabled = false;
@@ -248,25 +248,25 @@ fn contextual_policy(worker: &str, context: &RunContext) -> MemoryPolicy {
         }
     }
     if let Some(user) = context.user_scope_id() {
-        let settings = user_settings(worker, &user);
+        let settings = user_settings(imp, &user);
         policy.cross_channel_user_recall &= settings.cross_channel_recall;
     }
     policy
 }
 
-fn short_worker(worker: &str) -> &str {
-    worker.strip_prefix("org/").unwrap_or(worker)
+fn short_imp(imp: &str) -> &str {
+    imp.strip_prefix("org/").unwrap_or(imp)
 }
 
-fn memory_path(worker: &str) -> PathBuf {
-    paths::worker_memory_file(worker)
+fn memory_path(imp: &str) -> PathBuf {
+    paths::imp_memory_file(imp)
 }
 
 /// Memory used to live under `notes/`. Read the old event log as well so an
 /// upgrade does not lose conversational continuity. All new writes go to
 /// `memory/`; an admin-requested compaction finishes the physical migration.
-fn legacy_notes_path(worker: &str) -> PathBuf {
-    paths::worker_notes_legacy_file(worker)
+fn legacy_notes_path(imp: &str) -> PathBuf {
+    paths::imp_notes_legacy_file(imp)
 }
 
 fn run_context_path(run_id: &str) -> PathBuf {
@@ -311,11 +311,11 @@ pub fn load_run_context(run_id: &str) -> RunContext {
         .unwrap_or_default()
 }
 
-fn append_event(worker: &str, event: &Value) -> Result<(), String> {
+fn append_event(imp: &str, event: &Value) -> Result<(), String> {
     let _guard = write_lock()
         .lock()
         .map_err(|_| "memory write lock poisoned")?;
-    let path = memory_path(worker);
+    let path = memory_path(imp);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -327,8 +327,8 @@ fn append_event(worker: &str, event: &Value) -> Result<(), String> {
     writeln!(f, "{event}").map_err(|e| e.to_string())
 }
 
-fn read_events(worker: &str) -> Vec<Value> {
-    [legacy_notes_path(worker), memory_path(worker)]
+fn read_events(imp: &str) -> Vec<Value> {
+    [legacy_notes_path(imp), memory_path(imp)]
         .into_iter()
         .flat_map(|path| {
             std::fs::read_to_string(path)
@@ -392,9 +392,9 @@ fn fold_events(events: &[Value]) -> Vec<MemoryNote> {
     out
 }
 
-pub fn user_settings(worker: &str, user_scope_id: &str) -> UserMemorySettings {
+pub fn user_settings(imp: &str, user_scope_id: &str) -> UserMemorySettings {
     let mut settings = UserMemorySettings::default();
-    for event in read_events(worker) {
+    for event in read_events(imp) {
         if event.get("op").and_then(Value::as_str) != Some("user-settings")
             || event.get("scope_id").and_then(Value::as_str) != Some(user_scope_id)
         {
@@ -410,12 +410,12 @@ pub fn user_settings(worker: &str, user_scope_id: &str) -> UserMemorySettings {
     settings
 }
 
-pub fn list(worker: &str) -> Vec<MemoryNote> {
-    fold_events(&read_events(worker))
+pub fn list(imp: &str) -> Vec<MemoryNote> {
+    fold_events(&read_events(imp))
 }
 
-pub fn find(worker: &str, id: &str) -> Option<MemoryNote> {
-    list(worker).into_iter().find(|n| n.id == id)
+pub fn find(imp: &str, id: &str) -> Option<MemoryNote> {
+    list(imp).into_iter().find(|n| n.id == id)
 }
 
 fn new_id() -> String {
@@ -428,7 +428,7 @@ fn parse_scope(
 ) -> Result<(MemoryScope, Option<String>), String> {
     let requested = payload.get("scope").and_then(Value::as_str);
     let scope = match requested {
-        Some("worker") => MemoryScope::Worker,
+        Some("imp") => MemoryScope::Imp,
         Some("channel") => MemoryScope::Channel,
         Some("user") => MemoryScope::User,
         Some(other) => return Err(format!("unknown memory scope \"{other}\"")),
@@ -437,7 +437,7 @@ fn parse_scope(
         None => return Err("remember needs an explicit scope outside a conversation".into()),
     };
     let trusted_id = match scope {
-        MemoryScope::Worker => None,
+        MemoryScope::Imp => None,
         MemoryScope::Channel => Some(
             context
                 .channel_scope_id()
@@ -491,14 +491,14 @@ fn obvious_secret(note: &str) -> bool {
 /// Decide the minimum trust level for a note action and reject subject
 /// mismatches before the normal action trust ladder runs.
 pub fn action_trust(
-    worker: &str,
+    imp: &str,
     intent: &str,
     payload: &Value,
     context: &RunContext,
 ) -> Result<&'static str, String> {
-    let policy = contextual_policy(worker, context);
+    let policy = contextual_policy(imp, context);
     if !policy.enabled {
-        return Err("memory is disabled for this worker".into());
+        return Err("memory is disabled for this imp".into());
     }
     if intent == "memory-preferences" {
         context
@@ -515,7 +515,7 @@ pub fn action_trust(
             .get("note_id")
             .and_then(Value::as_str)
             .ok_or("memory action needs note_id")?;
-        let note = find(worker, id).ok_or_else(|| format!("no such memory {id}"))?;
+        let note = find(imp, id).ok_or_else(|| format!("no such memory {id}"))?;
         authorize_existing(&note, context)?;
         (note.scope, note.basis)
     };
@@ -523,13 +523,13 @@ pub fn action_trust(
         let user = context
             .user_scope_id()
             .ok_or("inferred user memory requires an active user")?;
-        if !user_settings(worker, &user).allow_inferred {
+        if !user_settings(imp, &user).allow_inferred {
             return Err("the current user has opted out of inferred memory".into());
         }
     }
     Ok(match scope {
-        MemoryScope::Worker if policy.allow_worker_auto => "auto",
-        MemoryScope::Worker => "gate",
+        MemoryScope::Imp if policy.allow_imp_auto => "auto",
+        MemoryScope::Imp => "gate",
         MemoryScope::Channel
             if context.trusted_participant()
                 && (basis == MemoryBasis::Explicit
@@ -551,7 +551,7 @@ pub fn action_trust(
 
 fn authorize_existing(note: &MemoryNote, context: &RunContext) -> Result<(), String> {
     match note.scope {
-        MemoryScope::Worker => Ok(()), // normal action trust still hard-gates it
+        MemoryScope::Imp => Ok(()), // normal action trust still hard-gates it
         MemoryScope::Channel => {
             if note.scope_id == context.channel_scope_id() {
                 Ok(())
@@ -569,24 +569,24 @@ fn authorize_existing(note: &MemoryNote, context: &RunContext) -> Result<(), Str
     }
 }
 
-pub fn execute(worker: &str, intent: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
+pub fn execute(imp: &str, intent: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
     let context = load_run_context(run_id);
     match intent {
-        "remember" => remember(worker, payload, run_id, &context),
-        "memory-preferences" => set_user_preferences(worker, payload, &context),
+        "remember" => remember(imp, payload, run_id, &context),
+        "memory-preferences" => set_user_preferences(imp, payload, &context),
         "forget" | "memory-correct" | "memory-disable" | "memory-enable" | "memory-pin"
-        | "memory-unpin" => mutate(worker, intent, payload, &context),
+        | "memory-unpin" => mutate(imp, intent, payload, &context),
         _ => Err(format!("unknown memory intent \"{intent}\"")),
     }
 }
 
 fn remember(
-    worker: &str,
+    imp: &str,
     payload: &Value,
     run_id: &str,
     context: &RunContext,
 ) -> Result<Value, String> {
-    let policy = contextual_policy(worker, context);
+    let policy = contextual_policy(imp, context);
     let text = payload
         .get("note")
         .and_then(Value::as_str)
@@ -617,7 +617,7 @@ fn remember(
         time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
             .map_err(|_| "expires_at must be an RFC 3339 timestamp")?;
     }
-    let existing = list(worker);
+    let existing = list(imp);
     if let Some(duplicate) = existing.iter().find(|n| {
         n.active()
             && n.scope == scope
@@ -671,7 +671,7 @@ fn remember(
     };
     let mut event = serde_json::to_value(&note).map_err(|e| e.to_string())?;
     event["op"] = json!("remember");
-    append_event(worker, &event)?;
+    append_event(imp, &event)?;
     Ok(
         json!({ "id": note.id, "scope": note.scope, "scope_id": note.scope_id, "status": "remembered" }),
     )
@@ -723,7 +723,7 @@ fn effective_expiry(
 }
 
 fn set_user_preferences(
-    worker: &str,
+    imp: &str,
     payload: &Value,
     context: &RunContext,
 ) -> Result<Value, String> {
@@ -741,7 +741,7 @@ fn set_user_preferences(
     {
         return Err("memory preferences need allow_inferred or cross_channel_recall".into());
     }
-    let current = user_settings(worker, &scope_id);
+    let current = user_settings(imp, &scope_id);
     let allow_inferred = payload
         .get("allow_inferred")
         .and_then(Value::as_bool)
@@ -757,7 +757,7 @@ fn set_user_preferences(
         "allow_inferred": allow_inferred,
         "cross_channel_recall": cross_channel_recall,
     });
-    append_event(worker, &event)?;
+    append_event(imp, &event)?;
     Ok(json!({
         "status": "updated",
         "allow_inferred": allow_inferred,
@@ -778,7 +778,7 @@ fn operation_name(intent: &str) -> Result<&'static str, String> {
 }
 
 fn mutate(
-    worker: &str,
+    imp: &str,
     intent: &str,
     payload: &Value,
     context: &RunContext,
@@ -787,7 +787,7 @@ fn mutate(
         .get("note_id")
         .and_then(Value::as_str)
         .ok_or("memory action needs note_id")?;
-    let note = find(worker, id).ok_or_else(|| format!("no such memory {id}"))?;
+    let note = find(imp, id).ok_or_else(|| format!("no such memory {id}"))?;
     authorize_existing(&note, context)?;
     let op = operation_name(intent)?;
     let mut event = json!({ "op": op, "id": id, "ts": now_rfc3339() });
@@ -798,24 +798,24 @@ fn mutate(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or("memory-correct needs a non-empty note")?;
-        let policy = load_policy(worker);
+        let policy = load_policy(imp);
         if replacement.chars().count() > policy.max_note_chars || obvious_secret(replacement) {
             return Err("replacement memory is too long or appears to contain a secret".into());
         }
         event["note"] = json!(replacement);
     }
-    append_event(worker, &event)?;
+    append_event(imp, &event)?;
     Ok(json!({ "id": id, "status": op }))
 }
 
 /// Owner CLI mutation. Host access is already the admin boundary.
 pub fn admin_mutate(
-    worker: &str,
+    imp: &str,
     op: &str,
     id: &str,
     replacement: Option<&str>,
 ) -> Result<(), String> {
-    if find(worker, id).is_none() {
+    if find(imp, id).is_none() {
         return Err(format!("no such memory {id}"));
     }
     if !matches!(
@@ -832,22 +832,22 @@ pub fn admin_mutate(
             .ok_or("correct needs replacement text")?;
         event["note"] = json!(text);
     }
-    append_event(worker, &event)
+    append_event(imp, &event)
 }
 
 /// Rewrite the event log to its current live state. This is deliberately an
 /// owner-only operation used for retention/privacy erasure, not normal upkeep.
-pub fn compact(worker: &str) -> Result<usize, String> {
+pub fn compact(imp: &str) -> Result<usize, String> {
     let _guard = write_lock()
         .lock()
         .map_err(|_| "memory write lock poisoned")?;
-    let path = memory_path(worker);
-    let legacy = legacy_notes_path(worker);
-    let notes: Vec<MemoryNote> = fold_events(&read_events(worker))
+    let path = memory_path(imp);
+    let legacy = legacy_notes_path(imp);
+    let notes: Vec<MemoryNote> = fold_events(&read_events(imp))
         .into_iter()
         .filter(|n| !n.forgotten)
         .collect();
-    let settings: Vec<Value> = read_events(worker)
+    let settings: Vec<Value> = read_events(imp)
         .into_iter()
         .filter(|e| e.get("op").and_then(Value::as_str) == Some("user-settings"))
         .collect();
@@ -881,22 +881,22 @@ pub fn compact(worker: &str) -> Result<usize, String> {
 /// Direct participant operation from a trusted channel adapter. Users may
 /// manage their own notes; trusted channel participants may manage shared notes.
 pub fn participant_mutate(
-    worker: &str,
+    imp: &str,
     op: &str,
     id: &str,
     replacement: Option<&str>,
     context: &RunContext,
 ) -> Result<(), String> {
-    let note = find(worker, id).ok_or_else(|| format!("no such memory {id}"))?;
+    let note = find(imp, id).ok_or_else(|| format!("no such memory {id}"))?;
     authorize_existing(&note, context)?;
     match note.scope {
-        MemoryScope::Worker => return Err("worker memory is admin-controlled".into()),
+        MemoryScope::Imp => return Err("imp memory is admin-controlled".into()),
         MemoryScope::Channel if !context.trusted_participant() => {
             return Err("shared channel memory requires a trusted participant".into())
         }
         _ => {}
     }
-    admin_mutate(worker, op, id, replacement)
+    admin_mutate(imp, op, id, replacement)
 }
 
 fn expired(value: Option<&str>) -> bool {
@@ -918,7 +918,7 @@ fn eligible(note: &MemoryNote, context: &RunContext, policy: &MemoryPolicy) -> b
         return false;
     }
     match note.scope {
-        MemoryScope::Worker => true,
+        MemoryScope::Imp => true,
         MemoryScope::Channel => note.scope_id == context.channel_scope_id(),
         MemoryScope::User => {
             if !context.is_dm && !policy.user_memory_in_groups {
@@ -980,9 +980,9 @@ pub struct RecallCandidates {
     policy: MemoryPolicy,
 }
 
-pub fn recall_candidates(worker: &str, context: &RunContext) -> RecallCandidates {
-    let policy = contextual_policy(worker, context);
-    let all = list(worker);
+pub fn recall_candidates(imp: &str, context: &RunContext) -> RecallCandidates {
+    let policy = contextual_policy(imp, context);
+    let all = list(imp);
     let mut ranked: Vec<MemoryNote> = if policy.enabled {
         all.iter()
             .filter(|note| eligible(note, context, &policy))
@@ -1010,14 +1010,14 @@ pub fn recall_candidates(worker: &str, context: &RunContext) -> RecallCandidates
 }
 
 pub fn trace_compiled_recall(
-    worker: &str,
+    imp: &str,
     run_id: &str,
     context: &RunContext,
     candidates: &RecallCandidates,
     selected: &[MemoryNote],
 ) {
     trace_recall(
-        worker,
+        imp,
         run_id,
         &candidates.all,
         selected,
@@ -1027,7 +1027,7 @@ pub fn trace_compiled_recall(
 }
 
 fn trace_recall(
-    worker: &str,
+    imp: &str,
     run_id: &str,
     all: &[MemoryNote],
     selected: &[MemoryNote],
@@ -1055,7 +1055,7 @@ fn trace_recall(
         .collect();
     let event = json!({
         "ts": now_rfc3339(),
-        "worker": short_worker(worker),
+        "imp": short_imp(imp),
         "context": context,
         "candidates": candidates,
         "selected": selected_ids,
@@ -1078,23 +1078,23 @@ pub fn recall_trace(run_id: &str) -> Vec<Value> {
 }
 
 /// Notes the current participant is allowed to ask about conversationally.
-pub fn visible_to_current_actor(worker: &str, run_id: &str) -> Vec<MemoryNote> {
+pub fn visible_to_current_actor(imp: &str, run_id: &str) -> Vec<MemoryNote> {
     let context = load_run_context(run_id);
-    visible_in_context(worker, &context)
+    visible_in_context(imp, &context)
 }
 
-pub fn current_user_settings(worker: &str, run_id: &str) -> Option<UserMemorySettings> {
+pub fn current_user_settings(imp: &str, run_id: &str) -> Option<UserMemorySettings> {
     let context = load_run_context(run_id);
-    context.user_scope_id().map(|id| user_settings(worker, &id))
+    context.user_scope_id().map(|id| user_settings(imp, &id))
 }
 
-pub fn visible_in_context(worker: &str, context: &RunContext) -> Vec<MemoryNote> {
-    list(worker)
+pub fn visible_in_context(imp: &str, context: &RunContext) -> Vec<MemoryNote> {
+    list(imp)
         .into_iter()
         .filter(|n| {
             !n.forgotten
                 && match n.scope {
-                    MemoryScope::Worker => false,
+                    MemoryScope::Imp => false,
                     MemoryScope::Channel => n.scope_id == context.channel_scope_id(),
                     MemoryScope::User => context.is_dm && n.scope_id == context.user_scope_id(),
                 }
@@ -1159,14 +1159,14 @@ mod tests {
     }
 
     #[test]
-    fn dm_recall_combines_worker_channel_and_user() {
+    fn dm_recall_combines_imp_channel_and_user() {
         let notes = vec![
             note(
                 "1",
-                MemoryScope::Worker,
+                MemoryScope::Imp,
                 None,
                 MemoryBasis::Inferred,
-                "worker",
+                "imp",
             ),
             note(
                 "2",
@@ -1192,7 +1192,7 @@ mod tests {
         ];
         let selected = select_for_recall(&notes, &dm(), &MemoryPolicy::default());
         let texts: Vec<&str> = selected.iter().map(|n| n.note.as_str()).collect();
-        assert!(texts.contains(&"worker"));
+        assert!(texts.contains(&"imp"));
         assert!(texts.contains(&"channel"));
         assert!(texts.contains(&"user"));
         assert!(!texts.contains(&"other"));
@@ -1216,7 +1216,7 @@ mod tests {
     fn explicit_and_pinned_notes_rank_first() {
         let mut inferred = note(
             "1",
-            MemoryScope::Worker,
+            MemoryScope::Imp,
             None,
             MemoryBasis::Inferred,
             "inferred",
@@ -1224,14 +1224,14 @@ mod tests {
         inferred.ts = "2026-03-01T00:00:00Z".into();
         let explicit = note(
             "2",
-            MemoryScope::Worker,
+            MemoryScope::Imp,
             None,
             MemoryBasis::Explicit,
             "explicit",
         );
         let mut pinned = note(
             "3",
-            MemoryScope::Worker,
+            MemoryScope::Imp,
             None,
             MemoryBasis::Inferred,
             "pinned",

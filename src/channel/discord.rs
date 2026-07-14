@@ -73,12 +73,12 @@ struct GwError {
     msg: String,
 }
 
-/// Run the gateway for one worker: dial out, identify, and dispatch events.
+/// Run the gateway for one imp: dial out, identify, and dispatch events.
 /// Reconnects on transient errors; stops on fatal ones (bad token / disallowed
 /// intent).
-pub async fn run_gateway(worker: &str, token: &str) {
+pub async fn run_gateway(imp: &str, token: &str) {
     loop {
-        match connect_once(worker, token).await {
+        match connect_once(imp, token).await {
             Ok(()) => {}
             Err(e) if e.fatal => {
                 eprintln!("discord gateway: {} — stopping.", e.msg);
@@ -92,7 +92,7 @@ pub async fn run_gateway(worker: &str, token: &str) {
     }
 }
 
-async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
+async fn connect_once(imp: &str, token: &str) -> Result<(), GwError> {
     let transient = |m: String| GwError { fatal: false, msg: m };
     let (ws, _) = tokio_tungstenite::connect_async(GATEWAY_URL).await.map_err(|e| transient(format!("connect: {e}")))?;
     let (mut sink, mut stream) = ws.split();
@@ -162,7 +162,7 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
                 }));
                 let identify = json!({ "op": 2, "d": {
                     "token": token, "intents": INTENTS,
-                    "properties": { "os": "linux", "browser": "roster", "device": "roster" },
+                    "properties": { "os": "linux", "browser": "impyard", "device": "impyard" },
                 }});
                 let _ = tx.send(Ws::text(identify.to_string()));
             }
@@ -186,8 +186,8 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
                         register_commands(&app_id, &guild_id, token).await;
                         guilds.insert(guild_id, g);
                     }
-                    "MESSAGE_CREATE" => handle_message(worker, d, &bot_id, &guilds, token).await,
-                    "INTERACTION_CREATE" => handle_interaction(worker, d, &guilds, &app_id).await,
+                    "MESSAGE_CREATE" => handle_message(imp, d, &bot_id, &guilds, token).await,
+                    "INTERACTION_CREATE" => handle_interaction(imp, d, &guilds, &app_id).await,
                     _ => {}
                 }
             }
@@ -257,7 +257,7 @@ fn resolve_role(d: &Value, guilds: &HashMap<String, Guild>) -> &'static str {
     }
 }
 
-async fn handle_message(worker: &str, d: &Value, bot_id: &str, guilds: &HashMap<String, Guild>, token: &str) {
+async fn handle_message(imp: &str, d: &Value, bot_id: &str, guilds: &HashMap<String, Guild>, token: &str) {
     // Never react to bots (including ourselves) — avoids reply loops.
     if d["author"]["bot"].as_bool().unwrap_or(false) {
         return;
@@ -293,7 +293,7 @@ async fn handle_message(worker: &str, d: &Value, bot_id: &str, guilds: &HashMap<
 
     // Deliver to the channel's warm session (or start one). Governance is
     // unchanged — the session box's actions route through the gateway. A brief
-    // hint tells the worker whether it was directly addressed.
+    // hint tells the imp whether it was directly addressed.
     let hint = if is_dm || mentioned {
         ""
     } else if distinct_human_authors(channel_id) <= 1 {
@@ -302,7 +302,7 @@ async fn handle_message(worker: &str, d: &Value, bot_id: &str, guilds: &HashMap<
         " [group chat; you were not directly addressed — reply only if useful]"
     };
     let text = format!("{content}{hint}");
-    let context = crate::worker::memory::RunContext {
+    let context = crate::imp::memory::RunContext {
         provider: "discord".into(),
         channel_id: Some(channel_id.to_string()),
         user_id: d["author"]["id"].as_str().map(String::from),
@@ -313,7 +313,7 @@ async fn handle_message(worker: &str, d: &Value, bot_id: &str, guilds: &HashMap<
     };
     eprintln!("discord: {author} ({role}) in {channel_id} → session");
     route_to_session(
-        worker,
+        imp,
         channel_id,
         author.to_string(),
         text,
@@ -336,11 +336,11 @@ const SESSION_IDLE_SECS: u64 = 90;
 /// session keeps the box warm across messages; it exits on idle (its sender then
 /// reads closed, and the next message starts a fresh one).
 async fn route_to_session(
-    worker: &str,
+    imp: &str,
     channel_id: &str,
     author_label: String,
     text: String,
-    context: crate::worker::memory::RunContext,
+    context: crate::imp::memory::RunContext,
     token: &str,
 ) {
     let start_context = context.clone();
@@ -368,12 +368,12 @@ async fn route_to_session(
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::run::boxed::SessionMessage>(64);
     let _ = tx.try_send(message);
     sessions().lock().unwrap().insert(channel_id.to_string(), tx);
-    let (w, run_id) = (worker.to_string(), crate::run::boxed::new_run_id());
+    let (w, run_id) = (imp.to_string(), crate::run::boxed::new_run_id());
     tokio::spawn(async move {
         if let Err(e) = crate::run::boxed::run_session(
             &w,
             &run_id,
-            crate::worker::context::RunSurface::DiscordSession,
+            crate::imp::context::RunSurface::DiscordSession,
             start_context,
             rx,
             SESSION_IDLE_SECS,
@@ -411,18 +411,18 @@ async fn trigger_typing(channel_id: &str, token: &str) {
 /// what's safe: the approval desk, the queue, and channel trust.
 fn command_defs() -> Value {
     json!([
-        { "name": "gates", "description": "Roster approval desk", "options": [
+        { "name": "gates", "description": "Impyard approval desk", "options": [
             { "type": 1, "name": "ls", "description": "List pending gates" },
             { "type": 1, "name": "approve", "description": "Approve a gate", "options": [{ "type": 3, "name": "id", "description": "Gate id", "required": true }] },
             { "type": 1, "name": "deny", "description": "Deny a gate", "options": [{ "type": 3, "name": "id", "description": "Gate id", "required": true }] }
         ]},
-        { "name": "queue", "description": "Roster task queue", "options": [
+        { "name": "queue", "description": "Impyard task queue", "options": [
             { "type": 1, "name": "ls", "description": "List tasks" }
         ]},
         { "name": "channel", "description": "Channel settings", "options": [
             { "type": 1, "name": "trust", "description": "Mark this channel's participants trusted" },
             { "type": 1, "name": "untrust", "description": "Mark this channel's participants untrusted" },
-            { "type": 1, "name": "mode", "description": "How the worker wakes here", "options": [
+            { "type": 1, "name": "mode", "description": "How the imp wakes here", "options": [
                 { "type": 3, "name": "mode", "description": "all = every message, mention = only when @mentioned", "required": true,
                   "choices": [{ "name": "all", "value": "all" }, { "name": "mention", "value": "mention" }] }
             ]},
@@ -451,12 +451,12 @@ fn command_defs() -> Value {
                 { "type": 3, "name": "text", "description": "Complete corrected note", "required": true }
             ]}
         ]},
-        { "name": "purpose", "description": "This channel's purpose for the worker", "options": [
+        { "name": "purpose", "description": "This channel's purpose for the imp", "options": [
             { "type": 1, "name": "show", "description": "Show this channel's purpose" },
             { "type": 1, "name": "set", "description": "Set this channel's purpose", "options": [{ "type": 3, "name": "text", "description": "The purpose", "required": true }] }
         ]},
-        { "name": "identity", "description": "The worker's fixed identity", "options": [
-            { "type": 1, "name": "show", "description": "Show the worker's identity" }
+        { "name": "identity", "description": "The imp's fixed identity", "options": [
+            { "type": 1, "name": "show", "description": "Show the imp's identity" }
         ]}
     ])
 }
@@ -508,7 +508,7 @@ fn interaction_role(d: &Value, guilds: &HashMap<String, Guild>) -> &'static str 
     }
 }
 
-async fn handle_interaction(worker: &str, d: &Value, guilds: &HashMap<String, Guild>, app_id: &str) {
+async fn handle_interaction(imp: &str, d: &Value, guilds: &HashMap<String, Guild>, app_id: &str) {
     if d["type"].as_i64().unwrap_or(0) != 2 {
         return; // only APPLICATION_COMMAND
     }
@@ -523,7 +523,7 @@ async fn handle_interaction(worker: &str, d: &Value, guilds: &HashMap<String, Gu
 
     let role = interaction_role(d, guilds);
     let caller = d["member"]["user"]["username"].as_str().or_else(|| d["user"]["username"].as_str()).unwrap_or("someone");
-    let text = run_command(worker, d, role, caller).await;
+    let text = run_command(imp, d, role, caller).await;
 
     // Fill in the deferred response (webhook uses the interaction token).
     let _ = reqwest::Client::new()
@@ -533,13 +533,13 @@ async fn handle_interaction(worker: &str, d: &Value, guilds: &HashMap<String, Gu
         .await;
 }
 
-async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> String {
+async fn run_command(imp: &str, d: &Value, role: &str, caller: &str) -> String {
     let data = &d["data"];
     let cmd = data["name"].as_str().unwrap_or("");
     let sub = data["options"][0]["name"].as_str().unwrap_or("");
     let channel_id = d["channel_id"].as_str().unwrap_or("");
     let caller_id = d["member"]["user"]["id"].as_str().or_else(|| d["user"]["id"].as_str()).unwrap_or("");
-    let memory_context = crate::worker::memory::RunContext {
+    let memory_context = crate::imp::memory::RunContext {
         provider: "discord".into(),
         channel_id: Some(channel_id.to_string()).filter(|s| !s.is_empty()),
         user_id: Some(caller_id.to_string()).filter(|s| !s.is_empty()),
@@ -568,7 +568,7 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
             if g.is_empty() {
                 "No pending gates.".into()
             } else {
-                let lines: Vec<String> = g.iter().map(|x| format!("• `{}` {} ({})", x.id, x.intent, x.worker)).collect();
+                let lines: Vec<String> = g.iter().map(|x| format!("• `{}` {} ({})", x.id, x.intent, x.imp)).collect();
                 format!("Pending gates:\n{}", lines.join("\n"))
             }
         }
@@ -689,7 +689,7 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
             format!("Channel memory retention: **{}**.", days.map(|n| format!("{n} days")).unwrap_or_else(|| "default".into()))
         }
         ("memory", "show") => {
-            let notes = crate::worker::memory::visible_in_context(worker, &memory_context);
+            let notes = crate::imp::memory::visible_in_context(imp, &memory_context);
             if notes.is_empty() {
                 "No visible memories about you or this channel.".into()
             } else {
@@ -703,7 +703,7 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
         }
         ("memory", "forget") => {
             let id = arg("id");
-            match crate::worker::memory::participant_mutate(worker, "forget", &id, None, &memory_context) {
+            match crate::imp::memory::participant_mutate(imp, "forget", &id, None, &memory_context) {
                 Ok(()) => format!("Forgot `{id}`."),
                 Err(e) => format!("Could not forget `{id}`: {e}"),
             }
@@ -711,7 +711,7 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
         ("memory", "correct") => {
             let id = arg("id");
             let text = arg("text");
-            match crate::worker::memory::participant_mutate(worker, "correct", &id, Some(&text), &memory_context) {
+            match crate::imp::memory::participant_mutate(imp, "correct", &id, Some(&text), &memory_context) {
                 Ok(()) => format!("Corrected `{id}`."),
                 Err(e) => format!("Could not correct `{id}`: {e}"),
             }
@@ -741,9 +741,9 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
             if rank < 2 {
                 return denied("server admins");
             }
-            match std::fs::read_to_string(crate::run::boxed::identity_path(worker)) {
-                Ok(p) if !p.trim().is_empty() => format!("{worker}'s identity:\n```\n{}\n```", p.trim()),
-                _ => format!("{worker} has no identity.md set."),
+            match std::fs::read_to_string(crate::run::boxed::identity_path(imp)) {
+                Ok(p) if !p.trim().is_empty() => format!("{imp}'s identity:\n```\n{}\n```", p.trim()),
+                _ => format!("{imp} has no identity.md set."),
             }
         }
         _ => "Unknown command.".into(),
@@ -768,7 +768,7 @@ pub struct ChannelSettings {
     /// "all" (wake on every message) | "mention" (wake only on @mention/DM).
     #[serde(default = "default_mode")]
     pub mode: String,
-    /// Channel-local memory controls may only make the worker policy stricter.
+    /// Channel-local memory controls may only make the imp policy stricter.
     #[serde(default = "default_memory_enabled")]
     pub memory_enabled: bool,
     #[serde(default)]
@@ -929,7 +929,7 @@ fn channel_dir(channel_id: &str) -> PathBuf {
     paths::channel_dir(channel_id)
 }
 
-/// A channel's purpose file (channels/<id>/purpose.md) — the worker's role in
+/// A channel's purpose file (channels/<id>/purpose.md) — the imp's role in
 /// this channel, composed into runs and editable by trusted participants.
 pub fn purpose_path(channel_id: &str) -> PathBuf {
     channel_dir(channel_id).join("purpose.md")

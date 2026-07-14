@@ -3,15 +3,15 @@
 **Status: implemented** — catalog in the provider registry, loader compilation
 in `src/config.rs`, wizard + inventory in `src/cli/connections.rs`.
 
-A **connection** is one intent — "this worker may act on that service" — that
+A **connection** is one intent — "this imp may act on that service" — that
 previously smeared across four places: a provider template (providers.toml), a
 secret (vault), a grant with injection (org.toml, with an ordering footgun),
 and an `[[expose]]`. It is now one first-class object:
 
 ```toml
-# ~/.config/roster/connections/github.toml
+# ~/.config/impyard/connections/github.toml
 provider = "github"          # registry entry: login flow + inject template
-workers = ["yuko"]           # or: scope = "org" (the explicit escalation)
+imps = ["yuko"]           # or: scope = "org" (the explicit escalation)
 hosts = ["api.github.com"]
 methods = ["GET"]            # writes are a deliberate manual edit
 env = "GH_TOKEN"             # what the box sees (a sentinel, never the secret)
@@ -33,30 +33,30 @@ Two structural fixes over hand-authoring:
 ## One command
 
 ```
-roster server connect                      # the catalog
-roster server connect github --worker yuko # login → vault → scaffold → validate
-roster server connect github --org         # org-wide, spelled out
-roster server connect github --as github-kdemo --worker kdemo
+impyard server connect                      # the catalog
+impyard server connect github --imp yuko # login → vault → scaffold → validate
+impyard server connect github --org         # org-wide, spelled out
+impyard server connect github --as github-kdemo --imp kdemo
 ```
 
 The wizard runs the provider's login flow, stores the secret, scaffolds the
 connection file (once — re-running only **rotates the secret**, never touches
-the admin's edits), and prints the compiled result. Without `--worker`/`--org`
-it asks; per-worker is the default posture because a connection is a
+the admin's edits), and prints the compiled result. Without `--imp`/`--org`
+it asks; per-imp is the default posture because a connection is a
 capability granted to an identity, not to the fleet. `--as` names the
-connection/credential differently from the service — the idiom for per-worker
+connection/credential differently from the service — the idiom for per-imp
 service identities (separate PATs ⇒ the service's own audit log distinguishes
-workers too).
+imps too).
 
-Inventory: `roster server connections [--json]` — provider, scope, hosts, env,
+Inventory: `impyard server connections [--json]` — provider, scope, hosts, env,
 active/DISABLED.
 
 ## Scope rules
 
-- **Services are box-consumed capabilities** → per-worker by default.
+- **Services are box-consumed capabilities** → per-imp by default.
 - **Channels (discord, smtp) are host-consumed infrastructure** → they are
   NOT connections. `server connect discord` does the vault step and points at
-  the worker.toml `[channels]` binding; the credential never enters a box.
+  the imp.toml `[channels]` binding; the credential never enters a box.
 - Model providers (anthropic, openai-codex) are wired via grants as before.
 
 ## The catalog

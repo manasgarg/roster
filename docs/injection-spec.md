@@ -54,7 +54,7 @@ never holds the key — holds regardless.
 
 ## Design
 
-**Vault (gateway-owned, host-side).** `~/.roster/vault/<name>.json`, outside
+**Vault (gateway-owned, host-side).** `~/.impyard/vault/<name>.json`, outside
 the repo and outside the box mount (like the CA). Holds the real credential.
 Seeded by a dev verb `vault-sync`, which copies the current pi auth entries
 in. "The gateway holds all credentials" becomes literal.
@@ -90,7 +90,7 @@ sentinel; the gateway swaps it. Real values never touch the box.
 
 | # | File | ~Size | What |
 |---|---|---|---|
-| 1 | `src/vault.ts` | ~40 | `getCredential(name)`, `syncFromPiAuth()`. Store at `~/.roster/vault/`. |
+| 1 | `src/vault.ts` | ~40 | `getCredential(name)`, `syncFromPiAuth()`. Store at `~/.impyard/vault/`. |
 | 2 | `src/schema.ts` | +3 | `Rule.inject?: { credential: string }`; `Decision.injected?: string[]`. |
 | 3 | `src/gateway.ts` | +~25 | On allow, if the rule injects: render headers from the vault credential, overwrite outgoing headers, record injected names. Missing credential ⇒ deny. |
 | 4 | `src/box.ts` | ~edit | Write a **sentinel** auth.json (real shape, secrets nulled to sentinels, expires far future) instead of copying the real one. |
@@ -113,7 +113,7 @@ in the box) now holds for the model key too, not just search keys.
 3. **Fail closed.** With the vault entry removed, the same run is **denied**
    at the gateway (never forwarded with the sentinel), and the box run fails
    cleanly.
-4. **Vault is off the box.** `~/.roster/vault/` is not under any box mount;
+4. **Vault is off the box.** `~/.impyard/vault/` is not under any box mount;
    from inside the box it does not exist.
 
 ## Build order

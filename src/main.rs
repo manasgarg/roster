@@ -1,9 +1,9 @@
-//! Roster — the trusted host-side control plane, one binary (D20: the language
+//! Impyard — the trusted host-side control plane, one binary (D20: the language
 //! boundary is the trust boundary; TS lives only in the box). The command
 //! grammar is the product thesis — rented intelligence, owned governance:
 //!
-//!   roster server …   the owned machinery: daemon, config, desk, channels, vault, run log
-//!   roster worker …   the governed identities: lifecycle, trust, memory, work, sessions
+//!   impyard server …   the owned machinery: daemon, config, desk, channels, vault, run log
+//!   impyard imp …   the governed identities: lifecycle, trust, memory, work, sessions
 
 mod action;
 mod channel;
@@ -15,17 +15,17 @@ mod paths;
 mod run;
 mod util;
 mod work;
-mod worker;
+mod imp;
 
 use clap::{Parser, Subcommand};
 
-const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("ROSTER_BUILD"), ")");
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("IMPYARD_BUILD"), ")");
 
 #[derive(Parser)]
 #[command(
-    name = "roster",
+    name = "impyard",
     version = VERSION,
-    about = "roster — digital workers with owned governance"
+    about = "impyard — digital imps with owned governance"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -41,7 +41,7 @@ enum Cmd {
     Server(ServerCmd),
     /// The governed identities: lifecycle, trust, memory, knowledge, work
     #[command(subcommand)]
-    Worker(WorkerCmd),
+    Imp(ImpCmd),
 }
 
 #[derive(Subcommand)]
@@ -74,14 +74,14 @@ enum ServerCmd {
     Connect {
         /// Catalog name (bare: list the catalog)
         service: Option<String>,
-        /// Grant to this worker (repeatable); default is to ask
+        /// Grant to this imp (repeatable); default is to ask
         #[arg(long)]
-        worker: Vec<String>,
-        /// Org-wide: every current and future worker (the explicit escalation)
+        imp: Vec<String>,
+        /// Org-wide: every current and future imp (the explicit escalation)
         #[arg(long)]
         org: bool,
         /// Connection/credential name when it differs from the service
-        /// (e.g. --as github-yuko for a per-worker identity)
+        /// (e.g. --as github-yuko for a per-imp identity)
         #[arg(long = "as")]
         alias: Option<String>,
     },
@@ -96,7 +96,7 @@ enum ServerCmd {
     /// Channel edges: trust designation, response mode, memory settings
     #[command(subcommand)]
     Channel(ChannelCmd),
-    /// Credentials — held on the host, injected in transit; workers never see keys
+    /// Credentials — held on the host, injected in transit; imps never see keys
     #[command(subcommand)]
     Vault(VaultCmd),
     /// The run log: every session, whoever it was attributed to
@@ -177,17 +177,17 @@ enum VaultCmd {
 }
 
 #[derive(Subcommand)]
-enum WorkerCmd {
-    /// Scaffold a worker: spec, identity, knowledge repo
+enum ImpCmd {
+    /// Scaffold an imp: spec, identity, knowledge repo
     Init {
         name: String,
     },
-    /// List workers and their state
+    /// List imps and their state
     Ls {
         #[arg(long)]
         json: bool,
     },
-    /// One worker: spec, budgets and spend, queue, gates, memory, knowledge
+    /// One imp: spec, budgets and spend, queue, gates, memory, knowledge
     Show {
         name: String,
         #[arg(long)]
@@ -229,9 +229,9 @@ enum WorkerCmd {
 
 #[derive(Subcommand)]
 enum TaskCmd {
-    /// File a task for a worker
+    /// File a task for an imp
     Add {
-        worker: String,
+        imp: String,
         /// Wall-clock ceiling in minutes
         #[arg(long, default_value_t = 30.0)]
         ceiling: f64,
@@ -253,7 +253,7 @@ enum TaskCmd {
     },
     /// File an inbound message as a task (untrusted-content framing)
     Relay {
-        worker: String,
+        imp: String,
         /// Sender label recorded with the task
         #[arg(long)]
         from: Option<String>,
@@ -281,8 +281,8 @@ enum TaskCmd {
 enum MemoryCmd {
     /// List memory notes
     Ls {
-        worker: String,
-        /// Filter: worker | channel | user
+        imp: String,
+        /// Filter: imp | channel | user
         #[arg(long)]
         scope: Option<String>,
         /// Filter: the scope's id (a channel id, a user id)
@@ -291,40 +291,40 @@ enum MemoryCmd {
     },
     /// Print one note in full
     Show {
-        worker: String,
+        imp: String,
         id: String,
     },
     /// Replace a note's content (recorded, not a silent edit)
     Correct {
-        worker: String,
+        imp: String,
         id: String,
         #[arg(required = true, value_name = "REPLACEMENT")]
         replacement: Vec<String>,
     },
     /// Remove a note
     Rm {
-        worker: String,
+        imp: String,
         id: String,
     },
     Pin {
-        worker: String,
+        imp: String,
         id: String,
     },
     Unpin {
-        worker: String,
+        imp: String,
         id: String,
     },
     Disable {
-        worker: String,
+        imp: String,
         id: String,
     },
     Enable {
-        worker: String,
+        imp: String,
         id: String,
     },
     /// Drop dead notes, keep live ones (finishes the notes/ → memory/ migration)
     Compact {
-        worker: String,
+        imp: String,
     },
 }
 
@@ -333,7 +333,7 @@ enum RunsCmd {
     /// List past sessions, whoever they were attributed to
     Ls {
         #[arg(long)]
-        worker: Option<String>,
+        imp: Option<String>,
         #[arg(long, default_value_t = 20)]
         limit: usize,
         #[arg(long)]
@@ -361,7 +361,7 @@ enum RunsCmd {
 
 #[tokio::main]
 async fn main() {
-    // Die quietly on a closed pipe (`roster … | head`) instead of panicking:
+    // Die quietly on a closed pipe (`impyard … | head`) instead of panicking:
     // Rust ignores SIGPIPE by default, turning EPIPE into a println panic.
     #[cfg(unix)]
     unsafe {
@@ -369,11 +369,11 @@ async fn main() {
     }
 
     // Old top-level commands point at their new home instead of half-working:
-    // the argument shapes changed (positional workers, merged daemons), so a
+    // the argument shapes changed (positional imps, merged daemons), so a
     // silent translation could misparse. One clear error, one clear fix.
     if let Some(first) = std::env::args().nth(1) {
         if let Some(new_home) = legacy_pointer(&first) {
-            eprintln!("roster: `roster {first}` has moved — use: {new_home}");
+            eprintln!("impyard: `impyard {first}` has moved — use: {new_home}");
             std::process::exit(2);
         }
     }
@@ -392,10 +392,10 @@ async fn main() {
             ServerCmd::Validate => cli::server::validate(),
             ServerCmd::Connect {
                 service,
-                worker,
+                imp,
                 org,
                 alias,
-            } => cli::connections::connect(service, worker, org, alias).await,
+            } => cli::connections::connect(service, imp, org, alias).await,
             ServerCmd::Connections { json } => cli::connections::ls(json),
             ServerCmd::Gates(cmd) => match cmd {
                 GatesCmd::Ls { json } => cli::gates::ls(json),
@@ -424,29 +424,29 @@ async fn main() {
             },
             ServerCmd::Runs(cmd) => match cmd {
                 RunsCmd::Ls {
-                    worker,
+                    imp,
                     limit,
                     json,
-                } => cli::runs::ls(worker.as_deref(), limit, json),
+                } => cli::runs::ls(imp.as_deref(), limit, json),
                 RunsCmd::Show { run } => cli::runs::show(&run),
                 RunsCmd::Context { run, all } => cli::runs::context(&run, all),
                 RunsCmd::Recall { run } => cli::runs::recall(&run),
             },
         },
-        Cmd::Worker(cmd) => match cmd {
-            WorkerCmd::Init { name } => cli::create::run(&name),
-            WorkerCmd::Ls { json } => cli::worker::ls(json),
-            WorkerCmd::Show { name, json } => cli::worker::show(&name, json),
-            WorkerCmd::Trust { name, json } => cli::worker::trust(&name, json),
-            WorkerCmd::Run {
+        Cmd::Imp(cmd) => match cmd {
+            ImpCmd::Init { name } => cli::create::run(&name),
+            ImpCmd::Ls { json } => cli::imp::ls(json),
+            ImpCmd::Show { name, json } => cli::imp::show(&name, json),
+            ImpCmd::Trust { name, json } => cli::imp::trust(&name, json),
+            ImpCmd::Run {
                 name,
                 ceiling,
                 prompt,
             } => run::boxed::run_once(&name, ceiling, prompt.join(" ")).await,
-            WorkerCmd::Chat { name, idle } => run::session::chat(&name, idle).await,
-            WorkerCmd::Task(cmd) => match cmd {
+            ImpCmd::Chat { name, idle } => run::session::chat(&name, idle).await,
+            ImpCmd::Task(cmd) => match cmd {
                 TaskCmd::Add {
-                    worker,
+                    imp,
                     ceiling,
                     proactive,
                     reorganize,
@@ -454,7 +454,7 @@ async fn main() {
                     base,
                     prompt,
                 } => cli::task::add(
-                    &worker,
+                    &imp,
                     ceiling,
                     proactive,
                     reorganize,
@@ -463,39 +463,39 @@ async fn main() {
                     prompt.join(" "),
                 ),
                 TaskCmd::Relay {
-                    worker,
+                    imp,
                     from,
                     message,
-                } => channel::relay::run(&worker, from.as_deref(), message.join(" ")),
+                } => channel::relay::run(&imp, from.as_deref(), message.join(" ")),
                 TaskCmd::Ls { json } => cli::task::ls(json),
                 TaskCmd::Show { id } => cli::task::show(&id),
                 TaskCmd::Requeue { id } => cli::task::requeue(&id),
             },
-            WorkerCmd::Memory(cmd) => match cmd {
+            ImpCmd::Memory(cmd) => match cmd {
                 MemoryCmd::Ls {
-                    worker,
+                    imp,
                     scope,
                     scope_id,
-                } => cli::memory::ls(&worker, scope.as_deref(), scope_id.as_deref()),
-                MemoryCmd::Show { worker, id } => cli::memory::show(&worker, &id),
+                } => cli::memory::ls(&imp, scope.as_deref(), scope_id.as_deref()),
+                MemoryCmd::Show { imp, id } => cli::memory::show(&imp, &id),
                 MemoryCmd::Correct {
-                    worker,
+                    imp,
                     id,
                     replacement,
-                } => cli::memory::correct(&worker, &id, &replacement.join(" ")),
-                MemoryCmd::Rm { worker, id } => cli::memory::mutate("forget", &worker, &id),
-                MemoryCmd::Pin { worker, id } => cli::memory::mutate("pin", &worker, &id),
-                MemoryCmd::Unpin { worker, id } => cli::memory::mutate("unpin", &worker, &id),
-                MemoryCmd::Disable { worker, id } => cli::memory::mutate("disable", &worker, &id),
-                MemoryCmd::Enable { worker, id } => cli::memory::mutate("enable", &worker, &id),
-                MemoryCmd::Compact { worker } => cli::memory::compact(&worker),
+                } => cli::memory::correct(&imp, &id, &replacement.join(" ")),
+                MemoryCmd::Rm { imp, id } => cli::memory::mutate("forget", &imp, &id),
+                MemoryCmd::Pin { imp, id } => cli::memory::mutate("pin", &imp, &id),
+                MemoryCmd::Unpin { imp, id } => cli::memory::mutate("unpin", &imp, &id),
+                MemoryCmd::Disable { imp, id } => cli::memory::mutate("disable", &imp, &id),
+                MemoryCmd::Enable { imp, id } => cli::memory::mutate("enable", &imp, &id),
+                MemoryCmd::Compact { imp } => cli::memory::compact(&imp),
             },
-            WorkerCmd::Knowledge { name } => cli::knowledge::run(&name),
+            ImpCmd::Knowledge { name } => cli::knowledge::run(&name),
         },
     };
 
     if let Err(e) = result {
-        eprintln!("roster: {e}");
+        eprintln!("impyard: {e}");
         std::process::exit(1);
     }
 }
@@ -503,24 +503,24 @@ async fn main() {
 /// Where each pre-clap command lives now. Kept until the muscle memory fades.
 fn legacy_pointer(first: &str) -> Option<&'static str> {
     Some(match first {
-        "serve" => "roster server start",
-        "supervise" => "roster server start  (the daemons merged; --cap and --once moved there)",
-        "listen" => "roster server start  (listeners start for every worker with a [channels] entry)",
-        "deploy" => "roster server validate  (config now loads live — there is no deploy step)",
-        "gates" => "roster server gates <ls|show|approve|deny>",
-        "channel" => "roster server channel <ls|show|trust|untrust|set>",
-        "connect" => "roster server vault connect <provider>",
-        "vault-sync" => "roster server vault sync",
-        "create" => "roster worker init <name>",
-        "queue" => "roster worker task <add|relay|ls|show|requeue>",
-        "relay" => "roster worker task relay <worker> \"<message>\"",
-        "memory" | "notes" => "roster worker memory <ls|show|correct|rm|…> <worker>",
-        "knowledge" => "roster worker knowledge <name>",
-        "box" => "roster worker run <name> \"<prompt>\"",
-        "session" => "roster worker chat <name>",
-        "runs" => "roster server runs <ls|show|context|recall>",
+        "serve" => "impyard server start",
+        "supervise" => "impyard server start  (the daemons merged; --cap and --once moved there)",
+        "listen" => "impyard server start  (listeners start for every imp with a [channels] entry)",
+        "deploy" => "impyard server validate  (config now loads live — there is no deploy step)",
+        "gates" => "impyard server gates <ls|show|approve|deny>",
+        "channel" => "impyard server channel <ls|show|trust|untrust|set>",
+        "connect" => "impyard server vault connect <provider>",
+        "vault-sync" => "impyard server vault sync",
+        "create" => "impyard imp init <name>",
+        "queue" => "impyard imp task <add|relay|ls|show|requeue>",
+        "relay" => "impyard imp task relay <imp> \"<message>\"",
+        "memory" | "notes" => "impyard imp memory <ls|show|correct|rm|…> <imp>",
+        "knowledge" => "impyard imp knowledge <name>",
+        "box" => "impyard imp run <name> \"<prompt>\"",
+        "session" => "impyard imp chat <name>",
+        "runs" => "impyard server runs <ls|show|context|recall>",
         "agent" => {
-            "roster worker <run|chat>, roster server runs  (sessions belong to workers; the log to the server)"
+            "impyard imp <run|chat>, impyard server runs  (sessions belong to imps; the log to the server)"
         }
         _ => return None,
     })

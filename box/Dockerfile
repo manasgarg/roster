@@ -6,7 +6,7 @@
 # mounts a checkout over them.
 #
 # Build from the REPO ROOT (the engine layers need package-lock.json + box/):
-#   docker build -t roster-box -f box/Dockerfile .
+#   docker build -t impyard-box -f box/Dockerfile .
 FROM node:24-bookworm-slim
 
 # Tier 1 — always installed. Base image already carries node/npm/npx.
@@ -44,7 +44,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 RUN corepack enable
 
 # Tier 2 — org choice, heavy: document/media tooling.
-#   docker build --build-arg TIER2=1 -t roster-box -f box/Dockerfile .
+#   docker build --build-arg TIER2=1 -t impyard-box -f box/Dockerfile .
 ARG TIER2=0
 RUN if [ "$TIER2" = "1" ]; then \
       apt-get update \
@@ -52,14 +52,14 @@ RUN if [ "$TIER2" = "1" ]; then \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 
-# The engine: pi + extensions at the lockfile-pinned version. /opt/roster/engine/run-pi
+# The engine: pi + extensions at the lockfile-pinned version. /opt/impyard/engine/run-pi
 # is the stable entry the host invokes — it expands the baked extensions itself,
 # so the host never needs to inspect the image.
-COPY package.json package-lock.json /opt/roster/engine/
-RUN cd /opt/roster/engine && npm ci --omit=dev && npm cache clean --force
-COPY box/extensions /opt/roster/engine/box/extensions
-RUN node -e "const path=require('path');const dir='/opt/roster/engine/node_modules/@earendil-works/pi-coding-agent';const p=require(dir+'/package.json');const bin=typeof p.bin==='string'?p.bin:p.bin.pi;require('fs').symlinkSync(path.join(dir,bin),'/opt/roster/engine/pi')" \
-  && printf '#!/bin/sh\nexec node /opt/roster/engine/pi --no-extensions $(for f in /opt/roster/engine/box/extensions/*.ts; do printf -- "-e %%s " "$f"; done) "$@"\n' > /opt/roster/engine/run-pi \
-  && chmod +x /opt/roster/engine/run-pi
+COPY package.json package-lock.json /opt/impyard/engine/
+RUN cd /opt/impyard/engine && npm ci --omit=dev && npm cache clean --force
+COPY box/extensions /opt/impyard/engine/box/extensions
+RUN node -e "const path=require('path');const dir='/opt/impyard/engine/node_modules/@earendil-works/pi-coding-agent';const p=require(dir+'/package.json');const bin=typeof p.bin==='string'?p.bin:p.bin.pi;require('fs').symlinkSync(path.join(dir,bin),'/opt/impyard/engine/pi')" \
+  && printf '#!/bin/sh\nexec node /opt/impyard/engine/pi --no-extensions $(for f in /opt/impyard/engine/box/extensions/*.ts; do printf -- "-e %%s " "$f"; done) "$@"\n' > /opt/impyard/engine/run-pi \
+  && chmod +x /opt/impyard/engine/run-pi
 
 WORKDIR /workspace

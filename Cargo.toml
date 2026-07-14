@@ -1,11 +1,11 @@
 [package]
-name = "roster"
+name = "impyard"
 version = "0.0.1"
 edition = "2021"
-description = "Roster's trusted host-side control plane: gateway + orchestration"
+description = "Impyard's trusted host-side control plane: gateway + orchestration"
 
 [[bin]]
-name = "roster"
+name = "impyard"
 path = "src/main.rs"
 
 [dependencies]

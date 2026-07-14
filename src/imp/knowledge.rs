@@ -1,9 +1,9 @@
-//! Git-backed world knowledge for a worker. The box receives a plain checkout
+//! Git-backed world knowledge for an imp. The box receives a plain checkout
 //! with no Git metadata. The trusted host validates additions and creates the
-//! commit in a serialized per-worker integration lane.
+//! commit in a serialized per-imp integration lane.
 
 use crate::run::runlog::KnowledgeRunRecord;
-use crate::worker::storage::KnowledgePolicy;
+use crate::imp::storage::KnowledgePolicy;
 use crate::paths;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,7 +13,7 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-const KNOWLEDGE_MOUNT: &str = "/opt/roster/knowledge";
+const KNOWLEDGE_MOUNT: &str = "/opt/impyard/knowledge";
 const ALLOWED_EXTENSIONS: &[&str] = &["md", "json", "jsonl", "yaml", "yml", "csv", "txt"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +47,7 @@ impl KnowledgeMode {
 
 #[derive(Debug)]
 pub struct Checkout {
-    pub worker: String,
+    pub imp: String,
     pub run_id: String,
     pub path: PathBuf,
     pub base_commit: String,
@@ -64,7 +64,7 @@ impl Checkout {
 
 #[derive(Debug)]
 pub struct RunStorage {
-    pub worker: String,
+    pub imp: String,
     pub run_id: String,
     pub knowledge: Option<Checkout>,
     _reorganization_lease: Option<Lease>,
@@ -73,8 +73,8 @@ pub struct RunStorage {
 impl Drop for RunStorage {
     fn drop(&mut self) {
         if self._reorganization_lease.is_some() {
-            let _ = crate::worker::journal::append_required(
-                &journal_worker(&self.worker),
+            let _ = crate::imp::journal::append_required(
+                &journal_imp(&self.imp),
                 &self.run_id,
                 "knowledge-reorganization-lease-released",
                 json!({ "implicit": true }),
@@ -176,12 +176,12 @@ impl ValidatedChanges {
     }
 }
 
-pub fn provision(worker: &str, run_id: &str, requested_mode: &str, tainted: bool) -> Result<RunStorage, String> {
-    let worker = short_worker(worker);
-    safe_component(worker, "worker")?;
+pub fn provision(imp: &str, run_id: &str, requested_mode: &str, tainted: bool) -> Result<RunStorage, String> {
+    let imp = short_imp(imp);
+    safe_component(imp, "imp")?;
     safe_component(run_id, "run id")?;
     let mut mode = KnowledgeMode::parse(requested_mode)?;
-    let policy = crate::worker::storage::load(worker);
+    let policy = crate::imp::storage::load(imp);
     // The memory/knowledge boundary: a run that saw interaction content or
     // context never gets a writable mount under clean-room policy — the
     // provenance of the run decides, not the model.
@@ -201,17 +201,17 @@ pub fn provision(worker: &str, run_id: &str, requested_mode: &str, tainted: bool
         }
         crate::run::runlog::attach_storage(run_id, None)?;
         return Ok(RunStorage {
-            worker: worker.into(),
+            imp: imp.into(),
             run_id: run_id.into(),
             knowledge: None,
             _reorganization_lease: None,
         });
     }
 
-    let repo = ensure_repo(worker)?;
+    let repo = ensure_repo(imp)?;
     let reorganization_lease = if mode == KnowledgeMode::Reorganization {
         Some(acquire_lease(
-            &worker_dir(worker).join("reorganization.lock"),
+            &imp_dir(imp).join("reorganization.lock"),
         )?)
     } else {
         None
@@ -220,7 +220,7 @@ pub fn provision(worker: &str, run_id: &str, requested_mode: &str, tainted: bool
     // already-running checkpoints drain before this point; later append jobs
     // may continue because their records/ write set is disjoint.
     let snapshot_lane = if mode == KnowledgeMode::Reorganization {
-        Some(acquire_lease(&worker_dir(worker).join("integrate.lock"))?)
+        Some(acquire_lease(&imp_dir(imp).join("integrate.lock"))?)
     } else {
         None
     };
@@ -250,18 +250,18 @@ pub fn provision(worker: &str, run_id: &str, requested_mode: &str, tainted: bool
         }),
     )?;
     if mode == KnowledgeMode::Reorganization {
-        crate::worker::journal::append_required(
-            &journal_worker(worker),
+        crate::imp::journal::append_required(
+            &journal_imp(imp),
             run_id,
             "knowledge-reorganization-lease-acquired",
             json!({ "base_commit": base_commit }),
         )?;
     }
     Ok(RunStorage {
-        worker: worker.into(),
+        imp: imp.into(),
         run_id: run_id.into(),
         knowledge: Some(Checkout {
-            worker: worker.into(),
+            imp: imp.into(),
             run_id: run_id.into(),
             path,
             base_commit,
@@ -294,8 +294,8 @@ pub fn checkpoint(checkout: &Checkout) -> Result<Checkpoint, String> {
                 None,
                 Some(&error.message),
             );
-            let _ = crate::worker::journal::append_required(
-                &journal_worker(&checkout.worker),
+            let _ = crate::imp::journal::append_required(
+                &journal_imp(&checkout.imp),
                 &checkout.run_id,
                 "knowledge-checkpoint-rejected",
                 json!({ "base_commit": checkout.base_commit, "state": error.state, "error": error.message }),
@@ -306,9 +306,9 @@ pub fn checkpoint(checkout: &Checkout) -> Result<Checkpoint, String> {
 }
 
 fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> {
-    let worker_dir = worker_dir(&checkout.worker);
-    let repo = canonical_repo(&checkout.worker);
-    let base = TempTree::new(&worker_dir, "base")?;
+    let imp_dir = imp_dir(&checkout.imp);
+    let repo = canonical_repo(&checkout.imp);
+    let base = TempTree::new(&imp_dir, "base")?;
     clone_at(&repo, &base.path, &checkout.base_commit)?;
     let changes = match checkout.mode {
         // Unreachable: checkpoint() rejects read-only checkouts before here.
@@ -336,8 +336,8 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
         )?,
     };
     if changes.is_empty() {
-        crate::worker::journal::append_required(
-            &journal_worker(&checkout.worker),
+        crate::imp::journal::append_required(
+            &journal_imp(&checkout.imp),
             &checkout.run_id,
             "knowledge-checkpoint-empty",
             json!({ "base_commit": checkout.base_commit }),
@@ -354,15 +354,15 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
     // this only bites in any-run mode or on mention syntax — the hard
     // guarantee is the read-only mount, not this scan.
     {
-        let context = crate::worker::memory::load_run_context(&checkout.run_id);
-        let markers = crate::worker::boundary::participant_markers(&context);
+        let context = crate::imp::memory::load_run_context(&checkout.run_id);
+        let markers = crate::imp::boundary::participant_markers(&context);
         let all_changed = changes
             .new_records
             .iter()
             .chain(changes.organization.iter().flatten());
         for (path, file) in all_changed {
             if let Ok(text) = std::str::from_utf8(&file.bytes) {
-                if let Some(hit) = crate::worker::boundary::scan(text, &markers, false) {
+                if let Some(hit) = crate::imp::boundary::scan(text, &markers, false) {
                     return Err(CheckpointError::from(format!(
                         "{} references a conversation participant (\"{hit}\") — that belongs in memory, not in knowledge",
                         path.display()
@@ -372,9 +372,9 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
         }
     }
 
-    let _lease = acquire_lease(&worker_dir.join("integrate.lock"))?;
+    let _lease = acquire_lease(&imp_dir.join("integrate.lock"))?;
     let latest = head(&repo)?;
-    let integration = TempTree::new(&worker_dir, "integrate")?;
+    let integration = TempTree::new(&imp_dir, "integrate")?;
     clone_at(&repo, &integration.path, &latest)?;
     if let Some(organization) = changes.organization.as_ref() {
         let base_files = collect_files(&base.path, true)?;
@@ -382,7 +382,7 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
         let base_organization = files_under(&base_files, "organization");
         let latest_organization = files_under(&latest_files, "organization");
         if let Err(error) = durable_paths_unchanged(&base_files, &latest_files) {
-            let pending = worker_dir
+            let pending = imp_dir
                 .join("pending")
                 .join(format!("{}-durable-path-changed", checkout.run_id));
             integration.preserve(&pending)?;
@@ -392,7 +392,7 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
             )));
         }
         if base_organization != latest_organization {
-            let pending = worker_dir
+            let pending = imp_dir
                 .join("pending")
                 .join(format!("{}-organization-changed", checkout.run_id));
             integration.preserve(&pending)?;
@@ -413,7 +413,7 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
     for (relative, file) in &changes.new_records {
         let destination = integration.path.join(relative);
         if destination.exists() {
-            let pending = worker_dir
+            let pending = imp_dir
                 .join("pending")
                 .join(format!("{}-path-collision", checkout.run_id));
             integration.preserve(&pending)?;
@@ -429,29 +429,29 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
     run_git(&integration.path, &["add", "--all"])?;
     run_git(
         &integration.path,
-        &["config", "user.name", "Roster Knowledge"],
+        &["config", "user.name", "Impyard Knowledge"],
     )?;
     run_git(
         &integration.path,
-        &["config", "user.email", "knowledge@roster.local"],
+        &["config", "user.email", "knowledge@impyard.local"],
     )?;
     let record = crate::run::runlog::load(&checkout.run_id);
     let task = record
         .as_ref()
         .and_then(|record| record.task_id.as_deref())
         .unwrap_or("-");
-    let context = crate::worker::memory::load_run_context(&checkout.run_id);
+    let context = crate::imp::memory::load_run_context(&checkout.run_id);
     let channel = context.channel_scope_id().unwrap_or_else(|| "-".into());
     let subject = if checkout.mode == KnowledgeMode::Reorganization {
-        "Reorganize worker knowledge"
+        "Reorganize imp knowledge"
     } else {
-        "Add worker knowledge"
+        "Add imp knowledge"
     };
     let message = format!(
-        "{} from run {}\n\nRoster-Worker: {}\nRoster-Run: {}\nRoster-Task: {}\nRoster-Channel: {}\nRoster-Base-Commit: {}\nRoster-Mode: {}",
+        "{} from run {}\n\nImpyard-Imp: {}\nImpyard-Run: {}\nImpyard-Task: {}\nImpyard-Channel: {}\nImpyard-Base-Commit: {}\nImpyard-Mode: {}",
         subject,
         checkout.run_id,
-        checkout.worker,
+        checkout.imp,
         checkout.run_id,
         task,
         channel,
@@ -464,8 +464,8 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
     )?;
     let commit = run_git(&integration.path, &["rev-parse", "HEAD"])?;
 
-    crate::worker::journal::append_required(
-        &journal_worker(&checkout.worker),
+    crate::imp::journal::append_required(
+        &journal_imp(&checkout.imp),
         &checkout.run_id,
         "knowledge-integration-started",
         json!({
@@ -476,7 +476,7 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
             "mode": checkout.mode.as_str(),
         }),
     )?;
-    let incoming_ref = format!("refs/roster/incoming/{}", checkout.run_id);
+    let incoming_ref = format!("refs/impyard/incoming/{}", checkout.run_id);
     if let Err(error) = run_git_owned(
         &integration.path,
         vec![
@@ -486,7 +486,7 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
         ],
     ) {
         let pending =
-            worker_dir
+            imp_dir
                 .join("pending")
                 .join(format!("{}-{}", checkout.run_id, &commit[..12]));
         integration.preserve(&pending)?;
@@ -500,7 +500,7 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
         &["push", "origin", "HEAD:refs/heads/main"],
     ) {
         let pending =
-            worker_dir
+            imp_dir
                 .join("pending")
                 .join(format!("{}-{}", checkout.run_id, &commit[..12]));
         integration.preserve(&pending)?;
@@ -518,8 +518,8 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
             incoming_ref,
         ],
     );
-    crate::worker::journal::append_required(
-        &journal_worker(&checkout.worker),
+    crate::imp::journal::append_required(
+        &journal_imp(&checkout.imp),
         &checkout.run_id,
         "knowledge-integrated",
         json!({
@@ -538,8 +538,8 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
 
 pub fn quarantine(checkout: &Checkout, reason: &str) {
     let _ = crate::run::runlog::update_knowledge(&checkout.run_id, "quarantined", None, Some(reason));
-    let _ = crate::worker::journal::append_required(
-        &journal_worker(&checkout.worker),
+    let _ = crate::imp::journal::append_required(
+        &journal_imp(&checkout.imp),
         &checkout.run_id,
         "knowledge-checkout-quarantined",
         json!({ "base_commit": checkout.base_commit, "path": checkout.path, "reason": reason }),
@@ -550,8 +550,8 @@ pub fn release_reorganization(storage: &mut RunStorage) -> Result<(), String> {
     if storage._reorganization_lease.is_none() {
         return Ok(());
     }
-    let journal_result = crate::worker::journal::append_required(
-        &journal_worker(&storage.worker),
+    let journal_result = crate::imp::journal::append_required(
+        &journal_imp(&storage.imp),
         &storage.run_id,
         "knowledge-reorganization-lease-released",
         json!({}),
@@ -868,7 +868,7 @@ fn validate_relative_path(path: &Path) -> Result<(), String> {
         "SKILL.md",
         "identity.md",
         "purpose.md",
-        "worker.toml",
+        "imp.toml",
     ];
     if path.is_absolute() {
         return Err("knowledge path cannot be absolute".into());
@@ -903,11 +903,11 @@ fn obvious_secret(text: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
-fn ensure_repo(worker: &str) -> Result<PathBuf, String> {
-    let dir = worker_dir(worker);
+fn ensure_repo(imp: &str) -> Result<PathBuf, String> {
+    let dir = imp_dir(imp);
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let _lease = acquire_lease(&dir.join("integrate.lock"))?;
-    let repo = canonical_repo(worker);
+    let repo = canonical_repo(imp);
     if repo.join("refs/heads/main").exists() || head(&repo).is_ok() {
         return Ok(repo);
     }
@@ -932,7 +932,7 @@ fn ensure_repo(worker: &str) -> Result<PathBuf, String> {
     fs::create_dir_all(init.path.join("organization")).map_err(|error| error.to_string())?;
     fs::write(
         init.path.join("records/README.md"),
-        "# Durable records\n\nAppend runs add uniquely named research notes here. Use the record namespace supplied in `ROSTER_RECORD_NAMESPACE`.\n",
+        "# Durable records\n\nAppend runs add uniquely named research notes here. Use the record namespace supplied in `IMPYARD_RECORD_NAMESPACE`.\n",
     )
     .map_err(|error| error.to_string())?;
     fs::write(
@@ -940,15 +940,15 @@ fn ensure_repo(worker: &str) -> Result<PathBuf, String> {
         "# Knowledge organization\n\nThis mutable view is maintained by an exclusive reorganization job. Append runs must not edit it.\n",
     )
     .map_err(|error| error.to_string())?;
-    run_git(&init.path, &["config", "user.name", "Roster Knowledge"])?;
+    run_git(&init.path, &["config", "user.name", "Impyard Knowledge"])?;
     run_git(
         &init.path,
-        &["config", "user.email", "knowledge@roster.local"],
+        &["config", "user.email", "knowledge@impyard.local"],
     )?;
     run_git(&init.path, &["add", "--all"])?;
     run_git(
         &init.path,
-        &["commit", "-m", "Initialize worker knowledge repository"],
+        &["commit", "-m", "Initialize imp knowledge repository"],
     )?;
     run_git(&init.path, &["push", "origin", "main"])?;
     Ok(repo)
@@ -1034,20 +1034,20 @@ fn head(repo: &Path) -> Result<String, String> {
     )
 }
 
-fn short_worker(worker: &str) -> &str {
-    worker.strip_prefix("org/").unwrap_or(worker)
+fn short_imp(imp: &str) -> &str {
+    imp.strip_prefix("org/").unwrap_or(imp)
 }
 
-fn journal_worker(worker: &str) -> String {
-    format!("org/{}", short_worker(worker))
+fn journal_imp(imp: &str) -> String {
+    format!("org/{}", short_imp(imp))
 }
 
-fn worker_dir(worker: &str) -> PathBuf {
-    paths::worker_knowledge_dir(worker)
+fn imp_dir(imp: &str) -> PathBuf {
+    paths::imp_knowledge_dir(imp)
 }
 
-fn canonical_repo(worker: &str) -> PathBuf {
-    worker_dir(worker).join("repo.git")
+fn canonical_repo(imp: &str) -> PathBuf {
+    imp_dir(imp).join("repo.git")
 }
 
 fn safe_component(value: &str, label: &str) -> Result<(), String> {
@@ -1061,20 +1061,20 @@ fn safe_component(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn initialize(worker: &str) -> Result<String, String> {
-    let worker = short_worker(worker);
-    safe_component(worker, "worker")?;
-    let repo = ensure_repo(worker)?;
+pub fn initialize(imp: &str) -> Result<String, String> {
+    let imp = short_imp(imp);
+    safe_component(imp, "imp")?;
+    let repo = ensure_repo(imp)?;
     Ok(head(&repo)?)
 }
 
-pub fn repo_path(worker: &str) -> Result<PathBuf, String> {
-    let worker = short_worker(worker);
-    safe_component(worker, "worker")?;
-    let repo = canonical_repo(worker);
+pub fn repo_path(imp: &str) -> Result<PathBuf, String> {
+    let imp = short_imp(imp);
+    safe_component(imp, "imp")?;
+    let repo = canonical_repo(imp);
     if !repo.exists() {
         return Err(format!(
-            "knowledge repository for {worker} is not initialized; create the worker first: roster worker init {worker}"
+            "knowledge repository for {imp} is not initialized; create the imp first: impyard imp init {imp}"
         ));
     }
     Ok(repo)
@@ -1094,7 +1094,7 @@ mod tests {
 
     #[test]
     fn append_validation_accepts_only_namespaced_additions() {
-        let temp = std::env::temp_dir().join(format!("roster-knowledge-{}", uuid::Uuid::new_v4()));
+        let temp = std::env::temp_dir().join(format!("impyard-knowledge-{}", uuid::Uuid::new_v4()));
         let base = temp.join("base");
         let checkout = temp.join("checkout");
         fs::create_dir_all(base.join("records")).unwrap();
@@ -1132,7 +1132,7 @@ mod tests {
     #[test]
     fn reorganization_changes_only_organization_and_new_records() {
         let temp =
-            std::env::temp_dir().join(format!("roster-reorganization-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("impyard-reorganization-{}", uuid::Uuid::new_v4()));
         let base = temp.join("base");
         let checkout = temp.join("checkout");
         for root in [&base, &checkout] {

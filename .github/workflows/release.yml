@@ -3,8 +3,15 @@ name: release
 # Publish to crates.io when a version tag is pushed:
 #   git tag v0.1.0 && git push origin v0.1.0
 #
-# Needs a CARGO_REGISTRY_TOKEN repository secret:
-#   https://crates.io/settings/tokens  →  Settings → Secrets → Actions
+# Needs a CARGO_REGISTRY_TOKEN repository secret. Mint it at
+# https://crates.io/settings/tokens/new with the narrowest scope that works:
+#   scope:  publish-update   (new versions of an existing crate — nothing else:
+#                             no yank, no owner changes, no publishing new crates)
+#   crates: impyard
+#   expiry: set one; rotate when it lapses (a lapsed token fails this workflow
+#           loudly at the publish step, which is the intended behavior)
+# Then:  gh secret set CARGO_REGISTRY_TOKEN -R manasgarg/impyard
+# (paste at the prompt — the value never enters shell history)
 on:
   push:
     tags: ["v*"]

@@ -3,6 +3,7 @@
 **Rent the intelligence. Own the governance.**
 
 [![ci](https://github.com/manasgarg/impyard/actions/workflows/ci.yml/badge.svg)](https://github.com/manasgarg/impyard/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/impyard.svg)](https://crates.io/crates/impyard)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
 [![status](https://img.shields.io/badge/status-alpha-yellow.svg)](#where-this-is)
@@ -54,8 +55,9 @@ Two other things worth knowing:
 You need Rust and Docker.
 
 ```bash
-cargo build                                       # the impyard binary
+cargo install impyard                             # or `cargo build` from a clone
 docker build -t impyard-box -f box/Dockerfile .   # the container imps run in
+                                                  # (clone the repo for box/)
 
 impyard init                     # create your config, data, and state folders
 impyard imp init yuko            # scaffold an imp

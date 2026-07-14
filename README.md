@@ -1,4 +1,9 @@
-# Impyard
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/impyard-lockup.svg">
+    <img alt="Impyard" src="assets/logo/impyard-lockup-light.svg" width="300">
+  </picture>
+</p>
 
 **Rent the intelligence. Own the governance.**
 

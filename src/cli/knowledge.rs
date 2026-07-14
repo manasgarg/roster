@@ -1,10 +1,10 @@
-//! Print the location of an imp's Git-backed world knowledge repository.
+//! Print the location of a worker's Git-backed world knowledge repository.
 //! Everything after discovery uses the normal Git CLI.
 
 use crate::util::BErr;
 
-pub fn run(imp: &str) -> Result<(), BErr> {
-    crate::imp::require_imp(imp)?;
-    println!("{}", crate::imp::knowledge::repo_path(imp)?.display());
+pub fn run(worker: &str) -> Result<(), BErr> {
+    crate::worker::require_worker(worker)?;
+    println!("{}", crate::worker::knowledge::repo_path(worker)?.display());
     Ok(())
 }

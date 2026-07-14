@@ -1,13 +1,13 @@
 # Actions, gates, and trust
 
-Anything an imp does with real consequences — sending an email, posting a
+Anything a worker does with real consequences — sending an email, posting a
 message, opening a pull request, editing what it is — is an **action**. An
-imp never performs an action itself. It *proposes* one, and the trusted side
+worker never performs an action itself. It *proposes* one, and the trusted side
 decides: execute it now, or hold it for a human. This page covers that whole
-path: the proposal, the approval desk, and the trust ladder that lets an imp
+path: the proposal, the approval desk, and the trust ladder that lets a worker
 earn its way out of asking.
 
-The spine in one line: **the imp proposes; a human (or an earned trust rule)
+The spine in one line: **the worker proposes; a human (or an earned trust rule)
 disposes; the trusted side executes.**
 
 ## How a proposal travels
@@ -26,16 +26,16 @@ gateway's internal action host:
 ```
 
 The `intent` is a name the admin declared in config; the payload is the
-exact content that would go out. The gateway resolves *which imp* is asking
+exact content that would go out. The gateway resolves *which worker* is asking
 from the run's identity token on the connection — never from the envelope —
-so a box cannot claim another imp's identity or grant itself an intent.
+so a box cannot claim another worker's identity or grant itself an intent.
 
 Then, in order:
 
 1. **No matching grant** for that intent, in scope, means a refusal. Intents
-   are granted per imp (or org-wide) with `[[action]]` blocks in config; an
+   are granted per worker (or org-wide) with `[[action]]` blocks in config; an
    ungrated intent doesn't gate, it fails.
-2. **Trust is evaluated** for this imp, intent, and payload (below).
+2. **Trust is evaluated** for this worker, intent, and payload (below).
 3. **`auto`** — the executor runs immediately, and the box gets the result
    in the same call, like any API.
 4. **`gate`** — the payload is frozen into a durable gate, and the box gets
@@ -49,10 +49,10 @@ is appended to the permanent audit log.
 ## The approval desk
 
 ```bash
-impyard server gates ls               # what's waiting
-impyard server gates show g-8f3a      # the exact bytes that would go out
-impyard server gates approve g-8f3a   # a human decides
-impyard server gates deny g-8f3a "not this recipient"
+roster server gates ls               # what's waiting
+roster server gates show g-8f3a      # the exact bytes that would go out
+roster server gates approve g-8f3a   # a human decides
+roster server gates deny g-8f3a "not this recipient"
 ```
 
 A gate is a timestamped state machine:
@@ -63,7 +63,7 @@ pending → denied (by whom, why)
 ```
 
 The payload is frozen at propose time — the human approves exactly the bytes
-that will be sent, and the imp cannot alter them afterward. `show` renders
+that will be sent, and the worker cannot alter them afterward. `show` renders
 what matters for review: identity gates show a current-vs-proposed diff,
 purpose gates likewise, code gates show the worktree diff. Execution is
 idempotent: `executed` is terminal, and a crash mid-execute resumes without
@@ -73,13 +73,13 @@ Gates can also be approved from chat: in a trusted Discord or Slack channel,
 trusted participants act as the approval desk (see
 [channels.md](channels.md)).
 
-### The imp sees its own gate state
+### The worker sees its own gate state
 
 The box that filed a gate is usually gone before the human decides, so
-visibility works across runs. Every actor appends to the imp's journal — the
+visibility works across runs. Every actor appends to the worker's journal — the
 box (what it proposed), the desk (approved or denied, by whom), the executor
 (the result) — and each new run is briefed with open gates and anything
-resolved since. During a run, read-only tools let the imp re-check its gates
+resolved since. During a run, read-only tools let the worker re-check its gates
 and journal. So it never re-proposes what's already pending, and a
 continuation run knows exactly what was approved and whether it finished.
 
@@ -92,7 +92,7 @@ task automatically — a fresh box picks up with the outcome in its briefing.
 
 ## The trust ladder
 
-Trust is per **(imp, intent)** and starts at the bottom: absent any rule,
+Trust is per **(worker, intent)** and starts at the bottom: absent any rule,
 every action gates. Three levels exist:
 
 - **`gate`** — the birth state. A human approves every one.
@@ -116,15 +116,15 @@ Payload predicates are globs, and every field must hold. A list field (like
 `to`) matches only if *all* its entries match — one external recipient in an
 otherwise-internal email is enough to fall back to a gate.
 
-Trust never lives in the imp's spec, and an imp can never raise its own
+Trust never lives in the worker's spec, and a worker can never raise its own
 level: the ladder is derived from the gate history plus admin rules, both on
-the trusted side. `impyard imp trust <name>` shows the current state —
+the trusted side. `roster worker trust <name>` shows the current state —
 what's granted, what's earned, what would gate.
 
 Three intents get special handling, hardwired:
 
 - **Identity edits always gate.** No trust rule can promote them: what an
-  imp *is* changes only with a human's approval. This closes the
+  worker *is* changes only with a human's approval. This closes the
   prompt-injection route to self-programming.
 - **Channel sends and purpose edits auto-execute in trusted channels.** In a
   channel the admin has marked trusted, replies and purpose refinements flow
@@ -144,10 +144,10 @@ sees. The admin binds intents to executors in config; the built-in set:
 | `discord` | Post to a Discord channel with the bot token from the vault |
 | `slack` | Post to a Slack channel with the bot token from the vault |
 | `email` | Send via SMTP over TLS with the `smtp` vault credential |
-| `git-pr` | Commit the run's worktree, push an `imp/<name>/…` branch, open the pull request |
-| `identity` | Overwrite the imp's identity file (always human-gated) |
+| `git-pr` | Commit the run's worktree, push an `worker/<name>/…` branch, open the pull request |
+| `identity` | Overwrite the worker's identity file (always human-gated) |
 | `purpose` | Overwrite a channel's purpose file |
-| `task` | File a task on the imp's own queue (`file_task` — the bridge from conversations to clean-room research) |
+| `task` | File a task on the worker's own queue (`file_task` — the bridge from conversations to clean-room research) |
 | `note` | Interaction-memory operations: remember, forget, correct, pin, and the rest |
 
 And the box-side tools that propose through them: `message_user`,

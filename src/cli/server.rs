@@ -1,8 +1,8 @@
-//! `impyard server start` — the composition root of the one daemon: bring up
+//! `roster server start` — the composition root of the one daemon: bring up
 //! the governed-egress gateway, the channel listeners, and the task-dispatch
 //! loop as supervised siblings in one process (one thing to start, one thing
 //! to restart after a rebuild). The machinery lives in its blocks; this file
-//! only wires it. And `impyard server status` — health, computed, never
+//! only wires it. And `roster server status` — health, computed, never
 //! model-written.
 
 use crate::action::gate;
@@ -11,7 +11,7 @@ use crate::work::queue;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("IMPYARD_BUILD"), ")");
+const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("ROSTER_BUILD"), ")");
 
 pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<(), BErr> {
     // Refuse to boot on broken config — better loud at start than silently
@@ -22,7 +22,7 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
             eprintln!("config: {e}");
         }
         return Err(format!(
-            "invalid config ({} error(s)) — fix and retry, or: impyard server validate",
+            "invalid config ({} error(s)) — fix and retry, or: roster server validate",
             errors.len()
         )
         .into());
@@ -36,22 +36,22 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
 
     let gateway = crate::gateway::start(addr).await?;
     eprintln!(
-        "impyard server {BUILD} — gateway on {addr}; dispatch cap {cap}{}{}",
+        "roster server {BUILD} — gateway on {addr}; dispatch cap {cap}{}{}",
         if once { "; once" } else { "" },
         if no_listen { "; listeners off" } else { "" }
     );
 
-    // Channel listeners: one supervised task per imp that declares one
+    // Channel listeners: one supervised task per worker that declares one
     // ([channels] in its spec).
     let mut listeners = Vec::new();
     if !no_listen && !once {
         let plan = crate::channel::listen::plan();
         if plan.is_empty() {
-            eprintln!("listeners: none configured (an imp opts in via [channels] in its imp.toml)");
+            eprintln!("listeners: none configured (a worker opts in via [channels] in its worker.toml)");
         }
-        for (imp, platform, credential) in plan {
+        for (worker, platform, credential) in plan {
             listeners.push(tokio::spawn(crate::channel::listen::supervised(
-                imp, platform, credential,
+                worker, platform, credential,
             )));
         }
     }
@@ -66,14 +66,14 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
     result
 }
 
-/// `impyard server validate` — parse everything, print every error.
+/// `roster server validate` — parse everything, print every error.
 pub fn validate() -> Result<(), BErr> {
     match crate::config::load() {
         Ok(c) => {
             println!(
-                "config valid: {} imp(s) [{}], {} grant(s), {} action(s), {} trust rule(s), {} limit(s), {} trigger(s), {} listener(s), {} exposure(s)",
-                c.imps.len(),
-                c.imps.join(", "),
+                "config valid: {} worker(s) [{}], {} grant(s), {} action(s), {} trust rule(s), {} limit(s), {} trigger(s), {} listener(s), {} exposure(s)",
+                c.workers.len(),
+                c.workers.join(", "),
                 c.policy.rules.len(),
                 c.actions.actions.len(),
                 c.actions.trust.len(),
@@ -93,7 +93,7 @@ pub fn validate() -> Result<(), BErr> {
                     "engine: dev override {} (mounted over the baked engine)",
                     dir.display()
                 ),
-                None => println!("engine: baked into the impyard-box image"),
+                None => println!("engine: baked into the roster-box image"),
             }
             if !c.connections.is_empty() {
                 println!("connections: {}", c.connections.len());
@@ -124,9 +124,9 @@ pub async fn status(json: bool) -> Result<(), BErr> {
 
     // Config parses? (It loads live — no staleness concept.)
     let config = match crate::config::load() {
-        Ok(c) => format!("valid ({} imp(s))", c.imps.len()),
+        Ok(c) => format!("valid ({} worker(s))", c.workers.len()),
         Err(errors) => format!(
-            "INVALID — {} error(s); run: impyard server validate",
+            "INVALID — {} error(s); run: roster server validate",
             errors.len()
         ),
     };
@@ -145,8 +145,8 @@ pub async fn status(json: bool) -> Result<(), BErr> {
             "config": config,
             "queue": queue_by_state,
             "gates_pending": gates_pending,
-            "listeners": listeners.iter().map(|(imp, pid, since, alive)| serde_json::json!({
-                "imp": imp, "pid": pid, "since": since, "alive": alive,
+            "listeners": listeners.iter().map(|(worker, pid, since, alive)| serde_json::json!({
+                "worker": worker, "pid": pid, "since": since, "alive": alive,
             })).collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
@@ -154,13 +154,13 @@ pub async fn status(json: bool) -> Result<(), BErr> {
     }
 
     let port = crate::gateway::PORT;
-    println!("impyard {BUILD}");
+    println!("roster {BUILD}");
     println!(
         "gateway    {}",
         if gateway_up {
             format!("up on :{port}")
         } else {
-            format!("DOWN (nothing on :{port}) — run: impyard server start")
+            format!("DOWN (nothing on :{port}) — run: roster server start")
         }
     );
     println!("config     {config}");
@@ -179,15 +179,15 @@ pub async fn status(json: bool) -> Result<(), BErr> {
         if gates_pending == 0 {
             "none pending".to_string()
         } else {
-            format!("{gates_pending} PENDING — review: impyard server gates ls")
+            format!("{gates_pending} PENDING — review: roster server gates ls")
         }
     );
     if listeners.is_empty() {
         println!("listeners  none");
     } else {
-        for (imp, pid, since, alive) in listeners {
+        for (worker, pid, since, alive) in listeners {
             println!(
-                "listener   {imp}: {} (pid {pid}, since {since})",
+                "listener   {worker}: {} (pid {pid}, since {since})",
                 if alive {
                     "up"
                 } else {

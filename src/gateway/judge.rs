@@ -4,7 +4,7 @@
 use crate::gateway::schema::{GovernedRequest, Match, Policy, Verdict};
 
 pub fn judge(req: &GovernedRequest, policy: &Policy) -> (Verdict, Option<String>) {
-    let subject = req.imp.as_deref().unwrap_or("org");
+    let subject = req.worker.as_deref().unwrap_or("org");
     for rule in &policy.rules {
         if crate::gateway::scope::applies(&rule.scope, subject) && matches(&rule.r#match, req) {
             return (rule.verdict, Some(rule.name.clone()));
@@ -119,7 +119,7 @@ mod tests {
         headers.insert("authorization".into(), "Bearer x".into());
         headers.insert("content-type".into(), "application/json".into());
         GovernedRequest {
-            imp: None,
+            worker: None,
             protocol: "https".into(),
             method: "POST".into(),
             host: "chatgpt.com".into(),
@@ -199,11 +199,11 @@ mod tests {
             r#"{"rules":[{"name":"w1-only","match":{"host":"chatgpt.com"},"verdict":"allow","scope":"org/w1"}]}"#,
         );
         let mut r = req();
-        r.imp = Some("org/w1".into());
+        r.worker = Some("org/w1".into());
         assert_eq!(judge(&r, &p).0, Verdict::Allow);
-        r.imp = Some("org/w2".into());
+        r.worker = Some("org/w2".into());
         assert_eq!(judge(&r, &p).0, Verdict::Deny); // out of scope → no rule → default deny
-                                                    // An org-scoped rule governs any imp.
+                                                    // An org-scoped rule governs any worker.
         let org = policy(
             r#"{"rules":[{"name":"all","match":{"host":"chatgpt.com"},"verdict":"allow","scope":"org"}]}"#,
         );

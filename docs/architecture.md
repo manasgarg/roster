@@ -1,8 +1,8 @@
 # Architecture
 
-Impyard is a control plane for **imps** — software colleagues that do
+Roster is a control plane for **workers** — software colleagues that do
 ongoing, unattended work. The model doing the thinking is rented; everything
-that decides what an imp is *allowed to do* runs on your machine, as plain
+that decides what a worker is *allowed to do* runs on your machine, as plain
 files and one Rust binary. This page is the map: the two sides of the trust
 boundary, the one daemon, and the path a piece of work takes through the
 system.
@@ -11,7 +11,7 @@ system.
 
 The codebase is split down the middle, and the split is the security model:
 
-- **The host side is Rust** — a single `impyard` binary. It holds the
+- **The host side is Rust** — a single `roster` binary. It holds the
   credentials, terminates TLS, judges every request, meters spend, executes
   approved actions, and writes the audit log. Everything trusted lives here.
 - **The box side is TypeScript** — the agent engine (pi) and its tools,
@@ -27,20 +27,20 @@ what comes through. See [security.md](security.md) for what this buys and
 
 ## One daemon
 
-`impyard server start` runs everything as supervised siblings in a single
+`roster server start` runs everything as supervised siblings in a single
 process:
 
 - **The gateway** (default `0.0.0.0:7300`) — the only network exit from any
   box. It terminates TLS with a host-minted CA, judges every request against
   your grants (default-deny), injects real credentials in transit, meters
   spend against budgets, and appends every decision to the audit log. It
-  also serves the internal action host where imps propose consequential
+  also serves the internal action host where workers propose consequential
   actions. See [gateway.md](gateway.md).
-- **The dispatch loop** — watches every imp's durable task queue, fires
+- **The dispatch loop** — watches every worker's durable task queue, fires
   scheduled triggers, and runs due tasks in boxes, up to a concurrency cap.
   Proactive work is budget-gated at dispatch; work you file always runs. See
   [work.md](work.md).
-- **Channel listeners** — one per imp with a `[channels]` binding: a Discord
+- **Channel listeners** — one per worker with a `[channels]` binding: a Discord
   gateway client or a Slack Socket Mode client, dialing out (nothing listens
   on the internet). They record history, route messages into warm sessions
   or file tasks, and never act on their own. See [channels.md](channels.md).
@@ -56,22 +56,22 @@ Code, config, and state never mix. The checkout contains no configuration;
 your deployment lives in three XDG roots (full tree in
 [layout.md](layout.md)):
 
-- **Config** (`~/.config/impyard`) — hand-edited, never machine-written
-  except by explicit approval flows: `org.toml`, per-imp `imp.toml` and
+- **Config** (`~/.config/roster`) — hand-edited, never machine-written
+  except by explicit approval flows: `org.toml`, per-worker `worker.toml` and
   `identity.md`, `connections/`, `providers.toml`.
-- **Data** (`~/.local/share/impyard`) — durable, the backup set: the
-  credential vault, the CA, each imp's queue/journal/gates/memory/knowledge,
+- **Data** (`~/.local/share/roster`) — durable, the backup set: the
+  credential vault, the CA, each worker's queue/journal/gates/memory/knowledge,
   channel history, and the append-only audit logs.
-- **State** (`~/.local/state/impyard`) — reconstructible: run directories,
+- **State** (`~/.local/state/roster`) — reconstructible: run directories,
   per-run identity tokens, listener locks, trigger cursors.
 
 ## The life of a task
 
-1. **It gets filed.** By you (`impyard imp task add`), by a schedule
-   (`[[trigger]]` in the imp's spec), by an inbound chat message (relayed as
-   content, never as a command), by the imp itself (`file_task`), or as a
+1. **It gets filed.** By you (`roster worker task add`), by a schedule
+   (`[[trigger]]` in the worker's spec), by an inbound chat message (relayed as
+   content, never as a command), by the worker itself (`file_task`), or as a
    continuation when a gate resolves.
-2. **Dispatch picks it up.** If it's proactive and the imp is over budget,
+2. **Dispatch picks it up.** If it's proactive and the worker is over budget,
    it waits; your work always runs.
 3. **Context is compiled.** One deterministic compiler assembles exactly
    what this run may see — identity, runtime policy, channel purpose,
@@ -81,7 +81,7 @@ your deployment lives in three XDG roots (full tree in
    a single-use identity token, sentinel credentials, a knowledge checkout
    mounted read-write or read-only depending on the run's provenance, and a
    hard wall-clock ceiling.
-5. **The imp works.** Every network request exits through the gateway and is
+5. **The worker works.** Every network request exits through the gateway and is
    judged, metered, and logged. Consequential actions are proposed as
    envelopes: some auto-execute under earned trust, the rest become durable
    gates for a human. See [actions-and-trust.md](actions-and-trust.md).
@@ -105,10 +105,10 @@ src/
   action/      envelopes, gates, trust, executors, SMTP
   work/        the durable queue, dispatch loop, triggers
   run/         box provisioning, warm sessions, run records
-  imp/         identity, context compiler, memory, knowledge, boundary
+  worker/         identity, context compiler, memory, knowledge, boundary
   channel/     Discord, Slack, listener supervision, relay
   cli/         every subcommand
 box/
-  Dockerfile   the impyard-box image: toolbelt + baked engine
+  Dockerfile   the roster-box image: toolbelt + baked engine
   extensions/  the box-side tools (actions.ts, web.ts)
 ```

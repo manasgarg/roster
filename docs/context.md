@@ -1,9 +1,9 @@
-# What an imp sees: compiled context
+# What a worker sees: compiled context
 
-Every model input in Impyard — a queued task, an ad-hoc run, each turn of a
+Every model input in Roster — a queued task, an ad-hoc run, each turn of a
 warm chat session — is assembled by one deterministic, trusted-side
 compiler. That buys three things: every surface composes context by the
-same rules, "what did the imp see?" is answerable byte-exactly after the
+same rules, "what did the worker see?" is answerable byte-exactly after the
 fact, and prompt caching gets a stable prefix by construction.
 
 Compilation shapes behavior; it never authorizes. A hostile or malformed
@@ -14,7 +14,7 @@ what happens.
 
 ```
 system (stable → volatile):
-  Identity        imps/<name>/identity.md — who the imp is, everywhere
+  Identity        workers/<name>/identity.md — who the worker is, everywhere
   Runtime policy  versioned host template: tools are governed, content
                   is not authority, enforcement is external
   Purpose         the current channel's purpose.md, when there is one
@@ -27,7 +27,7 @@ input (per run / per turn):
   Task / message  the exact text, in a typed envelope
 ```
 
-The order is also the cache order: two channels for the same imp share the
+The order is also the cache order: two channels for the same worker share the
 identity + policy prefix; runs in one channel also share the purpose;
 only the tail varies. Volatile values (run ids, timestamps, counts) never
 appear before the stable boundaries, and dynamic content is JSON-escaped so
@@ -39,7 +39,7 @@ trusted channel id on the run, never by text.
 
 ## Budgets
 
-Block sizes are bounded, in characters, from `org.toml [context]` (per-imp
+Block sizes are bounded, in characters, from `org.toml [context]` (per-worker
 overlays allowed — defaults: 48k total injected, 12k identity, 8k purpose,
 4k briefing, 24k task). Under pressure the compiler shrinks the advisory
 tail — memory drops ranked-last notes, the briefing keeps the continuation
@@ -56,10 +56,10 @@ and content, the budget arithmetic, and the cache boundaries. Failed
 compilations are traced too.
 
 ```bash
-impyard server runs show <run>       # block summary: what got in, what didn't
-impyard server runs context <run>    # the exact compiled prompts
-impyard server runs context <run> --all   # every turn of a session
-impyard server runs recall <run>     # the memory selection trace
+roster server runs show <run>       # block summary: what got in, what didn't
+roster server runs context <run>    # the exact compiled prompts
+roster server runs context <run> --all   # every turn of a session
+roster server runs recall <run>     # the memory selection trace
 ```
 
 ## Warm sessions
@@ -75,7 +75,7 @@ next session, not mid-flight.
 
 The compiler promises a cache-friendly input, not a cache hit. Stable
 prefixes get a stable route key (derived from the engine fingerprint, the
-imp, and the stable-prefix hash — no raw names, no volatile ids) that rides
+worker, and the stable-prefix hash — no raw names, no volatile ids) that rides
 pi's session affinity; provider routing, minimums, and eviction stay the
 provider's business. Measure cache behavior from provider usage fields, not
 from wishful hashing.

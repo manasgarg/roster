@@ -1,4 +1,4 @@
-//! `impyard credential ls` — credential names, types, and freshness. Never values.
+//! `roster credential ls` — credential names, types, and freshness. Never values.
 
 use crate::util::BErr;
 use serde_json::Value;
@@ -48,7 +48,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         return Ok(());
     }
     if rows.is_empty() {
-        println!("no credentials — create one: impyard credential add <provider>");
+        println!("no credentials — create one: roster credential add <provider>");
         return Ok(());
     }
     println!("{:<16}  {:<10}  UPDATED (UTC)", "CREDENTIAL", "TYPE");

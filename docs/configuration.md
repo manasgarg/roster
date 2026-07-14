@@ -1,8 +1,8 @@
 # Configuration reference
 
 All configuration is hand-edited TOML under the config root
-(`~/.config/impyard`), read **live**: edits take effect on the next read,
-there is no deploy step, and `impyard server validate` runs the exact
+(`~/.config/roster`), read **live**: edits take effect on the next read,
+there is no deploy step, and `roster server validate` runs the exact
 loader the daemon uses and prints every error, not just the first. Broken
 config fails closed — the gateway denies, dispatch pauses, `server start`
 refuses to boot.
@@ -10,16 +10,16 @@ refuses to boot.
 The files:
 
 ```
-org.toml                 org-wide policy: grants, actions, trust, budgets,
-                         memory/knowledge/context policy
-imps/<name>/imp.toml     one imp: channels, triggers, overlays
-imps/<name>/identity.md  who the imp is (prose, not config)
-connections/<name>.toml  one service capability (usually wizard-written)
-providers.toml           optional overlay on the built-in provider registry
+org.toml                    org-wide policy: grants, actions, trust, budgets,
+                            memory/knowledge/context policy
+workers/<name>/worker.toml  one worker: channels, triggers, overlays
+workers/<name>/identity.md  who the worker is (prose, not config)
+connections/<name>.toml     one service capability (usually wizard-written)
+providers.toml              optional overlay on the built-in provider registry
 ```
 
 One rule to know: `scope` is never hand-written. The loader tags everything
-in `org.toml` as org-wide and everything in an imp's file as that imp's,
+in `org.toml` as org-wide and everything in a worker's file as that worker's,
 and rules, budgets, and trust all match subjects by ancestry.
 
 Config that grants nothing is safe by default: no grants means no egress,
@@ -54,7 +54,7 @@ inject  = { credential = "openai-codex" }
 | `verdict` | yes | `allow`, `deny`, or `tunnel` |
 | `inject` | no | `{ credential = "<vault name>", provider?, headers? }` — swap the box's sentinel for the real credential in transit |
 
-### `[[action]]` — what an imp may propose
+### `[[action]]` — what a worker may propose
 
 ```toml
 [[action]]
@@ -101,7 +101,7 @@ max      = 20.0
 ```
 
 Meters are CEL over `request`, `decision`, `subject`, `vars`. Limits at org
-scope cap the whole fleet; per-imp limits go in the imp's file. Details and
+scope cap the whole fleet; per-worker limits go in the worker's file. Details and
 enforcement semantics in [gateway.md](gateway.md).
 
 ### `[[expose]]` — sentinel env vars
@@ -114,7 +114,7 @@ env        = "GH_TOKEN"   # set in the box, to the sentinel value
 
 Gives box tools an env var that *looks* authenticated; the gateway injects
 the real value only where a grant's injection applies. Reserved names
-(`HOME`, the proxy/CA variables, anything starting `IMPYARD_`) are
+(`HOME`, the proxy/CA variables, anything starting `ROSTER_`) are
 rejected, as are overlapping-scope duplicates. Connections write these for
 you — hand-written exposes are for credentials outside the connection
 model.
@@ -155,11 +155,11 @@ Mandatory blocks fail rather than truncate; see [context.md](context.md).
 | `recall_char_budget` | 6000 | |
 | `max_retention_days` | unset | notes expire after this many days |
 | `allow_inferred_user_auto` | `false` | inferred personal facts save without review |
-| `allow_imp_auto` | `false` | imp-wide notes save without review |
+| `allow_worker_auto` | `false` | worker-wide notes save without review |
 | `cross_channel_user_recall` | `false` | recall a user's memory outside its home channel |
 | `user_memory_in_groups` | `false` | recall user memory in group contexts |
 
-## imps/\<name\>/imp.toml
+## workers/\<name\>/worker.toml
 
 ```toml
 name = "yuko"                # must equal the folder name
@@ -172,31 +172,31 @@ schedule    = "every 1h"     # interval: s / m / h / d — not cron
 prompt      = "check the feeds and file anything worth deeper work"
 ceiling_min = 20
 
-[[budget.limit]]             # per-imp cap (limits only; currencies,
+[[budget.limit]]             # per-worker cap (limits only; currencies,
 currency = "model_calls"     # vars, and meters are org-level)
 window   = "hour"
 max      = 60
 ```
 
-An imp's file may also carry its own `[[grant]]`, `[[action]]`,
+A worker's file may also carry its own `[[grant]]`, `[[action]]`,
 `[[trust]]`, `[[expose]]`, and `[memory]`/`[context]`/`[knowledge]`
 overlays. Overlays merge over org defaults; the knowledge overlay can only
 narrow (disable features, reduce limits) — it cannot re-enable, raise, or
-relax what the org set. Two imps cannot bind the same channel credential.
+relax what the org set. Two workers cannot bind the same channel credential.
 
-`identity.md` sits next to it: owner-authored prose defining who the imp
-is, composed into every run, editable by admins — imp-proposed edits always
+`identity.md` sits next to it: owner-authored prose defining who the worker
+is, composed into every run, editable by admins — worker-proposed edits always
 gate ([actions-and-trust.md](actions-and-trust.md)).
 
 ## connections/\<name\>.toml
 
-Usually written by `impyard connection add`; hand-editable after. The file
+Usually written by `roster connection add`; hand-editable after. The file
 stem is the vault credential name.
 
 | key | required | meaning |
 |---|---|---|
 | `provider` | yes | registry entry (login flow + inject template), or any name if inline inject is given |
-| `imps` / `scope` | one of the two | `imps = ["yuko"]` grants per-imp; `scope = "org"` grants fleet-wide |
+| `workers` / `scope` | one of the two | `workers = ["yuko"]` grants per-worker; `scope = "org"` grants fleet-wide |
 | `hosts` | yes | allowed hostnames |
 | `methods` | no (default `["GET"]`) | allowed HTTP methods — writes are a deliberate edit |
 | `env` | yes | the sentinel env var the box sees |
@@ -226,7 +226,7 @@ connection = { hosts = ["api.acme.com"], env = "ACME_TOKEN" }
 
 | variable | meaning |
 |---|---|
-| `IMPYARD_ROOT` | self-contained mode: everything under `$IMPYARD_ROOT/{config,data,state}` — tests, scratch deployments, side-by-side instances |
+| `ROSTER_ROOT` | self-contained mode: everything under `$ROSTER_ROOT/{config,data,state}` — tests, scratch deployments, side-by-side instances |
 | `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_STATE_HOME` | standard XDG overrides for the three roots |
-| `IMPYARD_VAULT_DIR`, `IMPYARD_CA_DIR` | relocate the vault or CA individually |
-| `IMPYARD_EMAIL_SINK` | testing: write outbound email to `state/outbox/` instead of SMTP |
+| `ROSTER_VAULT_DIR`, `ROSTER_CA_DIR` | relocate the vault or CA individually |
+| `ROSTER_EMAIL_SINK` | testing: write outbound email to `state/outbox/` instead of SMTP |

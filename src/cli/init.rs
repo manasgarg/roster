@@ -1,25 +1,25 @@
-//! `impyard init` — initialize a deployment: the XDG config/data/state roots
+//! `roster init` — initialize a deployment: the XDG config/data/state roots
 //! and a starter org.toml. Idempotent; never overwrites an existing file.
 
 use crate::paths;
 use crate::util::BErr;
 
-const STARTER_ORG: &str = r#"# Impyard org config — ADMIN-ONLY. Applies to every imp (scope "org");
-# per-imp overlays live in imps/<name>/imp.toml. Config loads live:
-# check edits with `impyard server validate`.
+const STARTER_ORG: &str = r#"# Roster org config — ADMIN-ONLY. Applies to every worker (scope "org");
+# per-worker overlays live in workers/<name>/worker.toml. Config loads live:
+# check edits with `roster server validate`.
 
-# pi + the box extensions are baked into the impyard-box image. Developers
+# pi + the box extensions are baked into the roster-box image. Developers
 # iterating on them can mount a checkout over the baked engine instead:
 # [engine]
-# dir = "/path/to/impyard"
+# dir = "/path/to/roster"
 
-# Egress grants shared by all imps, e.g.:
+# Egress grants shared by all workers, e.g.:
 # [[grant]]
 # name = "web-fetch"
 # match = { host = "*", method = "GET" }
 # verdict = "allow"
 
-# Actions imps may propose ([[action]]), the trust ladder ([[trust]]),
+# Actions workers may propose ([[action]]), the trust ladder ([[trust]]),
 # and budgets ([budget] + [[budget.limit]]) — see docs/configuration.md
 # for the full reference and worked examples.
 "#;
@@ -27,10 +27,10 @@ const STARTER_ORG: &str = r#"# Impyard org config — ADMIN-ONLY. Applies to eve
 pub fn run() -> Result<(), BErr> {
     let dirs = [
         ("config", paths::config_root()),
-        ("config/imps", paths::imps_dir()),
+        ("config/workers", paths::workers_dir()),
         ("data", paths::data_root()),
         ("data/vault", paths::vault_dir()),
-        ("data/imps", paths::imps_data_dir()),
+        ("data/workers", paths::workers_data_dir()),
         ("data/channels", paths::channels_dir()),
         ("state", paths::state_root()),
         ("state/runs", paths::runs_dir()),
@@ -51,7 +51,7 @@ pub fn run() -> Result<(), BErr> {
         println!("created {:<15} {}", "org.toml", org.display());
     }
     println!(
-        "\nnext: edit {} (grants, actions, budgets), then\n  impyard imp init <name>\n  impyard server validate\n  impyard server start",
+        "\nnext: edit {} (grants, actions, budgets), then\n  roster worker init <name>\n  roster server validate\n  roster server start",
         org.display()
     );
     println!(

@@ -1,5 +1,5 @@
 /**
- * impyard web tools — governed `web_search` + `fetch_pages` for the box.
+ * roster web tools — governed `web_search` + `fetch_pages` for the box.
  *
  * Two tools over one pipeline (fetch a URL → extract its readable text as markdown):
  *
@@ -12,7 +12,7 @@
  * Why this exists instead of an off-the-shelf package: every byte of HTTP here goes
  * through Node's built-in `fetch` (undici), so it inherits the box's governed-egress
  * plumbing for free —
- *   • NODE_USE_ENV_PROXY + HTTPS_PROXY route every request through the Impyard gateway,
+ *   • NODE_USE_ENV_PROXY + HTTPS_PROXY route every request through the Roster gateway,
  *     where it is identity-attributed, judged (default-deny), and metered;
  *   • NODE_EXTRA_CA_CERTS makes it trust the gateway's MITM certificate.
  * No API keys, no native code: extraction is pure-JS linkedom + Defuddle. (A native
@@ -122,13 +122,13 @@ async function fetchReadablePage(url: string, signal?: AbortSignal): Promise<Pag
 async function mapLimit<In, Out>(items: In[], limit: number, task: (item: In) => Promise<Out>): Promise<Out[]> {
   const out = new Array<Out>(items.length);
   let next = 0;
-  const imp = async () => {
+  const worker = async () => {
     while (next < items.length) {
       const i = next++;
       out[i] = await task(items[i]!);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, imp));
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return out;
 }
 
@@ -267,7 +267,7 @@ interface PiToolApi {
   }): void;
 }
 
-export default function impyardWebTools(api: PiToolApi): void {
+export default function rosterWebTools(api: PiToolApi): void {
   api.registerTool({
     name: "web_search",
     label: "web_search",

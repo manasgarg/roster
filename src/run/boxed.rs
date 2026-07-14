@@ -1,4 +1,4 @@
-//! `impyard imp run` — run one pi session in the locked-down container. Port of the
+//! `roster worker run` — run one pi session in the locked-down container. Port of the
 //! TS box runner + lockdown. The box gets: the repo read-only, a writable
 //! workspace/session/HOME, a SENTINEL credential (never the real key), an
 //! un-spoofable identity token as proxy creds, and a NAT-disabled network whose
@@ -13,34 +13,34 @@ use std::time::Duration;
 
 type BErr = Box<dyn std::error::Error>;
 
-const LOCKDOWN_NETWORK: &str = "impyard-locked";
+const LOCKDOWN_NETWORK: &str = "roster-locked";
 const GATEWAY_PORT: u16 = 7300;
-const BOX_CA_PATH: &str = "/opt/impyard/ca.crt";
-const BOX_CA_BUNDLE_PATH: &str = "/opt/impyard/ca-bundle.crt";
-const SENTINEL: &str = "impyard-sentinel-no-real-credential-in-box";
+const BOX_CA_PATH: &str = "/opt/roster/ca.crt";
+const BOX_CA_BUNDLE_PATH: &str = "/opt/roster/ca-bundle.crt";
+const SENTINEL: &str = "roster-sentinel-no-real-credential-in-box";
 const CONTAINER_TEMP: &str = "/tmp:rw,nosuid,nodev,size=2147483648,mode=1777";
 
-pub async fn run_once(imp: &str, ceiling_min: f64, prompt: String) -> Result<(), BErr> {
+pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<(), BErr> {
     if ceiling_min <= 0.0 {
         return Err("--ceiling wants a positive number of minutes".into());
     }
     if prompt.trim().is_empty() {
-        return Err("imp run needs a prompt".into());
+        return Err("worker run needs a prompt".into());
     }
-    crate::imp::require_imp(imp)?;
-    let imp = imp.to_string();
+    crate::worker::require_worker(worker)?;
+    let worker = worker.to_string();
 
     let run_id = new_run_id();
-    let run_context = crate::imp::memory::RunContext::default();
-    crate::run::runlog::start(&run_id, &imp, "box", None)?;
-    crate::imp::memory::save_run_context(&run_id, &run_context)?;
-    let request = crate::imp::context::ContextRequest {
+    let run_context = crate::worker::memory::RunContext::default();
+    crate::run::runlog::start(&run_id, &worker, "box", None)?;
+    crate::worker::memory::save_run_context(&run_id, &run_context)?;
+    let request = crate::worker::context::ContextRequest {
         run_id: run_id.clone(),
-        phase: crate::imp::context::ContextPhase::Start,
-        surface: crate::imp::context::RunSurface::DirectBox,
-        imp: imp.clone(),
+        phase: crate::worker::context::ContextPhase::Start,
+        surface: crate::worker::context::RunSurface::DirectBox,
+        worker: worker.clone(),
         run_context: run_context.clone(),
-        task: Some(crate::imp::context::TaskInput {
+        task: Some(crate::worker::context::TaskInput {
             task_id: None,
             origin: "direct".into(),
             text: prompt,
@@ -48,7 +48,7 @@ pub async fn run_once(imp: &str, ceiling_min: f64, prompt: String) -> Result<(),
         }),
         message: None,
     };
-    let compiled = match crate::imp::context::compile_and_trace(&request) {
+    let compiled = match crate::worker::context::compile_and_trace(&request) {
         Ok(compiled) => compiled,
         Err(error) => {
             crate::run::runlog::fail(&run_id);
@@ -56,7 +56,7 @@ pub async fn run_once(imp: &str, ceiling_min: f64, prompt: String) -> Result<(),
         }
     };
     let spec = RunSpec {
-        imp: &imp,
+        worker: &worker,
         run_id: &run_id,
         task_id: "",
         ceiling_min,
@@ -101,7 +101,7 @@ pub struct CodeSpec {
 
 /// Where pi + the box extensions come from.
 enum Engine {
-    /// Baked into the impyard-box image at /opt/impyard/engine (the default).
+    /// Baked into the roster-box image at /opt/roster/engine (the default).
     /// `run-pi` in the image expands the baked extensions itself, so the host
     /// never inspects image contents.
     Baked,
@@ -115,19 +115,19 @@ enum Engine {
 pub struct SessionMessage {
     pub text: String,
     pub author_label: String,
-    pub context: crate::imp::memory::RunContext,
+    pub context: crate::worker::memory::RunContext,
 }
 
 /// Everything one boxed run needs to know about itself. Bundled because the
 /// dispatch → run → provision chain threads the same facts all the way down.
 pub struct RunSpec<'a> {
-    pub imp: &'a str,
+    pub worker: &'a str,
     pub run_id: &'a str,
     /// Empty for runs with no queued task behind them.
     pub task_id: &'a str,
     pub ceiling_min: f64,
     pub code: Option<&'a CodeSpec>,
-    pub run_context: &'a crate::imp::memory::RunContext,
+    pub run_context: &'a crate::worker::memory::RunContext,
     pub knowledge_mode: &'a str,
 }
 
@@ -136,7 +136,7 @@ pub struct RunSpec<'a> {
 /// the task id into the box so proposed actions carry their provenance.
 pub async fn dispatch(
     spec: RunSpec<'_>,
-    task: crate::imp::context::TaskInput,
+    task: crate::worker::context::TaskInput,
 ) -> Result<Outcome, BErr> {
     let kind = if spec.knowledge_mode == "reorganization" {
         "reorganization"
@@ -145,17 +145,17 @@ pub async fn dispatch(
     } else {
         "task"
     };
-    crate::run::runlog::start(spec.run_id, spec.imp, kind, Some(spec.task_id))?;
-    let request = crate::imp::context::ContextRequest {
+    crate::run::runlog::start(spec.run_id, spec.worker, kind, Some(spec.task_id))?;
+    let request = crate::worker::context::ContextRequest {
         run_id: spec.run_id.to_string(),
-        phase: crate::imp::context::ContextPhase::Start,
-        surface: crate::imp::context::RunSurface::QueuedTask,
-        imp: spec.imp.to_string(),
+        phase: crate::worker::context::ContextPhase::Start,
+        surface: crate::worker::context::RunSurface::QueuedTask,
+        worker: spec.worker.to_string(),
         run_context: spec.run_context.clone(),
         task: Some(task),
         message: None,
     };
-    let compiled = match crate::imp::context::compile_and_trace(&request) {
+    let compiled = match crate::worker::context::compile_and_trace(&request) {
         Ok(compiled) => compiled,
         Err(error) => {
             crate::run::runlog::fail(spec.run_id);
@@ -179,7 +179,7 @@ pub async fn dispatch(
 /// The container name for a run — the supervisor checks `docker ps` for this to
 /// tell whether a task marked `running` still has a live box.
 pub fn container_name(run_id: &str) -> String {
-    format!("impyard-box-{run_id}")
+    format!("roster-box-{run_id}")
 }
 
 /// Is the box container for this run still alive? (For reclaim/requeue safety.)
@@ -213,11 +213,11 @@ pub fn new_run_id() -> String {
 }
 
 async fn run_box(
-    compiled: &crate::imp::context::CompiledContext,
+    compiled: &crate::worker::context::CompiledContext,
     spec: &RunSpec<'_>,
 ) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
-    let (imp, run_id, task_id, ceiling_min) =
-        (spec.imp, spec.run_id, spec.task_id, spec.ceiling_min);
+    let (worker, run_id, task_id, ceiling_min) =
+        (spec.worker, spec.run_id, spec.task_id, spec.ceiling_min);
     let Provisioned {
         mut args,
         identity_file,
@@ -227,7 +227,7 @@ async fn run_box(
         engine,
         mut storage,
     } = provision_box(
-        imp,
+        worker,
         run_id,
         task_id,
         spec.code,
@@ -302,27 +302,27 @@ async fn run_box(
 /// lockdown/identity are identical to a one-shot run. The context compiler
 /// creates the stable system prefix once and a volatile input for each turn.
 pub async fn run_session(
-    imp: &str,
+    worker: &str,
     run_id: &str,
-    surface: crate::imp::context::RunSurface,
-    start_context: crate::imp::memory::RunContext,
+    surface: crate::worker::context::RunSurface,
+    start_context: crate::worker::memory::RunContext,
     mut rx: tokio::sync::mpsc::Receiver<SessionMessage>,
     idle_secs: u64,
 ) -> Result<(), BErr> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
-    crate::run::runlog::start(run_id, imp, "session", None)?;
-    crate::imp::memory::save_run_context(run_id, &start_context)?;
-    let start_request = crate::imp::context::ContextRequest {
+    crate::run::runlog::start(run_id, worker, "session", None)?;
+    crate::worker::memory::save_run_context(run_id, &start_context)?;
+    let start_request = crate::worker::context::ContextRequest {
         run_id: run_id.to_string(),
-        phase: crate::imp::context::ContextPhase::Start,
+        phase: crate::worker::context::ContextPhase::Start,
         surface: surface.clone(),
-        imp: imp.to_string(),
+        worker: worker.to_string(),
         run_context: start_context.clone(),
         task: None,
         message: None,
     };
-    let start = match crate::imp::context::compile_and_trace(&start_request) {
+    let start = match crate::worker::context::compile_and_trace(&start_request) {
         Ok(compiled) => compiled,
         Err(error) => {
             crate::run::runlog::fail(run_id);
@@ -338,7 +338,7 @@ pub async fn run_session(
         run_dir,
         engine,
         mut storage,
-    } = match provision_box(imp, run_id, "", None, &start_context, "append", None).await {
+    } = match provision_box(worker, run_id, "", None, &start_context, "append", None).await {
         Ok(provisioned) => provisioned,
         Err(error) => {
             crate::run::runlog::fail(run_id);
@@ -370,7 +370,7 @@ pub async fn run_session(
         .await
         .ok();
 
-    eprintln!("session {run_id} [{imp}] started");
+    eprintln!("session {run_id} [{worker}] started");
     let idle = Duration::from_secs(idle_secs);
     let mut rx_open = true;
     let mut busy = false; // a turn is in progress
@@ -381,20 +381,20 @@ pub async fn run_session(
         // rapid messages become distinct turns (in order) rather than coalescing.
         if !busy {
             if let Some(msg) = pending.pop_front() {
-                if let Err(error) = crate::imp::memory::save_run_context(run_id, &msg.context) {
+                if let Err(error) = crate::worker::memory::save_run_context(run_id, &msg.context) {
                     eprintln!(
                         "session {run_id}: context save failed; message not delivered: {error}"
                     );
                     continue;
                 }
-                let request = crate::imp::context::ContextRequest {
+                let request = crate::worker::context::ContextRequest {
                     run_id: run_id.to_string(),
-                    phase: crate::imp::context::ContextPhase::Turn,
+                    phase: crate::worker::context::ContextPhase::Turn,
                     surface: surface.clone(),
-                    imp: imp.to_string(),
+                    worker: worker.to_string(),
                     run_context: msg.context.clone(),
                     task: None,
-                    message: Some(crate::imp::context::MessageInput {
+                    message: Some(crate::worker::context::MessageInput {
                         provider: msg.context.provider.clone(),
                         message_id: msg.context.message_id.clone(),
                         author_label: msg.author_label,
@@ -402,7 +402,7 @@ pub async fn run_session(
                         text: msg.text,
                     }),
                 };
-                let compiled = match crate::imp::context::compile_and_trace(&request) {
+                let compiled = match crate::worker::context::compile_and_trace(&request) {
                     Ok(compiled) => compiled,
                     Err(error) => {
                         eprintln!("session {run_id}: context compilation failed; message not delivered: {error}");
@@ -454,19 +454,19 @@ pub async fn run_session(
         if clean_exit { "idle" } else { "error" },
         if clean_exit { Some(0) } else { None },
     );
-    eprintln!("session {run_id} [{imp}] ended");
+    eprintln!("session {run_id} [{worker}] ended");
     Ok(())
 }
 
 // ── shared box provisioning ──────────────────────────────────────────────────
 
 /// The pi command prefix shared by both box modes: node + entry, output mode, no
-/// host extension discovery, Impyard's own extensions, and the session dir.
+/// host extension discovery, Roster's own extensions, and the session dir.
 fn pi_prefix(engine: &Engine, mode: &str, session_dir: &Path) -> Result<Vec<String>, BErr> {
     let mut v = match engine {
         // The wrapper supplies --no-extensions and the baked extension list.
         Engine::Baked => vec![
-            "/opt/impyard/engine/run-pi".into(),
+            "/opt/roster/engine/run-pi".into(),
             "--mode".into(),
             mode.into(),
         ],
@@ -510,15 +510,15 @@ struct Provisioned {
     session_dir: PathBuf,
     run_dir: PathBuf,
     engine: Engine,
-    storage: crate::imp::knowledge::RunStorage,
+    storage: crate::worker::knowledge::RunStorage,
 }
 
 async fn provision_box(
-    imp: &str,
+    worker: &str,
     run_id: &str,
     task_id: &str,
     code: Option<&CodeSpec>,
-    run_context: &crate::imp::memory::RunContext,
+    run_context: &crate::worker::memory::RunContext,
     knowledge_mode: &str,
     ceiling_min: Option<f64>,
 ) -> Result<Provisioned, BErr> {
@@ -527,9 +527,9 @@ async fn provision_box(
     let home = home_dir();
     let host_ca = crate::paths::ca_dir().join("ca.crt");
     if !host_ca.exists() {
-        return Err(format!("the gateway CA is not present at {} — start the gateway first (impyard server start creates it)", host_ca.display()).into());
+        return Err(format!("the gateway CA is not present at {} — start the gateway first (roster server start creates it)", host_ca.display()).into());
     }
-    // The combined trust bundle (system roots + impyard CA) every TLS stack in
+    // The combined trust bundle (system roots + roster CA) every TLS stack in
     // the box is pointed at. Ensured here too, so a CLI run works even if the
     // daemon predates the bundle.
     let host_bundle = crate::gateway::ca::ensure_bundle().map_err(|e| e.to_string())?;
@@ -537,7 +537,7 @@ async fn provision_box(
     let config = crate::config::snapshot().map_err(|e| format!("config invalid:\n{e}"))?;
 
     // The engine: baked into the image by default; `[engine] dir` (a dev
-    // checkout, the ONLY impyard-adjacent directory the box ever mounts) wins
+    // checkout, the ONLY roster-adjacent directory the box ever mounts) wins
     // when set. Config/data/state live elsewhere entirely.
     let engine = match config.engine_dir.clone() {
         Some(dir) => Engine::Mounted(dir),
@@ -550,13 +550,13 @@ async fn provision_box(
     std::fs::create_dir_all(&workspace)?;
     std::fs::create_dir_all(&session)?;
     let storage =
-        crate::imp::knowledge::provision(imp, run_id, knowledge_mode, run_context.tainted())?;
+        crate::worker::knowledge::provision(worker, run_id, knowledge_mode, run_context.tainted())?;
 
     // Code task: a writable git worktree on a fresh per-run branch.
     let worktree: Option<PathBuf> = match code {
         Some(cs) => {
             let wt = run_dir.join("worktree");
-            let branch = format!("imp/{imp}/{run_id}");
+            let branch = format!("worker/{worker}/{run_id}");
             let ok = std::process::Command::new("git")
                 .args(["-C", &cs.repo, "worktree", "add", "-B", &branch])
                 .arg(&wt)
@@ -583,7 +583,7 @@ async fn provision_box(
     }
 
     // Un-spoofable identity: mint a token, register it off the box mount.
-    let subject = format!("org/{imp}");
+    let subject = format!("org/{worker}");
     let token = uuid::Uuid::new_v4().to_string();
     let identity_dir = crate::paths::identity_dir();
     std::fs::create_dir_all(&identity_dir)?;
@@ -628,7 +628,7 @@ async fn provision_box(
         mount(&pihome),
     ]);
     if let Some(knowledge) = storage.knowledge.as_ref() {
-        let ro = if knowledge.mode == crate::imp::knowledge::KnowledgeMode::Read {
+        let ro = if knowledge.mode == crate::worker::knowledge::KnowledgeMode::Read {
             ":ro"
         } else {
             ""
@@ -660,16 +660,16 @@ async fn provision_box(
         "-e".into(),
         format!("PI_CODING_AGENT_DIR={}", pihome.join("agent").display()),
     ]);
-    args.extend(["-e".into(), format!("IMPYARD_RUN_ID={run_id}")]);
+    args.extend(["-e".into(), format!("ROSTER_RUN_ID={run_id}")]);
     args.extend(["-e".into(), "TMPDIR=/tmp".into()]);
     // Sessions have no wall clock — only task runs get a ceiling to pace against.
     if let Some(min) = ceiling_min {
-        args.extend(["-e".into(), format!("IMPYARD_CEILING_MIN={min}")]);
+        args.extend(["-e".into(), format!("ROSTER_CEILING_MIN={min}")]);
     }
     // [[expose]] — credential env vars, set to the SENTINEL. The gateway's
     // per-grant injection swaps in the real value in transit, only where that
     // grant's scope allows; the box env never holds a secret.
-    let subject = format!("org/{}", crate::paths::short_imp(imp));
+    let subject = format!("org/{}", crate::paths::short_worker(worker));
     for e in &config.exposes {
         if crate::gateway::scope::applies(&e.scope, &subject) {
             args.extend(["-e".into(), format!("{}={SENTINEL}", e.env)]);
@@ -678,22 +678,22 @@ async fn provision_box(
     if let Some(knowledge) = storage.knowledge.as_ref() {
         args.extend([
             "-e".into(),
-            format!("IMPYARD_KNOWLEDGE_DIR={}", knowledge.knowledge_mount()),
+            format!("ROSTER_KNOWLEDGE_DIR={}", knowledge.knowledge_mount()),
             "-e".into(),
-            format!("IMPYARD_KNOWLEDGE_BASE={}", knowledge.base_commit),
+            format!("ROSTER_KNOWLEDGE_BASE={}", knowledge.base_commit),
             "-e".into(),
-            format!("IMPYARD_KNOWLEDGE_MODE={}", knowledge.mode.as_str()),
+            format!("ROSTER_KNOWLEDGE_MODE={}", knowledge.mode.as_str()),
         ]);
         // Read-only checkouts have no write contract, so no namespace.
-        if knowledge.mode != crate::imp::knowledge::KnowledgeMode::Read {
+        if knowledge.mode != crate::worker::knowledge::KnowledgeMode::Read {
             args.extend([
                 "-e".into(),
-                format!("IMPYARD_RECORD_NAMESPACE={}", knowledge.record_namespace),
+                format!("ROSTER_RECORD_NAMESPACE={}", knowledge.record_namespace),
             ]);
         }
     }
     if !task_id.is_empty() {
-        args.extend(["-e".into(), format!("IMPYARD_TASK_ID={task_id}")]);
+        args.extend(["-e".into(), format!("ROSTER_TASK_ID={task_id}")]);
     }
     for k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
         args.extend(["-e".into(), format!("{k}={proxy_url}")]);
@@ -724,7 +724,7 @@ async fn provision_box(
         }
     }
     let cwd = worktree.as_ref().unwrap_or(&workspace);
-    args.extend(["-w".into(), cwd.display().to_string(), "impyard-box".into()]);
+    args.extend(["-w".into(), cwd.display().to_string(), "roster-box".into()]);
 
     Ok(Provisioned {
         args,
@@ -737,12 +737,12 @@ async fn provision_box(
     })
 }
 
-fn finalize_storage(storage: &mut crate::imp::knowledge::RunStorage, clean: bool) {
+fn finalize_storage(storage: &mut crate::worker::knowledge::RunStorage, clean: bool) {
     if let Some(checkout) = storage.knowledge.as_ref() {
-        if checkout.mode == crate::imp::knowledge::KnowledgeMode::Read {
+        if checkout.mode == crate::worker::knowledge::KnowledgeMode::Read {
             // Consultation only: nothing to integrate, nothing to quarantine.
         } else if clean && checkout.knowledge_policy.checkpoint_on_clean_exit {
-            match crate::imp::knowledge::checkpoint(checkout) {
+            match crate::worker::knowledge::checkpoint(checkout) {
                 Ok(result) if result.files > 0 => eprintln!(
                     "knowledge {}: integrated {} file(s) at {}",
                     checkout.run_id,
@@ -763,10 +763,10 @@ fn finalize_storage(storage: &mut crate::imp::knowledge::RunStorage, clean: bool
                 Some("automatic checkpoint disabled by policy"),
             );
         } else {
-            crate::imp::knowledge::quarantine(checkout, "run did not exit cleanly");
+            crate::worker::knowledge::quarantine(checkout, "run did not exit cleanly");
         }
     }
-    if let Err(error) = crate::imp::knowledge::release_reorganization(storage) {
+    if let Err(error) = crate::worker::knowledge::release_reorganization(storage) {
         eprintln!(
             "knowledge {}: could not journal reorganization lease release: {error}",
             storage.run_id
@@ -800,7 +800,7 @@ async fn ensure_lockdown() -> Result<(), BErr> {
         .map(|r| r.status().is_success())
         .unwrap_or(false);
     if !healthy {
-        return Err(format!("refusing to start the box with open egress: the gateway is not answering on :{GATEWAY_PORT} — start it with: impyard server start").into());
+        return Err(format!("refusing to start the box with open egress: the gateway is not answering on :{GATEWAY_PORT} — start it with: roster server start").into());
     }
     Ok(())
 }
@@ -877,7 +877,7 @@ fn sentinelize(entry: &Value) -> Value {
         e.insert("refresh".into(), json!(SENTINEL));
     }
     if e.get("accountId").and_then(|v| v.as_str()).is_some() {
-        e.insert("accountId".into(), json!("impyard-sentinel-account"));
+        e.insert("accountId".into(), json!("roster-sentinel-account"));
     }
     if e.get("expires").and_then(|v| v.as_i64()).is_some() {
         e.insert(
@@ -897,9 +897,9 @@ fn sentinel_jwt() -> String {
     let payload = b64(&json!({
         "iat": now_sec,
         "exp": now_sec + 100 * 365 * 24 * 3600i64,
-        "https://api.openai.com/auth": { "chatgpt_account_id": "impyard-sentinel-account" },
+        "https://api.openai.com/auth": { "chatgpt_account_id": "roster-sentinel-account" },
     }));
-    let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("impyard-sentinel-signature");
+    let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("roster-sentinel-signature");
     format!("{header}.{payload}.{sig}")
 }
 
@@ -917,7 +917,7 @@ fn resolve_pi_entry(repo: &Path) -> Result<String, BErr> {
     Ok(pkg_dir.join(bin).display().to_string())
 }
 
-/// Impyard's vendored box extensions: every `.ts` under box/extensions/, sorted.
+/// Roster's vendored box extensions: every `.ts` under box/extensions/, sorted.
 /// Dropping a new file there is enough to ship a new capability into the box.
 fn box_extensions(repo: &Path) -> Vec<String> {
     let dir = repo.join("box/extensions");
@@ -933,10 +933,10 @@ fn box_extensions(repo: &Path) -> Vec<String> {
     paths
 }
 
-/// Owner-controlled imp identity path. Prompt assembly lives in the context
+/// Owner-controlled worker identity path. Prompt assembly lives in the context
 /// compiler; this helper remains for the identity admin surfaces.
-pub fn identity_path(imp: &str) -> PathBuf {
-    crate::paths::imp_dir(imp).join("identity.md")
+pub fn identity_path(worker: &str) -> PathBuf {
+    crate::paths::worker_dir(worker).join("identity.md")
 }
 
 fn home_dir() -> PathBuf {
@@ -978,10 +978,10 @@ mod tests {
     #[test]
     fn cache_route_key_becomes_the_pi_session_id() {
         let mut args = vec!["node".into(), "pi".into()];
-        append_cache_session_id(&mut args, "impyard-pc-abc123");
+        append_cache_session_id(&mut args, "roster-pc-abc123");
         assert_eq!(
             args,
-            vec!["node", "pi", "--session-id", "impyard-pc-abc123"]
+            vec!["node", "pi", "--session-id", "roster-pc-abc123"]
         );
     }
 }

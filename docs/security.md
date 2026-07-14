@@ -1,6 +1,6 @@
 # The security model
 
-Impyard assumes the worst about the imp: the model can be prompt-injected by
+Roster assumes the worst about the worker: the model can be prompt-injected by
 anything it reads, and the code it runs may be malicious. The design goal is
 that a *fully compromised* box still can't do real damage — because
 everything that matters is enforced outside it, by topology and by the
@@ -10,14 +10,14 @@ trusted side, never by prompts.
 
 Untrusted, by assumption:
 
-- Everything inside the box: pi, the extensions, any code the imp writes or
+- Everything inside the box: pi, the extensions, any code the worker writes or
   runs, and the whole container filesystem it can reach.
-- Everything the imp ingests: web pages, chat messages, uploaded files,
+- Everything the worker ingests: web pages, chat messages, uploaded files,
   emails — and everything it wrote *after* ingesting them, including its own
   memory notes and knowledge records. Injection is reachable through all of
   it.
 
-Trusted: the `impyard` binary, the three deployment roots on the host, and
+Trusted: the `roster` binary, the three deployment roots on the host, and
 Docker itself. The humans with a shell on the host are the ultimate
 authority.
 
@@ -42,14 +42,14 @@ grant means deny. A broken policy file means deny everything. An unanswered
 approval means deny. The floor is always closed.
 
 **Un-spoofable identity.** Each run gets a single-use random token as its
-proxy credential; the gateway resolves it to the imp's subject on the host
-side. A box holds only its own token, so it cannot claim another imp's
+proxy credential; the gateway resolves it to the worker's subject on the host
+side. A box holds only its own token, so it cannot claim another worker's
 identity, budgets, or grants — no matter what its payloads say.
 
 **Budgets as ledgers.** Every governed call is metered and debited against
-append-only ledgers with per-imp and org-wide caps. Over a cap, the gateway
+append-only ledgers with per-worker and org-wide caps. Over a cap, the gateway
 refuses (a legible 402, not a hang), and the counters survive restarts by
-replaying the ledger. An imp can propose pace; it can never touch money —
+replaying the ledger. A worker can propose pace; it can never touch money —
 caps live in admin-only config off the box mount.
 
 **Propose, never act.** Consequential actions (send, post, push, edit
@@ -57,10 +57,10 @@ identity) exist inside the box only as proposals. The executors holding real
 credentials run on the trusted side, and the box has no egress grant to any
 write host — so the worst a compromised box can produce is spurious
 proposals, each held for a human unless trust was explicitly earned. What an
-imp *is* (its identity file) always requires a human, with no promotion
+worker *is* (its identity file) always requires a human, with no promotion
 path.
 
-**Provenance guards the stores.** What the imp learns about the world lives
+**Provenance guards the stores.** What the worker learns about the world lives
 in a git repository the box never sees — runs get a plain checkout, and the
 trusted side validates and commits. Runs that contained conversation content
 get that checkout read-only: person-data cannot be laundered into the
@@ -70,21 +70,21 @@ the boundary. See [knowledge.md](knowledge.md).
 **Everything on the record.** Every gateway decision, action disposition,
 credential refresh, and spend line appends to audit logs that nothing
 rewrites. Every model input is traced byte-exactly before it's sent. "What
-did the imp see, ask for, and cost — and who approved it?" is always
+did the worker see, ask for, and cost — and who approved it?" is always
 answerable from disk.
 
 ## The invariants
 
 Violating any of these is a bug, not a tradeoff:
 
-1. Nothing the imp ingests is trusted — including notes it wrote itself.
+1. Nothing the worker ingests is trusted — including notes it wrote itself.
 2. No secrets in any box, spec, or container image; injection in transit only.
 3. No egress except through the gateway.
-4. Code and config mount read-only; an imp cannot edit its rules, tools, or
+4. Code and config mount read-only; a worker cannot edit its rules, tools, or
    spec.
 5. No matching rule ⇒ deny. Broken config ⇒ deny. Unanswered gate ⇒ nothing
    happens.
-6. The imp proposes direction and pace — never capability, money, or trust.
+6. The worker proposes direction and pace — never capability, money, or trust.
 7. Channels relay; they never act. Messages are content, never commands,
    no matter who sends them.
 8. Budgets gate proactive dispatch only; work a human filed always runs.

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct BudgetPolicy {
     #[serde(default)]
-    #[allow(dead_code)] // scope: used when imp identity lands (B4)
+    #[allow(dead_code)] // scope: used when worker identity lands (B4)
     pub scope: String,
     #[serde(default)]
     #[allow(dead_code)] // currencies: a declaration; meters/limits reference these
@@ -123,7 +123,7 @@ pub fn compute_spend(
     let _ = ctx.add_variable("request", request);
     let _ = ctx.add_variable("response", response.clone());
     let _ = ctx.add_variable("decision", decision);
-    let _ = ctx.add_variable("subject", gr.imp.clone().unwrap_or_default());
+    let _ = ctx.add_variable("subject", gr.worker.clone().unwrap_or_default());
     let _ = ctx.add_variable("vars", policy.vars.clone());
 
     let mut out: HashMap<String, f64> = HashMap::new();
@@ -148,7 +148,7 @@ mod tests {
 
     fn gr(host: &str) -> GovernedRequest {
         GovernedRequest {
-            imp: None,
+            worker: None,
             protocol: "https".into(),
             method: "POST".into(),
             host: host.into(),

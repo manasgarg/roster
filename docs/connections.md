@@ -1,15 +1,15 @@
 # Service connections
 
-A **connection** is one intent — "this imp may act on that service" — as
+A **connection** is one intent — "this worker may act on that service" — as
 one first-class object. Behind it sit four moving parts (a provider's login
 flow, a secret in the vault, an egress grant with credential injection, and
 the env var the box sees), and the connection keeps them coherent so you
 never assemble them by hand:
 
 ```toml
-# ~/.config/impyard/connections/github.toml
+# ~/.config/roster/connections/github.toml
 provider = "github"          # registry entry: login flow + inject template
-imps     = ["yuko"]          # or: scope = "org" (the explicit escalation)
+workers     = ["yuko"]          # or: scope = "org" (the explicit escalation)
 hosts    = ["api.github.com"]
 methods  = ["GET"]           # writes are a deliberate manual edit
 env      = "GH_TOKEN"        # what the box sees (a sentinel, never the secret)
@@ -32,30 +32,30 @@ Two structural guarantees:
 ## One command
 
 ```bash
-impyard connection catalog
-impyard connection add                        # bare: shows the catalog
-impyard connection add github --imp yuko      # login → vault → scaffold → validate
-impyard connection add github --org           # org-wide, spelled out
-impyard connection add github --name github-kdemo --imp kdemo
+roster connection catalog
+roster connection add                        # bare: shows the catalog
+roster connection add github --worker yuko      # login → vault → scaffold → validate
+roster connection add github --org           # org-wide, spelled out
+roster connection add github --name github-kdemo --worker kdemo
 ```
 
 The wizard runs the provider's login flow, stores the secret, scaffolds the
 connection file (once — re-running only **rotates the secret**, never
-touches your edits), and prints the compiled result. Per-imp is the default
+touches your edits), and prints the compiled result. Per-worker is the default
 posture: a connection is a capability granted to an identity, not to the
-fleet. `--name` gives the connection its own name — the idiom for per-imp
+fleet. `--name` gives the connection its own name — the idiom for per-worker
 service identities (separate PATs mean the service's own audit log
-distinguishes your imps too).
+distinguishes your workers too).
 
-Inventory: `impyard connection ls [--json]` — provider, scope, hosts, env,
+Inventory: `roster connection ls [--json]` — provider, scope, hosts, env,
 active/DISABLED.
 
 ## Scope rules
 
-- **Services are box-consumed capabilities** → per-imp by default.
+- **Services are box-consumed capabilities** → per-worker by default.
 - **Channels (discord, slack, smtp) are host-consumed infrastructure.**
-  `impyard credential add discord` stores the credential; bind it in the
-  imp's `[channels]` table ([channels.md](channels.md)). The credential
+  `roster credential add discord` stores the credential; bind it in the
+  worker's `[channels]` table ([channels.md](channels.md)). The credential
   never enters a box, so it is not a connection.
 - **Model providers** (anthropic, openai-codex) are wired via grants with
   `inject` — see [gateway.md](gateway.md).
@@ -69,23 +69,23 @@ provider; `slack-api` is the service. Talking in Slack and calling Slack
 are different intents and get different names.)
 
 Presets, not a restriction — connect any token-authenticated API by naming
-its host. Impyard prompts for the token without echoing it and defaults to
+its host. Roster prompts for the token without echoing it and defaults to
 `Authorization: Bearer {token}`, GET-only, and an env var derived from the
 name:
 
 ```bash
-impyard connection add acme --host api.acme.com --imp yuko
+roster connection add acme --host api.acme.com --worker yuko
 ```
 
 Override the defaults for APIs with different conventions:
 
 ```bash
-impyard connection add gitlab-internal \
+roster connection add gitlab-internal \
   --host gitlab.example.com \
   --header 'Private-Token: {token}' \
   --env GITLAB_TOKEN \
   --method GET --method POST \
-  --imp yuko
+  --worker yuko
 ```
 
 For a reusable preset with a custom login flow, declare it in

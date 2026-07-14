@@ -1,20 +1,20 @@
 /**
- * impyard action tools — how the imp PROPOSES a consequential action.
+ * roster action tools — how the worker PROPOSES a consequential action.
  *
  * These tools never perform the action. They submit a typed envelope to the
- * gateway (the box's only trusted route), which attributes it to this imp,
+ * gateway (the box's only trusted route), which attributes it to this worker,
  * checks the admin's action grants + trust ladder, and either runs it now (auto)
  * or files a durable gate for a human. So `send_email` doesn't send — it asks;
  * the trusted side sends, holding a credential the box never sees.
  *
- * The response tells the imp exactly what happened: done, or pending a gate
+ * The response tells the worker exactly what happened: done, or pending a gate
  * (with the gate id, so it can be tracked across runs). See
  * docs/actions-and-trust.md.
  */
 
-const ACTION_URL = "https://actions.impyard.internal/submit";
-const RUN_ID = process.env.IMPYARD_RUN_ID ?? "";
-const TASK_ID = process.env.IMPYARD_TASK_ID ?? "";
+const ACTION_URL = "https://actions.roster.internal/submit";
+const RUN_ID = process.env.ROSTER_RUN_ID ?? "";
+const TASK_ID = process.env.ROSTER_TASK_ID ?? "";
 
 type Submission = { status: string; result?: unknown; gate_id?: string; reason?: string; error?: string; message?: string };
 
@@ -57,7 +57,7 @@ interface PiToolApi {
   }): void;
 }
 
-export default function impyardActionTools(api: PiToolApi): void {
+export default function rosterActionTools(api: PiToolApi): void {
   api.registerTool({
     name: "message_user",
     label: "message_user",
@@ -107,7 +107,7 @@ export default function impyardActionTools(api: PiToolApi): void {
     label: "remember",
     description:
       "Store a short, durable observation for future runs. Use user scope for a stable preference about the " +
-      "current speaker, channel scope for shared workstream context, and imp scope only for broadly reusable " +
+      "current speaker, channel scope for shared workstream context, and worker scope only for broadly reusable " +
       "interaction conventions. Research about the world belongs in the knowledge repository. Memory is advisory " +
       "and must not contain secrets or instructions that override governance.",
     promptSnippet: "remember(note, scope, kind, basis): store a scoped observation",
@@ -115,7 +115,7 @@ export default function impyardActionTools(api: PiToolApi): void {
       type: "object",
       properties: {
         note: { type: "string", description: "One concise user preference, conversational fact, decision, or interaction note. Research about the world belongs in the knowledge repository." },
-        scope: { type: "string", enum: ["imp", "channel", "user"], description: "Where this observation applies." },
+        scope: { type: "string", enum: ["worker", "channel", "user"], description: "Where this observation applies." },
         kind: { type: "string", enum: ["preference", "fact", "decision", "interaction"] },
         basis: { type: "string", enum: ["explicit", "inferred"], description: "Whether a person stated this or you inferred it." },
         artifact: { type: "string", description: "Optional pointer to the interaction that established this memory." },
@@ -199,7 +199,7 @@ export default function impyardActionTools(api: PiToolApi): void {
     parameters: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
       try {
-        const res = await fetch("https://actions.impyard.internal/memory", { signal: AbortSignal.timeout(15_000) });
+        const res = await fetch("https://actions.roster.internal/memory", { signal: AbortSignal.timeout(15_000) });
         const { memories, user_settings } = (await res.json()) as { memories: unknown[]; user_settings?: unknown };
         const notes = !memories?.length ? "No visible memories." : memories.map((m) => JSON.stringify(m)).join("\n");
         const text = `${notes}\nUser memory settings: ${JSON.stringify(user_settings ?? {})}`;
@@ -220,7 +220,7 @@ export default function impyardActionTools(api: PiToolApi): void {
     parameters: {
       type: "object",
       properties: {
-        allow_inferred: { type: "boolean", description: "Whether the imp may save inferred memories about this user." },
+        allow_inferred: { type: "boolean", description: "Whether the worker may save inferred memories about this user." },
         cross_channel_recall: { type: "boolean", description: "Whether this user's memories may be recalled across channels when admin policy allows." },
       },
       additionalProperties: false,
@@ -337,7 +337,7 @@ export default function impyardActionTools(api: PiToolApi): void {
     parameters: { type: "object", properties: {}, additionalProperties: false },
     async execute() {
       try {
-        const res = await fetch("https://actions.impyard.internal/gates", { signal: AbortSignal.timeout(15_000) });
+        const res = await fetch("https://actions.roster.internal/gates", { signal: AbortSignal.timeout(15_000) });
         const { gates } = (await res.json()) as { gates: unknown[] };
         const text = !gates?.length ? "No proposed actions yet." : gates.map((g) => JSON.stringify(g)).join("\n");
         return { content: [{ type: "text", text }] };

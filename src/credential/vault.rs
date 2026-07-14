@@ -1,5 +1,5 @@
 //! The vault + injection. Credentials live at
-//! `<data>/vault/<name>.json` (override `IMPYARD_VAULT_DIR`), never mounted.
+//! `<data>/vault/<name>.json` (override `ROSTER_VAULT_DIR`), never mounted.
 //! `get_fresh_credential` refreshes an expired OAuth token before returning it
 //! (single-flight per credential, atomic write, audit to audit/credentials.jsonl,
 //! fail-closed). See docs/gateway.md.

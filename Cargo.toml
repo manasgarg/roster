@@ -1,23 +1,23 @@
 [package]
-name = "impyard"
+name = "roster-agents"
 version = "0.1.1"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Manas Garg <manasgarg@gmail.com>"]
-description = "Rent the intelligence, own the governance — a control plane for imps: software colleagues whose every action passes through a gateway you control (default-deny egress, injected credentials, budgets, approval gates, audit)."
+description = "Rent the intelligence, own the governance — a control plane for workers: software colleagues whose every action passes through a gateway you control (default-deny egress, injected credentials, budgets, approval gates, audit)."
 license = "Apache-2.0"
-repository = "https://github.com/manasgarg/impyard"
-homepage = "https://github.com/manasgarg/impyard"
-documentation = "https://github.com/manasgarg/impyard/blob/main/docs/README.md"
+repository = "https://github.com/manasgarg/roster"
+homepage = "https://github.com/manasgarg/roster"
+documentation = "https://github.com/manasgarg/roster/blob/main/docs/README.md"
 readme = "README.md"
 keywords = ["agents", "governance", "gateway", "sandbox", "llm"]
 categories = ["command-line-utilities", "development-tools"]
 # The published crate is the host-side binary plus what you need to build the
-# box it runs imps in. CI config and the dev lockfile for pi stay out.
+# box it runs workers in. CI config and the dev lockfile for pi stay out.
 exclude = [".github/", "node_modules/", "target/", "*.tar.gz"]
 
 [[bin]]
-name = "impyard"
+name = "roster"
 path = "src/main.rs"
 
 [dependencies]

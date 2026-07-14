@@ -1,5 +1,5 @@
 //! The participant scan — police for the memory/knowledge boundary
-//! (docs/knowledge.md). Generic PII detection is mushy; impyard has
+//! (docs/knowledge.md). Generic PII detection is mushy; roster has
 //! an unfair advantage: the host knows exactly who was in a run. Markers are
 //! the run's own channel participants (ids + display names from the channel
 //! history) plus chat-mention syntax. Applied at the two crossing points:
@@ -7,7 +7,7 @@
 //! checkpoint. Known limit, stated honestly: paraphrase passes the scan — the
 //! hard guarantee is the read-only mount; the scan polices the choke point.
 
-use crate::imp::memory::RunContext;
+use crate::worker::memory::RunContext;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -40,7 +40,7 @@ pub fn participant_markers(context: &RunContext) -> Vec<String> {
 
 /// The `file_task` choke point: may this run file this prompt? Clean runs pass
 /// (they hold no person-data to launder); tainted runs are scanned against
-/// their own participants. Err carries the imp-facing reason.
+/// their own participants. Err carries the worker-facing reason.
 pub fn check_task_prompt(context: &RunContext, prompt: &str) -> Result<(), String> {
     if !context.tainted() {
         return Ok(());

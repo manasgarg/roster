@@ -1,6 +1,6 @@
-# Impyard documentation
+# Roster documentation
 
-Impyard runs **imps** — software colleagues that keep working when you're
+Roster runs **workers** — software colleagues that keep working when you're
 not watching — inside governance machinery you own: a default-deny gateway,
 injected credentials, budgets as ledgers, human approval gates, earned
 trust, and a permanent audit record. *Rent the intelligence; own the
@@ -9,7 +9,7 @@ governance.*
 ## Start here
 
 - **[Getting started](getting-started.md)** — from a fresh machine to a
-  working, governed imp.
+  working, governed worker.
 - **[Architecture](architecture.md)** — the trust boundary, the one daemon,
   and the life of a task.
 - **[The security model](security.md)** — the threat model, the mechanisms,
@@ -29,7 +29,7 @@ governance.*
 - **[The box](box.md)** — the locked-down container: no route, no secrets,
   a real toolbelt.
 
-## What an imp knows
+## What a worker knows
 
 - **[Interaction memory](memory.md)** — scoped, consent-governed memory of
   people and conversations.

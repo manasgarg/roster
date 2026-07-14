@@ -7,10 +7,10 @@ name: release
 # https://crates.io/settings/tokens/new with the narrowest scope that works:
 #   scope:  publish-update   (new versions of an existing crate — nothing else:
 #                             no yank, no owner changes, no publishing new crates)
-#   crates: impyard
+#   crates: roster-agents
 #   expiry: set one; rotate when it lapses (a lapsed token fails this workflow
 #           loudly at the publish step, which is the intended behavior)
-# Then:  gh secret set CARGO_REGISTRY_TOKEN -R manasgarg/impyard
+# Then:  gh secret set CARGO_REGISTRY_TOKEN -R manasgarg/roster
 # (paste at the prompt — the value never enters shell history)
 on:
   push:
@@ -38,8 +38,8 @@ jobs:
         id: check
         run: |
           v="${GITHUB_REF_NAME#v}"
-          if curl -sf "https://crates.io/api/v1/crates/impyard/$v" -H 'User-Agent: impyard-release' >/dev/null; then
-            echo "impyard $v is already on crates.io — skipping publish"
+          if curl -sf "https://crates.io/api/v1/crates/roster-agents/$v" -H 'User-Agent: roster-release' >/dev/null; then
+            echo "roster-agents $v is already on crates.io — skipping publish"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"

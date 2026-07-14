@@ -1,4 +1,4 @@
-//! The trust ladder: per `(imp, intent)`, decide whether a proposed action
+//! The trust ladder: per `(worker, intent)`, decide whether a proposed action
 //! runs automatically or waits for a human. T0 (the default) gates every
 //! irreversible; the admin promotes an intent to `auto`, optionally narrowed by
 //! a predicate over the action payload (e.g. recipient `*@ourco.com`). Trust is
@@ -31,10 +31,10 @@ pub struct TrustRule {
 
 /// The trust level for this proposal: the first applicable admin rule decides,
 /// else the action grant's default (T0 = "gate"). `executed`/`denied` are this
-/// (imp, intent)'s gate history, for the "earned" ladder — auto once enough
+/// (worker, intent)'s gate history, for the "earned" ladder — auto once enough
 /// have been approved with no reversal (a denial resets the privilege).
 pub fn evaluate(
-    imp: &str,
+    worker: &str,
     intent: &str,
     payload: &Value,
     default_level: &str,
@@ -43,7 +43,7 @@ pub fn evaluate(
     denied: u32,
 ) -> String {
     for r in rules {
-        if applies(&r.scope, imp) && r.intent == intent && predicate_matches(&r.predicate, payload)
+        if applies(&r.scope, worker) && r.intent == intent && predicate_matches(&r.predicate, payload)
         {
             if r.level == "earned" {
                 let after = r.after.unwrap_or(5);
@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_gates_out_of_scope_imps() {
+    fn scope_gates_out_of_scope_workers() {
         let rs = vec![TrustRule {
             scope: "org/w1".into(),
             intent: "email-send".into(),

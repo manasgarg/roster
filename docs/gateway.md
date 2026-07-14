@@ -21,13 +21,13 @@ and only on `allow` opens its own verified TLS connection to the real host
 and streams the response back.
 
 WebSocket upgrades are judged on their handshake, then piped. Requests to
-the internal action host (`actions.impyard.internal`) are served by the
+the internal action host (`actions.roster.internal`) are served by the
 trusted side directly and never forwarded anywhere — that's how action
 proposals travel (see [actions-and-trust.md](actions-and-trust.md)).
 
 ## Rules
 
-Grants live in `org.toml` (shared) and `imps/<name>/imp.toml` (one imp),
+Grants live in `org.toml` (shared) and `workers/<name>/worker.toml` (one worker),
 as an ordered list. Evaluation is **first match wins; no match is a deny.**
 
 ```toml
@@ -67,7 +67,7 @@ Three verdicts:
   hatch for cert-pinning clients, decided at CONNECT time. A tunneled host
   is judged on host and port only — grant it knowingly.
 
-Rules written in an imp's own file apply only to that imp; org rules apply
+Rules written in a worker's own file apply only to that worker; org rules apply
 to everyone. (The loader tags scopes automatically — you never write them.)
 
 ### MCP, governed at tool granularity
@@ -82,16 +82,16 @@ falls through to the default deny.
 
 A denial is a verdict, never a mystery hang:
 
-- Policy deny → **403** with `x-impyard-verdict: deny`, `x-impyard-rule`
+- Policy deny → **403** with `x-roster-verdict: deny`, `x-roster-rule`
   naming the rule that decided (when one matched), and a JSON body whose
   `hint` says plainly: this is policy, not an outage.
-- Over budget → **402** with `x-impyard-verdict: budget`, a `Retry-After`
+- Over budget → **402** with `x-roster-verdict: budget`, a `Retry-After`
   for when the window resets, and the same style of hint.
 
 ## Credential injection
 
 Real credentials live in the vault (`data/vault/`, one JSON file per name,
-mode 0600), seeded by `impyard credential add` and by the connection wizard.
+mode 0600), seeded by `roster credential add` and by the connection wizard.
 The box carries sentinels — structurally valid placeholders, shaped like the
 real thing so clients will send them (even a well-formed fake JWT where a
 JWT is expected).
@@ -111,18 +111,18 @@ sentinel to a real host.
 per credential so concurrent requests don't race a rotating token, merged
 and written atomically so a crash can't half-rotate the vault, audited to
 `audit/credentials.jsonl` (events only, never values). If a refresh chain
-ever breaks, `impyard credential add <provider>` re-authenticates.
+ever breaks, `roster credential add <provider>` re-authenticates.
 
 ## Identity: who is asking
 
 The trusted runner mints a random single-use token per run, registers it
 host-side as `{subject, run_id}`, and hands it to the box as its proxy
-credential. The gateway resolves token → subject (`org/<imp>`) on every
+credential. The gateway resolves token → subject (`org/<worker>`) on every
 request. A box holds only its own token, so attribution is un-spoofable; a
 connection with no token (host-side tooling) is attributed to `org`.
 
 Subjects are paths, and scopes match by ancestry: a rule or budget at `org`
-governs every imp; one at `org/yuko` governs only yuko. Spend rolls up the
+governs every worker; one at `org/yuko` governs only yuko. Spend rolls up the
 same way — a call by yuko debits yuko's counters *and* the org's.
 
 ## Budgets
@@ -149,7 +149,7 @@ max      = 20.0
   your `vars`: a match predicate picks calls, and each spend expression maps
   them to amounts.
 - **Limits** cap a currency's draw over a `minute`/`hour`/`day`/`month`
-  window, at org scope or per-imp (`[[budget.limit]]` in an imp.toml).
+  window, at org scope or per-worker (`[[budget.limit]]` in a worker.toml).
 
 Enforcement happens per allowed request, before forwarding: compute spend,
 check every applicable scope's limit, refuse with 402 if any is exhausted,
@@ -159,7 +159,7 @@ in-memory counters rebuild from it on restart — rebooting the daemon never
 resets a budget.
 
 Two enforcement layers work together (see [work.md](work.md)): the
-**soft stop** at dispatch skips *proactive* tasks for an over-budget imp
+**soft stop** at dispatch skips *proactive* tasks for an over-budget worker
 (your work always runs), and the **hard stop** here at the gateway refuses
 governed calls mid-run — including the model call, since serving the model
 credential is itself a governed, metered request.

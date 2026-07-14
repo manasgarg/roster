@@ -1,7 +1,7 @@
-//! `impyard server gates` — the approval desk. A human lists pending gates,
+//! `roster server gates` — the approval desk. A human lists pending gates,
 //! inspects the exact payload that would go out, and approves or denies. No
 //! model at the edge (D12/§3.9): a person decides. Approve executes the gate
-//! idempotently; deny records the refusal. Both append to the imp's journal
+//! idempotently; deny records the refusal. Both append to the worker's journal
 //! and the audit log.
 
 use crate::action;
@@ -23,14 +23,14 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         println!("no pending gates");
         return Ok(());
     }
-    println!("{:<12}  {:<10}  {:<16}  FILED", "GATE", "IMP", "INTENT");
+    println!("{:<12}  {:<10}  {:<16}  FILED", "GATE", "WORKER", "INTENT");
     for g in pending {
         println!(
             "{:<12}  {:<10}  {:<16}  {}",
-            g.id, g.imp, g.intent, g.filed_at
+            g.id, g.worker, g.intent, g.filed_at
         );
     }
-    println!("\napprove: impyard server gates approve <id>   deny: impyard server gates deny <id> \"reason\"");
+    println!("\napprove: roster server gates approve <id>   deny: roster server gates deny <id> \"reason\"");
     Ok(())
 }
 
@@ -38,7 +38,7 @@ pub fn show(id: &str) -> Result<(), BErr> {
     let id = resolve(id)?;
     let g = gate::load(&id).ok_or_else(|| format!("no such gate {id}"))?;
     println!("gate     {}", g.id);
-    println!("imp   {}", g.imp);
+    println!("worker   {}", g.worker);
     println!("intent   {}   (executor: {})", g.intent, g.executor);
     println!("state    {}", g.state);
     println!("filed    {}", g.filed_at);
@@ -69,7 +69,7 @@ pub fn show(id: &str) -> Result<(), BErr> {
                 .or_else(|| g.payload.get("charter"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            match action::identity_diff(&g.imp, proposed) {
+            match action::identity_diff(&g.worker, proposed) {
                 Some(d) => println!("\nidentity change — current vs proposed:\n{d}"),
                 None => println!("\n(the proposed identity is identical to the current one)"),
             }

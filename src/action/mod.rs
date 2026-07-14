@@ -1,6 +1,6 @@
 //! Actions — the box proposes a consequential action by POSTing an envelope to
-//! the gateway's action host (`actions.impyard.internal`). The gateway attributes
-//! it to the imp (identity token on the CONNECT, un-spoofable), checks the
+//! the gateway's action host (`actions.roster.internal`). The gateway attributes
+//! it to the worker (identity token on the CONNECT, un-spoofable), checks the
 //! admin's action grants + the trust ladder, and either executes it now (auto)
 //! or files a durable gate. Executors run trusted-side and hold the real
 //! credentials the box never sees. See docs/actions-and-trust.md.
@@ -12,7 +12,7 @@ pub mod trust;
 use crate::action::gate::Gate;
 use crate::action::trust::TrustRule;
 use crate::gateway::proxy::Body;
-use crate::imp::journal;
+use crate::worker::journal;
 use crate::paths;
 use crate::util::now_rfc3339;
 use bytes::Bytes;
@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// The sentinel host the box POSTs action envelopes to. It never leaves the
 /// gateway: all box HTTPS is proxied, so this arrives as CONNECT + a
 /// TLS-terminated POST the gateway handles internally instead of forwarding.
-pub const ACTION_HOST: &str = "actions.impyard.internal";
+pub const ACTION_HOST: &str = "actions.roster.internal";
 
 // ── the envelope + admin policy ──────────────────────────────────────────────
 
@@ -51,7 +51,7 @@ fn gate_default() -> String {
     "gate".to_string()
 }
 
-/// An admin-declared action an imp may propose (compiled from `[[action]]`).
+/// An admin-declared action a worker may propose (compiled from `[[action]]`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ActionGrant {
     #[serde(default = "org_scope")]
@@ -62,7 +62,7 @@ pub struct ActionGrant {
     #[serde(default = "gate_default")]
     pub trust: String,
     /// When true, resolving a gate for this action files a continuation task so
-    /// the imp can react to the outcome (§3.5). Default: just close the task.
+    /// the worker can react to the outcome (§3.5). Default: just close the task.
     #[serde(default)]
     pub wake_on_resolve: bool,
 }
@@ -81,11 +81,11 @@ pub fn load_action_policy() -> ActionPolicy {
         .unwrap_or_default()
 }
 
-fn grant_for<'a>(policy: &'a ActionPolicy, imp: &str, intent: &str) -> Option<&'a ActionGrant> {
+fn grant_for<'a>(policy: &'a ActionPolicy, worker: &str, intent: &str) -> Option<&'a ActionGrant> {
     policy
         .actions
         .iter()
-        .find(|a| crate::gateway::scope::applies(&a.scope, imp) && a.name == intent)
+        .find(|a| crate::gateway::scope::applies(&a.scope, worker) && a.name == intent)
 }
 
 /// Is a channel-send payload targeting a channel an admin marked trusted?
@@ -114,31 +114,31 @@ fn reply(status: StatusCode, v: Value) -> Response<Body> {
     resp
 }
 
-/// Route a request to the action host. `imp` is resolved from the identity
+/// Route a request to the action host. `worker` is resolved from the identity
 /// token. POST /submit proposes an action; GET /gates and /journal are the
-/// imp's read-only view of its own state (the box's cross-run awareness).
+/// worker's read-only view of its own state (the box's cross-run awareness).
 pub async fn handle_action(
-    imp: &str,
+    worker: &str,
     trusted_run_id: &str,
     method: &str,
     path: &str,
     body: &[u8],
 ) -> Response<Body> {
     match (method, path) {
-        ("POST", "/submit") => submit(imp, trusted_run_id, body).await,
+        ("POST", "/submit") => submit(worker, trusted_run_id, body).await,
         ("GET", "/gates") => {
-            let gates: Vec<Value> = crate::action::gate::for_imp(imp)
+            let gates: Vec<Value> = crate::action::gate::for_worker(worker)
                 .iter()
                 .map(|g| g.summary())
                 .collect();
             reply(StatusCode::OK, json!({ "gates": gates }))
         }
-        ("GET", "/journal") => reply(StatusCode::OK, json!({ "events": journal::tail(imp, 30) })),
+        ("GET", "/journal") => reply(StatusCode::OK, json!({ "events": journal::tail(worker, 30) })),
         ("GET", "/memory") => {
-            let memories = crate::imp::memory::visible_to_current_actor(imp, trusted_run_id);
-            let user_settings = crate::imp::memory::current_user_settings(imp, trusted_run_id);
+            let memories = crate::worker::memory::visible_to_current_actor(worker, trusted_run_id);
+            let user_settings = crate::worker::memory::current_user_settings(worker, trusted_run_id);
             journal::append(
-                imp,
+                worker,
                 trusted_run_id,
                 "memory-read",
                 json!({ "note_ids": memories.iter().map(|n| n.id.as_str()).collect::<Vec<_>>() }),
@@ -157,7 +157,7 @@ pub async fn handle_action(
 
 /// Handle one action envelope: attribute, authorize, and either execute now or
 /// file a gate.
-async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> {
+async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> {
     let env: Envelope = match serde_json::from_slice(body) {
         Ok(e) => e,
         Err(e) => {
@@ -173,14 +173,14 @@ async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> 
         trusted_run_id.to_string()
     };
     let policy = load_action_policy();
-    let Some(grant) = grant_for(&policy, imp, &env.intent) else {
+    let Some(grant) = grant_for(&policy, worker, &env.intent) else {
         journal::append(
-            imp,
+            worker,
             &run_id,
             "action-refused",
             json!({ "intent": env.intent, "reason": "no action grant in scope" }),
         );
-        audit(imp, &env.intent, "refused", None, None);
+        audit(worker, &env.intent, "refused", None, None);
         return reply(
             StatusCode::FORBIDDEN,
             json!({ "status": "denied", "reason": format!("no action grant for \"{}\"", env.intent) }),
@@ -189,12 +189,12 @@ async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> 
     let grant = grant.clone();
     if grant.executor == "note" && trusted_run_id.is_empty() {
         journal::append(
-            imp,
+            worker,
             &run_id,
             "action-refused",
             json!({ "intent": env.intent, "reason": "run-scoped action has no trusted run context" }),
         );
-        audit(imp, &env.intent, "refused", None, None);
+        audit(worker, &env.intent, "refused", None, None);
         return reply(
             StatusCode::FORBIDDEN,
             json!({ "status": "denied", "reason": "run-scoped action has no trusted run context" }),
@@ -202,25 +202,25 @@ async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> 
     }
 
     journal::append(
-        imp,
+        worker,
         &run_id,
         "action-proposed",
         json!({ "intent": env.intent, "rationale": env.rationale, "run_id": run_id }),
     );
 
-    let (executed, denied) = gate::history(imp, &env.intent);
+    let (executed, denied) = gate::history(worker, &env.intent);
     let level = if grant.executor == "note" {
-        let context = crate::imp::memory::load_run_context(&run_id);
-        match crate::imp::memory::action_trust(imp, &env.intent, &env.payload, &context) {
+        let context = crate::worker::memory::load_run_context(&run_id);
+        match crate::worker::memory::action_trust(worker, &env.intent, &env.payload, &context) {
             Ok(level) => level.to_string(),
             Err(reason) => {
                 journal::append(
-                    imp,
+                    worker,
                     &run_id,
                     "action-refused",
                     json!({ "intent": env.intent, "reason": reason }),
                 );
-                audit(imp, &env.intent, "refused", None, None);
+                audit(worker, &env.intent, "refused", None, None);
                 return reply(
                     StatusCode::FORBIDDEN,
                     json!({ "status": "denied", "reason": reason }),
@@ -228,7 +228,7 @@ async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> 
             }
         }
     } else if grant.executor == "identity" {
-        // Identity is imp-wide — always hard-gated (D10).
+        // Identity is worker-wide — always hard-gated (D10).
         "gate".to_string()
     } else if (grant.executor == "discord"
         || grant.executor == "slack"
@@ -241,7 +241,7 @@ async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> 
         "auto".to_string()
     } else {
         trust::evaluate(
-            imp,
+            worker,
             &env.intent,
             &env.payload,
             &grant.trust,
@@ -251,15 +251,15 @@ async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> 
         )
     };
     if level == "auto" {
-        match run_executor(&grant.executor, imp, &env.intent, &env.payload, &run_id).await {
+        match run_executor(&grant.executor, worker, &env.intent, &env.payload, &run_id).await {
             Ok(result) => {
                 journal::append(
-                    imp,
+                    worker,
                     &run_id,
                     "executed",
                     json!({ "intent": env.intent, "auto": true, "result": result }),
                 );
-                audit(imp, &env.intent, "auto-executed", None, Some(&result));
+                audit(worker, &env.intent, "auto-executed", None, Some(&result));
                 reply(
                     StatusCode::OK,
                     json!({ "status": "done", "result": result }),
@@ -267,19 +267,19 @@ async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> 
             }
             Err(e) => {
                 journal::append(
-                    imp,
+                    worker,
                     &run_id,
                     "failed",
                     json!({ "intent": env.intent, "auto": true, "error": e }),
                 );
-                audit(imp, &env.intent, "failed", None, None);
+                audit(worker, &env.intent, "failed", None, None);
                 reply(StatusCode::OK, json!({ "status": "error", "error": e }))
             }
         }
     } else {
         let g = Gate {
             id: gate::new_id(),
-            imp: imp.to_string(),
+            worker: worker.to_string(),
             intent: env.intent.clone(),
             executor: grant.executor.clone(),
             payload: env.payload.clone(),
@@ -302,12 +302,12 @@ async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> 
             );
         }
         journal::append(
-            imp,
+            worker,
             &run_id,
             "gate-filed",
             json!({ "gate_id": g.id, "intent": env.intent, "rationale": env.rationale }),
         );
-        audit(imp, &env.intent, "gated", Some(&g.id), None);
+        audit(worker, &env.intent, "gated", Some(&g.id), None);
         reply(
             StatusCode::ACCEPTED,
             json!({ "status": "pending", "gate_id": g.id, "message": "held for human approval" }),
@@ -315,7 +315,7 @@ async fn submit(imp: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> 
     }
 }
 
-// ── approval-side execution (shared with `impyard gates approve`) ─────────────
+// ── approval-side execution (shared with `roster gates approve`) ─────────────
 
 /// Execute an approved gate, idempotently. `pending`/`approved` → run; `executed`
 /// is terminal (never re-runs); a crash between approve and execute resumes.
@@ -334,7 +334,7 @@ pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Res
         g.decision_note = note.map(String::from);
         gate::save(&g).map_err(|e| e.to_string())?;
         journal::append(
-            &g.imp,
+            &g.worker,
             &g.run_id,
             "approved",
             json!({ "gate_id": g.id, "by": decided_by, "note": note }),
@@ -342,19 +342,19 @@ pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Res
     }
     g.state = "executing".into();
     gate::save(&g).map_err(|e| e.to_string())?;
-    match run_executor(&g.executor, &g.imp, &g.intent, &g.payload, &g.run_id).await {
+    match run_executor(&g.executor, &g.worker, &g.intent, &g.payload, &g.run_id).await {
         Ok(result) => {
             g.state = "executed".into();
             g.executed_at = Some(now_rfc3339());
             g.result = Some(result.clone());
             gate::save(&g).map_err(|e| e.to_string())?;
             journal::append(
-                &g.imp,
+                &g.worker,
                 &g.run_id,
                 "executed",
                 json!({ "gate_id": g.id, "intent": g.intent, "result": result }),
             );
-            audit(&g.imp, &g.intent, "executed", Some(&g.id), Some(&result));
+            audit(&g.worker, &g.intent, "executed", Some(&g.id), Some(&result));
             resolve_followup(&g);
             Ok(g)
         }
@@ -363,12 +363,12 @@ pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Res
             g.error = Some(e.clone());
             gate::save(&g).map_err(|e| e.to_string())?;
             journal::append(
-                &g.imp,
+                &g.worker,
                 &g.run_id,
                 "failed",
                 json!({ "gate_id": g.id, "intent": g.intent, "error": e }),
             );
-            audit(&g.imp, &g.intent, "failed", Some(&g.id), None);
+            audit(&g.worker, &g.intent, "failed", Some(&g.id), None);
             Err(e)
         }
     }
@@ -385,12 +385,12 @@ pub fn deny_gate(id: &str, decided_by: &str, note: Option<&str>) -> Result<Gate,
     g.decision_note = note.map(String::from);
     gate::save(&g).map_err(|e| e.to_string())?;
     journal::append(
-        &g.imp,
+        &g.worker,
         &g.run_id,
         "denied",
         json!({ "gate_id": g.id, "by": decided_by, "note": note }),
     );
-    audit(&g.imp, &g.intent, "denied", Some(&g.id), None);
+    audit(&g.worker, &g.intent, "denied", Some(&g.id), None);
     resolve_followup(&g);
     Ok(g)
 }
@@ -410,13 +410,13 @@ fn resolve_followup(g: &Gate) {
     }
 
     let policy = load_action_policy();
-    let wake = grant_for(&policy, &g.imp, &g.intent)
+    let wake = grant_for(&policy, &g.worker, &g.intent)
         .map(|a| a.wake_on_resolve)
         .unwrap_or(false);
     if !wake {
         return;
     }
-    let short = g.imp.strip_prefix("org/").unwrap_or(&g.imp).to_string();
+    let short = g.worker.strip_prefix("org/").unwrap_or(&g.worker).to_string();
     let outcome = if g.state == "executed" {
         format!(
             "was approved and executed. Result: {}",
@@ -448,7 +448,7 @@ fn resolve_followup(g: &Gate) {
         None,
     );
     journal::append(
-        &g.imp,
+        &g.worker,
         &g.run_id,
         "continuation-filed",
         json!({ "gate_id": g.id, "intent": g.intent }),
@@ -462,34 +462,34 @@ fn resolve_followup(g: &Gate) {
 /// subject (uniform judge/inject/meter/audit); local ones act directly.
 pub async fn run_executor(
     executor: &str,
-    imp: &str,
+    worker: &str,
     intent: &str,
     payload: &Value,
     run_id: &str,
 ) -> Result<Value, String> {
     match executor {
-        "message-user" => exec_message_user(imp, payload).await,
-        "email" => exec_email(imp, payload).await,
-        "git-pr" => exec_git_pr(imp, run_id, payload),
-        "identity" => exec_identity(imp, payload),
+        "message-user" => exec_message_user(worker, payload).await,
+        "email" => exec_email(worker, payload).await,
+        "git-pr" => exec_git_pr(worker, run_id, payload),
+        "identity" => exec_identity(worker, payload),
         "purpose" => exec_purpose(payload),
-        "discord" => exec_discord(imp, payload).await,
-        "slack" => exec_slack(imp, payload).await,
-        "task" => exec_file_task(imp, payload, run_id),
-        "note" => crate::imp::memory::execute(imp, intent, payload, run_id),
+        "discord" => exec_discord(worker, payload).await,
+        "slack" => exec_slack(worker, payload).await,
+        "task" => exec_file_task(worker, payload, run_id),
+        "note" => crate::worker::memory::execute(worker, intent, payload, run_id),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
 }
 
-/// Deliver a note from the imp to its lead: a Discord DM when a bot token +
+/// Deliver a note from the worker to its lead: a Discord DM when a bot token +
 /// lead id are configured, else the local inbox. The bot token stays in the
 /// vault; the box never holds it.
 /// `file_task` — the bridge across the memory/knowledge boundary: a tainted
 /// run queues durable work instead of writing records. The filed task is
-/// imp-only by construction (context: null — no channel, no participants),
+/// worker-only by construction (context: null — no channel, no participants),
 /// so it runs clean with a writable knowledge mount. The prompt is the entire
 /// crossing, and the participant scan polices it (docs/knowledge.md).
-fn exec_file_task(imp: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
+fn exec_file_task(worker: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
     if run_id.is_empty() {
         return Err("file-task needs a trusted run context".into());
     }
@@ -505,10 +505,10 @@ fn exec_file_task(imp: &str, payload: &Value, run_id: &str) -> Result<Value, Str
         .unwrap_or(30.0)
         .clamp(1.0, 240.0);
 
-    let context = crate::imp::memory::load_run_context(run_id);
-    if let Err(reason) = crate::imp::boundary::check_task_prompt(&context, prompt) {
+    let context = crate::worker::memory::load_run_context(run_id);
+    if let Err(reason) = crate::worker::boundary::check_task_prompt(&context, prompt) {
         journal::append(
-            imp,
+            worker,
             run_id,
             "boundary-denied",
             json!({ "intent": "file-task", "reason": reason }),
@@ -517,10 +517,10 @@ fn exec_file_task(imp: &str, payload: &Value, run_id: &str) -> Result<Value, Str
     }
 
     let task = crate::work::queue::create(
-        crate::paths::short_imp(imp),
+        crate::paths::short_worker(worker),
         prompt,
-        "imp",
-        true, // imp-initiated: budget-gated at dispatch like other proactive work
+        "worker",
+        true, // worker-initiated: budget-gated at dispatch like other proactive work
         ceiling,
         "append",
         Value::Null,
@@ -529,16 +529,16 @@ fn exec_file_task(imp: &str, payload: &Value, run_id: &str) -> Result<Value, Str
     )
     .map_err(|e| e.to_string())?;
     journal::append(
-        imp,
+        worker,
         run_id,
         "task-filed",
         json!({ "task_id": task.id, "prompt": prompt }),
     );
-    eprintln!("file-task [{imp}] → {} ({} min)", task.id, ceiling);
+    eprintln!("file-task [{worker}] → {} ({} min)", task.id, ceiling);
     Ok(json!({ "task_id": task.id, "state": "waiting" }))
 }
 
-async fn exec_message_user(imp: &str, payload: &Value) -> Result<Value, String> {
+async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, String> {
     let text = payload
         .get("text")
         .and_then(|v| v.as_str())
@@ -554,7 +554,7 @@ async fn exec_message_user(imp: &str, payload: &Value) -> Result<Value, String> 
             match crate::channel::discord::open_dm(token, owner).await {
                 Ok(dm) => match crate::channel::discord::post_message(token, &dm, text).await {
                     Ok(_) => {
-                        eprintln!("message-user [{imp}] → lead DM");
+                        eprintln!("message-user [{worker}] → lead DM");
                         return Ok(json!({ "delivered": "discord-dm" }));
                     }
                     Err(e) => {
@@ -566,7 +566,7 @@ async fn exec_message_user(imp: &str, payload: &Value) -> Result<Value, String> 
         }
     }
 
-    if let Some(cred) = crate::credential::vault::get_credential(&slack_credential_name(imp)) {
+    if let Some(cred) = crate::credential::vault::get_credential(&slack_credential_name(worker)) {
         let token = cred.get("bot_token").and_then(|v| v.as_str());
         let owner = cred
             .get("owner_id")
@@ -576,7 +576,7 @@ async fn exec_message_user(imp: &str, payload: &Value) -> Result<Value, String> 
             match crate::channel::slack::open_dm(token, owner).await {
                 Ok(dm) => match crate::channel::slack::post_message(token, &dm, text, None).await {
                     Ok(_) => {
-                        eprintln!("message-user [{imp}] → lead Slack DM");
+                        eprintln!("message-user [{worker}] → lead Slack DM");
                         return Ok(json!({ "delivered": "slack-dm" }));
                     }
                     Err(e) => eprintln!("message-user: Slack DM post failed ({e}); using inbox"),
@@ -594,16 +594,16 @@ async fn exec_message_user(imp: &str, payload: &Value) -> Result<Value, String> 
         let _ = writeln!(
             f,
             "{}",
-            json!({ "ts": now_rfc3339(), "imp": imp, "text": text })
+            json!({ "ts": now_rfc3339(), "worker": worker, "text": text })
         );
     }
-    eprintln!("message-user [{imp}]: {text}");
+    eprintln!("message-user [{worker}]: {text}");
     Ok(json!({ "delivered": "inbox" }))
 }
 
-/// Post a message to a Discord channel (the imp's reply). Trusted-side; the
+/// Post a message to a Discord channel (the worker's reply). Trusted-side; the
 /// bot token comes from the vault, never the box.
-async fn exec_discord(imp: &str, payload: &Value) -> Result<Value, String> {
+async fn exec_discord(worker: &str, payload: &Value) -> Result<Value, String> {
     let channel = payload
         .get("channel_id")
         .and_then(|v| v.as_str())
@@ -614,20 +614,20 @@ async fn exec_discord(imp: &str, payload: &Value) -> Result<Value, String> {
         .filter(|s| !s.trim().is_empty())
         .ok_or("discord-send needs non-empty \"text\"")?;
     let cred = crate::credential::vault::get_credential("discord")
-        .ok_or("no discord credential — run: impyard credential add discord")?;
+        .ok_or("no discord credential — run: roster credential add discord")?;
     let token = cred
         .get("token")
         .and_then(|v| v.as_str())
         .ok_or("discord credential has no token")?;
     let id = crate::channel::discord::post_message(token, channel, text).await?;
-    eprintln!("discord [{imp}] → channel {channel}");
+    eprintln!("discord [{worker}] → channel {channel}");
     Ok(json!({ "sent": true, "channel_id": channel, "message_id": id }))
 }
 
-/// The imp's Slack credential: its `[channels] slack` binding from live
+/// The worker's Slack credential: its `[channels] slack` binding from live
 /// config, falling back to a credential literally named "slack".
-fn slack_credential_name(imp: &str) -> String {
-    let short = crate::paths::short_imp(imp).to_string();
+fn slack_credential_name(worker: &str) -> String {
+    let short = crate::paths::short_worker(worker).to_string();
     crate::config::snapshot()
         .ok()
         .and_then(|c| {
@@ -639,7 +639,7 @@ fn slack_credential_name(imp: &str) -> String {
         .unwrap_or_else(|| "slack".to_string())
 }
 
-async fn exec_slack(imp: &str, payload: &Value) -> Result<Value, String> {
+async fn exec_slack(worker: &str, payload: &Value) -> Result<Value, String> {
     let channel = payload
         .get("channel_id")
         .and_then(|v| v.as_str())
@@ -653,23 +653,23 @@ async fn exec_slack(imp: &str, payload: &Value) -> Result<Value, String> {
         .get("thread_ts")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
-    let name = slack_credential_name(imp);
+    let name = slack_credential_name(worker);
     let cred = crate::credential::vault::get_credential(&name)
-        .ok_or_else(|| format!("no \"{name}\" credential — run: impyard credential add slack"))?;
+        .ok_or_else(|| format!("no \"{name}\" credential — run: roster credential add slack"))?;
     let token = cred
         .get("bot_token")
         .and_then(|v| v.as_str())
         .ok_or("slack credential has no bot_token")?;
     let ts = crate::channel::slack::post_message(token, channel, text, thread_ts).await?;
-    eprintln!("slack [{imp}] → channel {channel}");
+    eprintln!("slack [{worker}] → channel {channel}");
     Ok(json!({ "sent": true, "channel_id": channel, "message_ts": ts }))
 }
 
 /// Send an email. If an SMTP credential is configured in the vault
-/// (`impyard connect smtp`), deliver for real over TLS; otherwise fall back to a
+/// (`roster connect smtp`), deliver for real over TLS; otherwise fall back to a
 /// local sink so the gate→approve→execute→audit path still works offline. Either
 /// way the box never holds the credential — this runs trusted-side, post-gate.
-async fn exec_email(imp: &str, payload: &Value) -> Result<Value, String> {
+async fn exec_email(worker: &str, payload: &Value) -> Result<Value, String> {
     let to: Vec<String> = payload
         .get("to")
         .and_then(|v| v.as_array())
@@ -690,7 +690,7 @@ async fn exec_email(imp: &str, payload: &Value) -> Result<Value, String> {
         let status = crate::action::smtp::send(&cfg, &to, subject, body)
             .await
             .map_err(|e| format!("smtp send failed: {e}"))?;
-        eprintln!("email [{imp}] → {to:?} via {}: {subject}", cfg.host);
+        eprintln!("email [{worker}] → {to:?} via {}: {subject}", cfg.host);
         return Ok(
             json!({ "delivered": "smtp", "provider": cfg.host, "to": to, "status": status }),
         );
@@ -698,17 +698,17 @@ async fn exec_email(imp: &str, payload: &Value) -> Result<Value, String> {
 
     // No SMTP configured: fail loudly so an email is never silently dropped. The
     // local sink (a file, no real send) is opt-in for offline testing only.
-    if std::env::var("IMPYARD_EMAIL_SINK").is_err() {
-        return Err("email not sent: no SMTP configured — run `impyard credential add smtp` (e.g. your Mailgun SMTP creds)".into());
+    if std::env::var("ROSTER_EMAIL_SINK").is_err() {
+        return Err("email not sent: no SMTP configured — run `roster credential add smtp` (e.g. your Mailgun SMTP creds)".into());
     }
     let dir = paths::outbox_dir();
     let _ = std::fs::create_dir_all(&dir);
     let file = dir.join(format!(
         "{}-{}.json",
         now_rfc3339().replace(':', "-"),
-        imp.replace('/', "_")
+        worker.replace('/', "_")
     ));
-    let rendered = json!({ "from": imp, "to": to, "subject": subject, "body": body });
+    let rendered = json!({ "from": worker, "to": to, "subject": subject, "body": body });
     std::fs::write(
         &file,
         format!(
@@ -718,12 +718,12 @@ async fn exec_email(imp: &str, payload: &Value) -> Result<Value, String> {
     )
     .map_err(|e| e.to_string())?;
     eprintln!(
-        "email [{imp}] → {to:?}: {subject} (IMPYARD_EMAIL_SINK — wrote local sink, NOT sent)"
+        "email [{worker}] → {to:?}: {subject} (ROSTER_EMAIL_SINK — wrote local sink, NOT sent)"
     );
     Ok(json!({ "delivered": "local-sink", "to": to, "file": file.display().to_string() }))
 }
 
-/// SMTP settings from the vault (`~/.impyard/vault/smtp.json`), if present.
+/// SMTP settings from the vault (`~/.roster/vault/smtp.json`), if present.
 fn smtp_config() -> Option<crate::action::smtp::SmtpConfig> {
     let c = crate::credential::vault::get_credential("smtp")?;
     Some(crate::action::smtp::SmtpConfig {
@@ -739,7 +739,7 @@ fn smtp_config() -> Option<crate::action::smtp::SmtpConfig> {
 /// box edited files in runs/<run_id>/worktree; here — only after approval — we
 /// commit, push to the repo's origin, and open a PR. git push is direct (the
 /// gateway can't govern git's wire protocol); the box never touches any of it.
-fn exec_git_pr(imp: &str, run_id: &str, payload: &Value) -> Result<Value, String> {
+fn exec_git_pr(worker: &str, run_id: &str, payload: &Value) -> Result<Value, String> {
     if run_id.is_empty() {
         return Err("code-change has no run_id — cannot find the worktree".into());
     }
@@ -751,7 +751,7 @@ fn exec_git_pr(imp: &str, run_id: &str, payload: &Value) -> Result<Value, String
     let message = payload
         .get("message")
         .and_then(|v| v.as_str())
-        .unwrap_or("changes proposed by imp");
+        .unwrap_or("changes proposed by worker");
     let title = payload
         .get("title")
         .and_then(|v| v.as_str())
@@ -768,12 +768,12 @@ fn exec_git_pr(imp: &str, run_id: &str, payload: &Value) -> Result<Value, String
     if clean {
         return Err("no changes in the worktree to commit".into());
     }
-    let author = format!("user.name=impyard imp {imp}");
+    let author = format!("user.name=roster worker {worker}");
     git(&[
         "-C",
         &wt,
         "-c",
-        "user.email=imp@impyard.local",
+        "user.email=worker@roster.local",
         "-c",
         &author,
         "commit",
@@ -796,30 +796,30 @@ fn exec_git_pr(imp: &str, run_id: &str, payload: &Value) -> Result<Value, String
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => "branch pushed; open the PR from it".to_string(),
     };
-    eprintln!("git-pr [{imp}] pushed {branch} ({commit})");
+    eprintln!("git-pr [{worker}] pushed {branch} ({commit})");
     Ok(json!({ "branch": branch, "commit": commit, "pushed": true, "pr": pr }))
 }
 
-/// Overwrite an imp's identity, only after an admin approved the exact text
+/// Overwrite a worker's identity, only after an admin approved the exact text
 /// (D10). Trusted-side; the box never writes here (its repo mount is read-only).
-fn exec_identity(imp: &str, payload: &Value) -> Result<Value, String> {
+fn exec_identity(worker: &str, payload: &Value) -> Result<Value, String> {
     let content = payload
         .get("identity")
         .or_else(|| payload.get("charter"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
         .ok_or("identity-edit needs a non-empty \"identity\" field")?;
-    let short = imp.strip_prefix("org/").unwrap_or(imp);
+    let short = worker.strip_prefix("org/").unwrap_or(worker);
     let path = crate::run::boxed::identity_path(short);
     let dir = path.parent().ok_or("bad identity path")?;
     if !dir.exists() {
         return Err(format!(
-            "no imp directory {} — is \"{short}\" a real imp?",
+            "no worker directory {} — is \"{short}\" a real worker?",
             dir.display()
         ));
     }
     write_atomic(&path, content)?;
-    eprintln!("identity [{imp}] updated ({} bytes)", content.trim().len());
+    eprintln!("identity [{worker}] updated ({} bytes)", content.trim().len());
     Ok(json!({ "written": path.display().to_string(), "bytes": content.trim().len() }))
 }
 
@@ -868,8 +868,8 @@ fn git(args: &[&str]) -> Result<String, String> {
 
 /// A current-vs-proposed unified diff of a file (for `gates show` on an
 /// identity/purpose gate — the reviewer sees exactly what would change).
-pub fn identity_diff(imp: &str, proposed: &str) -> Option<String> {
-    let short = imp.strip_prefix("org/").unwrap_or(imp);
+pub fn identity_diff(worker: &str, proposed: &str) -> Option<String> {
+    let short = worker.strip_prefix("org/").unwrap_or(worker);
     file_diff(&crate::run::boxed::identity_path(short), proposed)
 }
 
@@ -883,7 +883,7 @@ fn file_diff(current: &std::path::Path, proposed: &str) -> Option<String> {
     } else {
         std::path::PathBuf::from("/dev/null")
     };
-    let tmp = std::env::temp_dir().join(format!("impyard-charter-{}.md", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("roster-charter-{}.md", std::process::id()));
     std::fs::write(&tmp, format!("{}\n", proposed.trim())).ok()?;
     let out = std::process::Command::new("git")
         .args(["diff", "--no-index", "--"])
@@ -919,7 +919,7 @@ pub fn worktree_diff(run_id: &str) -> Option<String> {
 
 /// Append an action decision to the shared audit log, alongside egress decisions.
 fn audit(
-    imp: &str,
+    worker: &str,
     intent: &str,
     disposition: &str,
     gate_id: Option<&str>,
@@ -931,7 +931,7 @@ fn audit(
         "decision_id": format!("act-{n:x}"),
         "ts": now_rfc3339(),
         "kind": "action",
-        "imp": imp,
+        "worker": worker,
         "intent": intent,
         "disposition": disposition,
         "gate_id": gate_id,

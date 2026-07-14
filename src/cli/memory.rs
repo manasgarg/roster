@@ -1,29 +1,29 @@
-//! `impyard imp memory` — admin inspection and repair of scoped
+//! `roster worker memory` — admin inspection and repair of scoped
 //! interaction memory. (Module name is the legacy storage name; the physical
 //! `notes/` → `memory/` migration finishes via `compact`.)
 
-use crate::imp::memory::{self, MemoryScope};
+use crate::worker::memory::{self, MemoryScope};
 use crate::util::BErr;
 
-pub fn compact(imp: &str) -> Result<(), BErr> {
-    crate::imp::require_imp(imp)?;
-    let kept = memory::compact(imp).map_err(|e| -> BErr { e.into() })?;
-    println!("compacted {imp} memory; kept {kept} live notes");
+pub fn compact(worker: &str) -> Result<(), BErr> {
+    crate::worker::require_worker(worker)?;
+    let kept = memory::compact(worker).map_err(|e| -> BErr { e.into() })?;
+    println!("compacted {worker} memory; kept {kept} live notes");
     Ok(())
 }
 
-pub fn ls(imp: &str, scope: Option<&str>, scope_id: Option<&str>) -> Result<(), BErr> {
-    crate::imp::require_imp(imp)?;
+pub fn ls(worker: &str, scope: Option<&str>, scope_id: Option<&str>) -> Result<(), BErr> {
+    crate::worker::require_worker(worker)?;
     let scope = match scope {
         None => None,
-        Some("imp") => Some(MemoryScope::Imp),
+        Some("worker") => Some(MemoryScope::Worker),
         Some("channel") => Some(MemoryScope::Channel),
         Some("user") => Some(MemoryScope::User),
         Some(other) => {
-            return Err(format!("unknown memory scope \"{other}\" (imp, channel, user)").into())
+            return Err(format!("unknown memory scope \"{other}\" (worker, channel, user)").into())
         }
     };
-    let notes: Vec<_> = memory::list(imp)
+    let notes: Vec<_> = memory::list(worker)
         .into_iter()
         .filter(|n| scope.as_ref().map(|s| &n.scope == s).unwrap_or(true))
         .filter(|n| {
@@ -33,7 +33,7 @@ pub fn ls(imp: &str, scope: Option<&str>, scope_id: Option<&str>) -> Result<(), 
         })
         .collect();
     if notes.is_empty() {
-        println!("no memories for {imp}");
+        println!("no memories for {worker}");
         return Ok(());
     }
     println!(
@@ -59,26 +59,26 @@ pub fn ls(imp: &str, scope: Option<&str>, scope_id: Option<&str>) -> Result<(), 
     Ok(())
 }
 
-pub fn show(imp: &str, id: &str) -> Result<(), BErr> {
-    crate::imp::require_imp(imp)?;
-    let note = memory::find(imp, id).ok_or_else(|| format!("no such memory {id}"))?;
+pub fn show(worker: &str, id: &str) -> Result<(), BErr> {
+    crate::worker::require_worker(worker)?;
+    let note = memory::find(worker, id).ok_or_else(|| format!("no such memory {id}"))?;
     println!("{}", serde_json::to_string_pretty(&note)?);
     Ok(())
 }
 
-pub fn mutate(op: &str, imp: &str, id: &str) -> Result<(), BErr> {
-    crate::imp::require_imp(imp)?;
-    memory::admin_mutate(imp, op, id, None).map_err(|e| -> BErr { e.into() })?;
+pub fn mutate(op: &str, worker: &str, id: &str) -> Result<(), BErr> {
+    crate::worker::require_worker(worker)?;
+    memory::admin_mutate(worker, op, id, None).map_err(|e| -> BErr { e.into() })?;
     println!("memory {id} → {op}");
     Ok(())
 }
 
-pub fn correct(imp: &str, id: &str, replacement: &str) -> Result<(), BErr> {
-    crate::imp::require_imp(imp)?;
+pub fn correct(worker: &str, id: &str, replacement: &str) -> Result<(), BErr> {
+    crate::worker::require_worker(worker)?;
     if replacement.trim().is_empty() {
         return Err("correct needs the replacement text".into());
     }
-    memory::admin_mutate(imp, "correct", id, Some(replacement))
+    memory::admin_mutate(worker, "correct", id, Some(replacement))
         .map_err(|e| -> BErr { e.into() })?;
     println!("memory {id} → correct");
     Ok(())

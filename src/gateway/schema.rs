@@ -110,7 +110,7 @@ pub struct Mcp {
 /// What the gateway saw, phrased as the judge's question.
 #[derive(Debug, Clone)]
 pub struct GovernedRequest {
-    pub imp: Option<String>,
+    pub worker: Option<String>,
     pub protocol: String,
     pub method: String,
     pub host: String,

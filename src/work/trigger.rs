@@ -1,6 +1,6 @@
 //! Schedule triggers — the proactive wake-up. A trigger fires on its
 //! interval by FILING a task (never doing work inline); the dispatcher then
-//! runs it like any other, budget-gated at dispatch. Read live from imp.toml
+//! runs it like any other, budget-gated at dispatch. Read live from worker.toml
 //! `[[trigger]]`; last-fired times persist in `<state>/trigger-state.json` so
 //! a restart doesn't double-fire. See docs/work.md.
 
@@ -13,8 +13,8 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Trigger {
-    /// Short imp name (the box's `--imp`).
-    pub imp: String,
+    /// Short worker name (the box's `--worker`).
+    pub worker: String,
     /// Interval like "every 30s", "10m", "1h", "24h", "7d".
     pub schedule: String,
     pub prompt: String,
@@ -74,7 +74,7 @@ fn save_state(state: &HashMap<String, i64>) {
 }
 
 fn key(t: &Trigger) -> String {
-    format!("{}|{}|{}", t.imp, t.schedule, t.prompt)
+    format!("{}|{}|{}", t.worker, t.schedule, t.prompt)
 }
 
 /// File a proactive task for every trigger whose interval has elapsed. Returns
@@ -91,14 +91,14 @@ pub fn fire() -> usize {
         let Some(interval) = parse_interval(&t.schedule) else {
             eprintln!(
                 "trigger for {}: unparseable schedule \"{}\" — skipped",
-                t.imp, t.schedule
+                t.worker, t.schedule
             );
             continue;
         };
         let last = state.get(&key(t)).copied().unwrap_or(0);
         if now - last >= interval {
             match crate::work::queue::create(
-                &t.imp,
+                &t.worker,
                 &t.prompt,
                 "schedule",
                 true,
@@ -113,10 +113,10 @@ pub fn fire() -> usize {
                     fired += 1;
                     eprintln!(
                         "trigger → queued {} for {} ({})",
-                        task.id, t.imp, t.schedule
+                        task.id, t.worker, t.schedule
                     );
                 }
-                Err(e) => eprintln!("trigger for {}: could not queue: {e}", t.imp),
+                Err(e) => eprintln!("trigger for {}: could not queue: {e}", t.worker),
             }
         }
     }

@@ -1,4 +1,4 @@
-//! The task-dispatch half of `impyard server start`: the trusted orchestration
+//! The task-dispatch half of `roster server start`: the trusted orchestration
 //! loop. It dispatches waiting tasks to the box (bounded concurrency), and when
 //! a run ends decides whether the task is done or needs review (it filed a
 //! gate). Runs beside the gateway in the same daemon, sharing the same on-disk
@@ -44,7 +44,7 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
             let Some(mut task) = queue::claim_next() else {
                 break;
             };
-            // D6: proactive work is soft-stopped when the imp is over budget;
+            // D6: proactive work is soft-stopped when the worker is over budget;
             // owner-filed/continuation work always runs.
             if task.proactive {
                 let limits = crate::gateway::budget::load_budget().limits;
@@ -62,15 +62,15 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
             task.run_id = Some(run_id.clone());
             let _ = queue::save(&task);
             let memory_context = task_memory_context(&task);
-            let _ = crate::imp::memory::save_run_context(&run_id, &memory_context);
+            let _ = crate::worker::memory::save_run_context(&run_id, &memory_context);
             eprintln!(
                 "dispatch {} [{}] run {run_id} — {}",
                 task.id,
-                task.imp,
+                task.worker,
                 first_line(&task.prompt)
             );
             let t = task.clone();
-            let context_task = crate::imp::context::TaskInput {
+            let context_task = crate::worker::context::TaskInput {
                 task_id: Some(task.id.clone()),
                 origin: task.origin.clone(),
                 text: task.prompt.clone(),
@@ -82,7 +82,7 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
                     base: t.base.clone().unwrap_or_else(|| "main".into()),
                 });
                 let spec = boxed::RunSpec {
-                    imp: &t.imp,
+                    worker: &t.worker,
                     run_id: &run_id,
                     task_id: &t.id,
                     ceiling_min: t.ceiling_min,
@@ -143,12 +143,12 @@ fn reclaim() {
     }
 }
 
-fn task_memory_context(task: &queue::Task) -> crate::imp::memory::RunContext {
+fn task_memory_context(task: &queue::Task) -> crate::worker::memory::RunContext {
     let d = task
         .context
         .get("discord")
         .unwrap_or(&serde_json::Value::Null);
-    crate::imp::memory::RunContext {
+    crate::worker::memory::RunContext {
         provider: if d.is_null() {
             String::new()
         } else {

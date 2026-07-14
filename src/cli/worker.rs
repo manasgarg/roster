@@ -1,4 +1,4 @@
-//! `impyard imp ls|show|trust` — the fleet, one imp, and its earned
+//! `roster worker ls|show|trust` — the fleet, one worker, and its earned
 //! trust. Computed from specs, ledgers, and records — never model-written.
 
 use crate::action;
@@ -6,19 +6,19 @@ use crate::action::gate;
 use crate::gateway::budget;
 use crate::gateway::ledger;
 use crate::gateway::scope::applies;
-use crate::imp::memory;
+use crate::worker::memory;
 use crate::paths;
 use crate::util::now_ms;
 use crate::util::BErr;
 use crate::work::queue;
 use std::collections::BTreeMap;
 
-fn imp_names() -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(paths::imps_dir())
+fn worker_names() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(paths::workers_dir())
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().join("imp.toml").exists())
+                .filter(|e| e.path().join("worker.toml").exists())
                 .map(|e| e.file_name().to_string_lossy().into_owned())
                 .collect()
         })
@@ -27,8 +27,8 @@ fn imp_names() -> Vec<String> {
     names
 }
 
-fn knowledge_head(imp: &str) -> Option<String> {
-    let repo = crate::imp::knowledge::repo_path(imp).ok()?;
+fn knowledge_head(worker: &str) -> Option<String> {
+    let repo = crate::worker::knowledge::repo_path(worker).ok()?;
     let out = std::process::Command::new("git")
         .arg(format!("--git-dir={}", repo.display()))
         .args(["rev-parse", "--short", "HEAD"])
@@ -40,16 +40,16 @@ fn knowledge_head(imp: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn queue_counts(imp: &str) -> BTreeMap<String, usize> {
+fn queue_counts(worker: &str) -> BTreeMap<String, usize> {
     let mut by_state = BTreeMap::new();
-    for t in queue::list_all().into_iter().filter(|t| t.imp == imp) {
+    for t in queue::list_all().into_iter().filter(|t| t.worker == worker) {
         *by_state.entry(t.state).or_insert(0) += 1;
     }
     by_state
 }
 
 pub fn ls(json: bool) -> Result<(), BErr> {
-    let names = imp_names();
+    let names = worker_names();
     if json {
         let rows: Vec<serde_json::Value> = names
             .iter()
@@ -57,7 +57,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
                 serde_json::json!({
                     "name": name,
                     "queue": queue_counts(name),
-                    "gates_pending": gate::for_imp(name).iter().filter(|g| g.state == "pending").count(),
+                    "gates_pending": gate::for_worker(name).iter().filter(|g| g.state == "pending").count(),
                     "memory_notes": memory::list(name).len(),
                     "knowledge_head": knowledge_head(name),
                 })
@@ -67,12 +67,12 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         return Ok(());
     }
     if names.is_empty() {
-        println!("no imps — scaffold one: impyard imp init <name>");
+        println!("no workers — scaffold one: roster worker init <name>");
         return Ok(());
     }
     println!(
         "{:<12}  {:<24}  {:<6}  {:<7}  KNOWLEDGE",
-        "IMP", "QUEUE", "GATES", "MEMORY"
+        "WORKER", "QUEUE", "GATES", "MEMORY"
     );
     for name in names {
         let counts = queue_counts(&name);
@@ -85,7 +85,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let gates = gate::for_imp(&name)
+        let gates = gate::for_worker(&name)
             .iter()
             .filter(|g| g.state == "pending")
             .count();
@@ -102,11 +102,11 @@ pub fn ls(json: bool) -> Result<(), BErr> {
 }
 
 pub fn show(name: &str, json: bool) -> Result<(), BErr> {
-    crate::imp::require_imp(name)?;
+    crate::worker::require_worker(name)?;
     let subject = format!("org/{name}");
 
-    // Budget: every limit that applies to this imp, with its current balance
-    // (the imp's own caps and the org-wide caps it rolls up into).
+    // Budget: every limit that applies to this worker, with its current balance
+    // (the worker's own caps and the org-wide caps it rolls up into).
     let limits: Vec<budget::Limit> = budget::load_budget()
         .limits
         .into_iter()
@@ -115,19 +115,19 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
     ledger::rehydrate(&limits);
     let balances = ledger::balances(&limits, now_ms());
 
-    let pending: Vec<_> = gate::for_imp(name)
+    let pending: Vec<_> = gate::for_worker(name)
         .into_iter()
         .filter(|g| g.state == "pending")
         .collect();
-    let triggers = imp_triggers(name);
+    let triggers = worker_triggers(name);
     let counts = queue_counts(name);
     let memory_notes = memory::list(name).len();
-    let knowledge = crate::imp::knowledge::repo_path(name).ok();
+    let knowledge = crate::worker::knowledge::repo_path(name).ok();
 
     if json {
         let out = serde_json::json!({
             "name": name,
-            "spec": paths::imp_dir(name).join("imp.toml").display().to_string(),
+            "spec": paths::worker_dir(name).join("worker.toml").display().to_string(),
             "queue": counts,
             "gates_pending": pending.iter().map(|g| serde_json::json!({"id": g.id, "intent": g.intent})).collect::<Vec<_>>(),
             "budget": balances.iter().map(|(l, used)| serde_json::json!({
@@ -142,14 +142,14 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
         return Ok(());
     }
 
-    println!("imp    {name}");
+    println!("worker    {name}");
     println!(
         "spec      {}",
-        paths::imp_dir(name).join("imp.toml").display()
+        paths::worker_dir(name).join("worker.toml").display()
     );
     println!(
         "identity  {}",
-        paths::imp_dir(name).join("identity.md").display()
+        paths::worker_dir(name).join("identity.md").display()
     );
     let queue_line = if counts.is_empty() {
         "empty".to_string()
@@ -201,27 +201,27 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
             knowledge_head(name).unwrap_or_else(|| "-".into())
         );
     }
-    println!("\ntrust: impyard imp trust {name}   work: impyard imp task ls");
+    println!("\ntrust: roster worker trust {name}   work: roster worker task ls");
     Ok(())
 }
 
-fn imp_triggers(name: &str) -> Vec<serde_json::Value> {
+fn worker_triggers(name: &str) -> Vec<serde_json::Value> {
     crate::config::snapshot()
         .map(|c| {
             c.triggers
                 .iter()
-                .filter(|t| t.get("imp").and_then(|w| w.as_str()) == Some(name))
+                .filter(|t| t.get("worker").and_then(|w| w.as_str()) == Some(name))
                 .cloned()
                 .collect()
         })
         .unwrap_or_default()
 }
 
-/// Per-action trust, read-only: what the imp may propose, the default level,
+/// Per-action trust, read-only: what the worker may propose, the default level,
 /// the owner's ladder rules, and the earned history behind them. Trust is never
 /// set here — it is earned through gate outcomes; grants live in the specs.
 pub fn trust(name: &str, json: bool) -> Result<(), BErr> {
-    crate::imp::require_imp(name)?;
+    crate::worker::require_worker(name)?;
     let subject = format!("org/{name}");
     let policy = action::load_action_policy();
 
@@ -295,6 +295,6 @@ pub fn trust(name: &str, json: bool) -> Result<(), BErr> {
             );
         }
     }
-    println!("\npromotion is admin-only: rules live in org.toml / imp.toml; a denial revokes earned auto");
+    println!("\npromotion is admin-only: rules live in org.toml / worker.toml; a denial revokes earned auto");
     Ok(())
 }

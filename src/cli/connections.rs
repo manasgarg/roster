@@ -1,13 +1,13 @@
-//! `impyard connection add <service>` — the whole connection choreography in
+//! `roster connection add <service>` — the whole connection choreography in
 //! one command: catalog lookup, login flow, vault store, and a scaffolded
 //! `connections/<name>.toml` the admin owns from then on. And
-//! `impyard connection ls` — the inventory.
+//! `roster connection ls` — the inventory.
 
 use crate::util::BErr;
 use serde_json::Value;
 
 pub struct ConnectOptions {
-    pub imps: Vec<String>,
+    pub workers: Vec<String>,
     pub org: bool,
     pub alias: Option<String>,
     pub hosts: Vec<String>,
@@ -18,7 +18,7 @@ pub struct ConnectOptions {
 
 pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BErr> {
     let ConnectOptions {
-        imps,
+        workers,
         org,
         alias,
         hosts: host_overrides,
@@ -49,12 +49,12 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
         let auth = p.get("auth").and_then(Value::as_str).unwrap_or("");
         if matches!(auth, "discord" | "smtp" | "slack") {
             return Err(format!(
-                "\"{service}\" is host-side infrastructure, not an imp service connection — run: impyard credential add {service}"
+                "\"{service}\" is host-side infrastructure, not a worker service connection — run: roster credential add {service}"
             )
             .into());
         }
         return Err(format!(
-            "\"{service}\" supplies authentication but is not an imp service connection — run: impyard credential add {service}"
+            "\"{service}\" supplies authentication but is not a worker service connection — run: roster credential add {service}"
         )
         .into());
     }
@@ -115,19 +115,19 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
         None => None,
     };
 
-    // Scope: flags win; otherwise ask. Per-imp is the default posture —
+    // Scope: flags win; otherwise ask. Per-worker is the default posture —
     // a connection is a capability granted to an identity, not to the fleet.
     let known = match crate::config::snapshot() {
-        Ok(c) => c.imps.clone(),
+        Ok(c) => c.workers.clone(),
         Err(e) => return Err(format!("config must load before connecting a service:\n{e}").into()),
     };
-    let scope_imps: Option<Vec<String>> = if org {
+    let scope_workers: Option<Vec<String>> = if org {
         None
-    } else if !imps.is_empty() {
-        Some(imps)
+    } else if !workers.is_empty() {
+        Some(workers)
     } else {
         let answer = crate::credential::connect::ask(&format!(
-            "for which imp(s)? ({}, comma-separated, or \"org\" for org-wide): ",
+            "for which worker(s)? ({}, comma-separated, or \"org\" for org-wide): ",
             known.join(", ")
         ))?;
         if answer.trim() == "org" {
@@ -142,13 +142,13 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
             )
         }
     };
-    if let Some(list) = &scope_imps {
+    if let Some(list) = &scope_workers {
         if list.is_empty() {
-            return Err("no imps named — nothing to grant".into());
+            return Err("no workers named — nothing to grant".into());
         }
         for w in list {
             if !known.contains(w) {
-                return Err(format!("no such imp \"{w}\" (have: {})", known.join(", ")).into());
+                return Err(format!("no such worker \"{w}\" (have: {})", known.join(", ")).into());
             }
         }
     }
@@ -169,10 +169,10 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
         println!("kept    {} (edit it to change hosts/scope)", path.display());
     } else {
         std::fs::create_dir_all(&dir)?;
-        let scope_line = match &scope_imps {
+        let scope_line = match &scope_workers {
             None => "scope = \"org\"".to_string(),
             Some(list) => format!(
-                "imps = [{}]",
+                "workers = [{}]",
                 list.iter()
                     .map(|w| format!("\"{w}\""))
                     .collect::<Vec<_>>()
@@ -202,7 +202,7 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
         std::fs::write(
             &path,
             format!(
-                "# Connection \"{name}\" — scaffolded by `impyard connection add`, yours to edit.\n\
+                "# Connection \"{name}\" — scaffolded by `roster connection add`, yours to edit.\n\
                  # Compiles live into: an egress grant for these hosts/methods (evaluated\n\
                  # before hand-written grants), credential injection in transit, and the env\n\
                  # var below set in the box (to a sentinel; the secret never enters the box).\n\
@@ -225,7 +225,7 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
                 println!("warning: {w}");
             }
             if let Some(conn) = c.connections.iter().find(|c| c.name == name) {
-                let scope = match &conn.imps {
+                let scope = match &conn.workers {
                     None => "org-wide".to_string(),
                     Some(l) => l.join(", "),
                 };
@@ -315,7 +315,7 @@ fn print_catalog(registry: &serde_json::Map<String, Value>) -> Result<(), BErr> 
         .collect();
     names.sort();
     println!(
-        "Services (impyard connection add <service> [--imp <name>].. [--org] [--name <name>]):"
+        "Services (roster connection add <service> [--worker <name>].. [--org] [--name <name>]):"
     );
     let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
     for n in names {
@@ -330,8 +330,8 @@ fn print_catalog(registry: &serde_json::Map<String, Value>) -> Result<(), BErr> 
             meta["env"].as_str().unwrap_or("?")
         );
     }
-    println!("\nModel and channel credentials: impyard credential add <provider>");
-    println!("Any other service: impyard connection add <name> --host <hostname>");
+    println!("\nModel and channel credentials: roster credential add <provider>");
+    println!("Any other service: roster connection add <name> --host <hostname>");
     Ok(())
 }
 
@@ -339,7 +339,7 @@ pub fn catalog() -> Result<(), BErr> {
     print_catalog(&crate::credential::registry::registry_json())
 }
 
-/// `impyard connection ls` — every connection, its scope, and its state.
+/// `roster connection ls` — every connection, its scope, and its state.
 pub fn ls(json: bool) -> Result<(), BErr> {
     let c = crate::config::snapshot().map_err(|e| format!("config invalid:\n{e}"))?;
     if json {
@@ -349,7 +349,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             .map(|c| {
                 serde_json::json!({
                     "name": c.name, "provider": c.provider,
-                    "imps": c.imps, "hosts": c.hosts,
+                    "workers": c.workers, "hosts": c.hosts,
                     "methods": c.methods, "env": c.env, "enabled": c.enabled,
                 })
             })
@@ -358,7 +358,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         return Ok(());
     }
     if c.connections.is_empty() {
-        println!("no connections — see the catalog: impyard connection catalog");
+        println!("no connections — see the catalog: roster connection catalog");
         return Ok(());
     }
     println!(
@@ -366,7 +366,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         "CONNECTION", "PROVIDER", "SCOPE", "HOSTS", "ENV"
     );
     for conn in &c.connections {
-        let scope = match &conn.imps {
+        let scope = match &conn.workers {
             None => "org".to_string(),
             Some(l) => l.join(","),
         };

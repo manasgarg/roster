@@ -1,12 +1,12 @@
-//! `impyard imp chat <name>` — an interactive warm session: run one rpc box
+//! `roster worker chat <name>` — an interactive warm session: run one rpc box
 //! and feed it messages from stdin, one per line. For working with (and
 //! testing) the multi-message session without a channel in front.
 
 use crate::run::boxed;
 use crate::util::BErr;
 
-pub async fn chat(imp: &str, idle: u64) -> Result<(), BErr> {
-    crate::imp::require_imp(imp)?;
+pub async fn chat(worker: &str, idle: u64) -> Result<(), BErr> {
+    crate::worker::require_worker(worker)?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<boxed::SessionMessage>(32);
     let reader = tokio::spawn(async move {
@@ -19,7 +19,7 @@ pub async fn chat(imp: &str, idle: u64) -> Result<(), BErr> {
             let msg = boxed::SessionMessage {
                 text: l,
                 author_label: "stdin".into(),
-                context: crate::imp::memory::RunContext::default(),
+                context: crate::worker::memory::RunContext::default(),
             };
             if tx.send(msg).await.is_err() {
                 break;
@@ -30,10 +30,10 @@ pub async fn chat(imp: &str, idle: u64) -> Result<(), BErr> {
 
     let run_id = boxed::new_run_id();
     boxed::run_session(
-        imp,
+        worker,
         &run_id,
-        crate::imp::context::RunSurface::DirectBox,
-        crate::imp::memory::RunContext::default(),
+        crate::worker::context::RunSurface::DirectBox,
+        crate::worker::memory::RunContext::default(),
         rx,
         idle,
     )

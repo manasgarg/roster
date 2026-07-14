@@ -1,4 +1,4 @@
-# The box: a CAPABLE machine behind a governed door (docs/capable-box.md).
+# The box: a CAPABLE machine behind a governed door (docs/box.md).
 # Tools are baked in deliberately — on the NAT-less network more binaries add
 # no egress power, and a missing tool is an illegible "no" that belongs to the
 # gateway instead. pi + the box extensions are baked at the version pinned by

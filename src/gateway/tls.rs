@@ -1,6 +1,6 @@
 //! TLS termination: a rustls server that mints a leaf cert per SNI hostname
 //! from our CA, so the gateway can decrypt whatever host the box dials.
-//! Ports the SNICallback in `src/gateway.ts`. See docs/rust-port.md (P1).
+//! See docs/gateway.md.
 
 use crate::gateway::ca::Ca;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};

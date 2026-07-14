@@ -3,7 +3,7 @@
 //! it to the imp (identity token on the CONNECT, un-spoofable), checks the
 //! admin's action grants + the trust ladder, and either executes it now (auto)
 //! or files a durable gate. Executors run trusted-side and hold the real
-//! credentials the box never sees. See docs/supervisor-spec.md.
+//! credentials the box never sees. See docs/actions-and-trust.md.
 
 pub mod gate;
 pub mod smtp;
@@ -488,7 +488,7 @@ pub async fn run_executor(
 /// run queues durable work instead of writing records. The filed task is
 /// imp-only by construction (context: null — no channel, no participants),
 /// so it runs clean with a writable knowledge mount. The prompt is the entire
-/// crossing, and the participant scan polices it (docs/knowledge-boundary.md).
+/// crossing, and the participant scan polices it (docs/knowledge.md).
 fn exec_file_task(imp: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
     if run_id.is_empty() {
         return Err("file-task needs a trusted run context".into());

@@ -1,8 +1,8 @@
-//! Schedule triggers — the proactive wake-up (§3.5). A trigger fires on its
-//! interval by FILING a task (never doing work inline); the supervisor then
-//! dispatches it like any other, and D6 budget-gates it at dispatch. Compiled
-//! from imp.toml `[[trigger]]` into runs/compiled/triggers.json; last-fired
-//! times persist in queue/.trigger-state.json so a restart doesn't double-fire.
+//! Schedule triggers — the proactive wake-up. A trigger fires on its
+//! interval by FILING a task (never doing work inline); the dispatcher then
+//! runs it like any other, budget-gated at dispatch. Read live from imp.toml
+//! `[[trigger]]`; last-fired times persist in `<state>/trigger-state.json` so
+//! a restart doesn't double-fire. See docs/work.md.
 
 use crate::paths;
 use crate::util::now_ms;

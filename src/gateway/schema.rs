@@ -1,5 +1,5 @@
-//! The policy schema (mirrors `src/schema.ts`) plus the runtime GovernedRequest
-//! the judge evaluates and the call log records. See docs/rust-port.md (P2).
+//! The policy schema plus the runtime GovernedRequest the judge evaluates
+//! and the call log records. See docs/gateway.md.
 
 use serde::Deserialize;
 use std::collections::HashMap;

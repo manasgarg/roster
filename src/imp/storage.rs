@@ -14,7 +14,7 @@ pub struct KnowledgePolicy {
     pub max_repo_bytes: u64,
     pub checkpoint_on_clean_exit: bool,
     pub reorganization_requires_exclusive_lease: bool,
-    /// The memory/knowledge boundary (docs/knowledge-boundary.md):
+    /// The memory/knowledge boundary (docs/knowledge.md):
     /// "clean-room" — only untainted runs get a writable knowledge mount
     /// (tainted runs read-only, clean runs recall-free); "any-run" — legacy
     /// behavior, participant scanning only.

@@ -1,9 +1,8 @@
-//! Host-minted CA + per-host leaf minting (the Rust port of `src/ca.ts`).
+//! Host-minted CA + per-host leaf minting.
 //!
-//! The CA key lives at `~/.impyard/ca` (override with `IMPYARD_CA_DIR`), never on
+//! The CA key lives at `<data>/ca` (override with `IMPYARD_CA_DIR`), never on
 //! the box. Per-host leaf certs are minted on demand and signed by the CA so the
-//! gateway can terminate TLS for any host the box dials. `rcgen` replaces the
-//! `openssl` shell-outs the TS version used. See docs/rust-port.md (P0).
+//! gateway can terminate TLS for any host the box dials. See docs/gateway.md.
 
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
 use std::error::Error;

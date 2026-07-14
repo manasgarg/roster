@@ -1,8 +1,8 @@
-//! The task queue — one durable per-imp list the supervisor dispatches from
-//! (§3.6). Tasks are files under `queue/<imp>/<id>.json`; the state field
+//! The task queue — one durable per-imp list the dispatcher works from.
+//! Tasks are files under `<data>/imps/<name>/queue/<id>.json`; the state field
 //! drives the lifecycle `waiting → running → needs-review | done | failed`.
-//! Owned locally (not a GitHub mirror, Q3): core control flow stays off any
-//! external dependency. See docs/supervisor-spec.md.
+//! Owned locally (not a GitHub mirror): core control flow stays off any
+//! external dependency. See docs/work.md.
 
 use crate::paths;
 use crate::util::now_rfc3339;

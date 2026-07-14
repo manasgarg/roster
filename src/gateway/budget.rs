@@ -1,6 +1,6 @@
 //! Metering: map each governed call to a spend vector across admin-defined
-//! currencies, via CEL expressions over the call context. B1 — computes and
-//! logs spend; enforcement (limits + ledger) is B2. See docs/budget-spec.md.
+//! currencies, via CEL expressions over the call context. Enforcement
+//! (limits + the ledger) lives in ledger.rs. See docs/gateway.md.
 
 use crate::gateway::schema::GovernedRequest;
 use cel_interpreter::{Context, Program, Value as Cel};

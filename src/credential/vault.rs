@@ -1,8 +1,8 @@
-//! The vault + injection (ports `src/vault.ts`). Credentials live at
+//! The vault + injection. Credentials live at
 //! `<data>/vault/<name>.json` (override `IMPYARD_VAULT_DIR`), never mounted.
 //! `get_fresh_credential` refreshes an expired OAuth token before returning it
-//! (single-flight per credential, atomic write, audit to runs/credentials.jsonl,
-//! fail-closed). See docs/rust-port.md (P3).
+//! (single-flight per credential, atomic write, audit to audit/credentials.jsonl,
+//! fail-closed). See docs/gateway.md.
 
 use crate::credential::providers;
 use crate::gateway::proxy::BErr;

@@ -9,7 +9,7 @@
  *
  * The response tells the imp exactly what happened: done, or pending a gate
  * (with the gate id, so it can be tracked across runs). See
- * docs/supervisor-spec.md.
+ * docs/actions-and-trust.md.
  */
 
 const ACTION_URL = "https://actions.impyard.internal/submit";

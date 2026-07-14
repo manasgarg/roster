@@ -1,5 +1,5 @@
 //! The participant scan — police for the memory/knowledge boundary
-//! (docs/knowledge-boundary.md). Generic PII detection is mushy; impyard has
+//! (docs/knowledge.md). Generic PII detection is mushy; impyard has
 //! an unfair advantage: the host knows exactly who was in a run. Markers are
 //! the run's own channel participants (ids + display names from the channel
 //! history) plus chat-mention syntax. Applied at the two crossing points:

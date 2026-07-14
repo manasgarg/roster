@@ -2,7 +2,7 @@
 //! (src/providers.default.json); the admin can override or add providers in
 //! `<config>/providers.toml` — a top-level table per provider, replacing the
 //! default entry wholesale. Shared by `credential add` and the gateway
-//! (refresh constants + the inject spec). See docs/injection-spec.md.
+//! (refresh constants + the inject spec). See docs/gateway.md.
 
 use crate::paths;
 use serde::Deserialize;

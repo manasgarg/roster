@@ -1,0 +1,46 @@
+# Impyard documentation
+
+Impyard runs **imps** — software colleagues that keep working when you're
+not watching — inside governance machinery you own: a default-deny gateway,
+injected credentials, budgets as ledgers, human approval gates, earned
+trust, and a permanent audit record. *Rent the intelligence; own the
+governance.*
+
+## Start here
+
+- **[Getting started](getting-started.md)** — from a fresh machine to a
+  working, governed imp.
+- **[Architecture](architecture.md)** — the trust boundary, the one daemon,
+  and the life of a task.
+- **[The security model](security.md)** — the threat model, the mechanisms,
+  the invariants, and the honest limits.
+
+## The machinery
+
+- **[The gateway](gateway.md)** — the one door: policy rules, TLS
+  interception, credential injection, budgets and metering, the decision
+  record.
+- **[Actions, gates, and trust](actions-and-trust.md)** — propose/approve/
+  execute, the approval desk, and the earned-trust ladder.
+- **[Work](work.md)** — the durable task queue, schedules, code tasks, and
+  the run log.
+- **[Channels](channels.md)** — Discord and Slack: authority, response
+  modes, warm sessions, purposes.
+- **[The box](box.md)** — the locked-down container: no route, no secrets,
+  a real toolbelt.
+
+## What an imp knows
+
+- **[Interaction memory](memory.md)** — scoped, consent-governed memory of
+  people and conversations.
+- **[Knowledge](knowledge.md)** — the git-backed world-knowledge store, and
+  the boundary that keeps person-data out of it.
+- **[Compiled context](context.md)** — exactly what each run sees, traced
+  byte-for-byte.
+
+## Reference
+
+- **[Configuration](configuration.md)** — every file and key.
+- **[CLI](cli.md)** — the full command tree.
+- **[Connections](connections.md)** — granting service capabilities.
+- **[On-disk layout](layout.md)** — the three roots and the backup story.

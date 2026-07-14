@@ -1,5 +1,5 @@
 //! Slack — the Web API client for outbound messages and the Socket Mode
-//! (WebSocket) client for inbound (docs/slack-channel.md). Trusted-side code
+//! (WebSocket) client for inbound (docs/channels.md). Trusted-side code
 //! holds both tokens (from the vault); the box never does. Socket Mode keeps
 //! impyard's posture: dial out, never listen on the internet. Base URL is
 //! overridable via SLACK_API_BASE so the executor can be tested against a mock.

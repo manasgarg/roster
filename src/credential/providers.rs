@@ -1,5 +1,5 @@
-//! OAuth refresh, driven by the shared provider registry (providers.json) — no
-//! dependency on pi's code. See docs/injection-spec.md, docs/rust-port.md.
+//! OAuth refresh, driven by the shared provider registry — no dependency on
+//! pi's code. See docs/gateway.md.
 
 use crate::credential::registry;
 use crate::gateway::proxy::BErr;

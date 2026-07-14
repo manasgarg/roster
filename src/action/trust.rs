@@ -2,7 +2,7 @@
 //! runs automatically or waits for a human. T0 (the default) gates every
 //! irreversible; the admin promotes an intent to `auto`, optionally narrowed by
 //! a predicate over the action payload (e.g. recipient `*@ourco.com`). Trust is
-//! earned upward and revocable. See docs/supervisor-spec.md.
+//! earned upward and revocable. See docs/actions-and-trust.md.
 
 use crate::gateway::judge::glob_matches;
 use crate::gateway::scope::applies;

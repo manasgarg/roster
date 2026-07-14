@@ -16,12 +16,12 @@ const STARTER_ORG: &str = r#"# Impyard org config — ADMIN-ONLY. Applies to eve
 # Egress grants shared by all imps, e.g.:
 # [[grant]]
 # name = "web-fetch"
-# host = "*"
-# methods = ["GET"]
+# match = { host = "*", method = "GET" }
+# verdict = "allow"
 
 # Actions imps may propose ([[action]]), the trust ladder ([[trust]]),
-# and budgets ([budget] + [[budget.limit]]) — see docs/cli.md and org.toml
-# in an existing deployment for worked examples.
+# and budgets ([budget] + [[budget.limit]]) — see docs/configuration.md
+# for the full reference and worked examples.
 "#;
 
 pub fn run() -> Result<(), BErr> {

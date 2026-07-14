@@ -1,7 +1,6 @@
 //! The budget ledger: in-memory currency counters the gateway checks and
-//! debits, backed by an append-only `runs/usage.jsonl` (source of truth,
-//! rehydrated on boot). B2 — enforcement on un-falsifiable count currencies,
-//! org-global scope. See docs/budget-spec.md.
+//! debits, backed by an append-only `audit/usage.jsonl` (source of truth,
+//! rehydrated on boot). See docs/gateway.md.
 
 use crate::gateway::budget::{Limit, Window};
 use crate::util::{now_ms, now_rfc3339};

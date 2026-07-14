@@ -2,7 +2,7 @@
 //! loop. It dispatches waiting tasks to the box (bounded concurrency), and when
 //! a run ends decides whether the task is done or needs review (it filed a
 //! gate). Runs beside the gateway in the same daemon, sharing the same on-disk
-//! state. See docs/supervisor-spec.md.
+//! state. See docs/work.md.
 
 use crate::action::gate;
 use crate::gateway::ledger;

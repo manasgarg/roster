@@ -3,7 +3,7 @@
 //! state machine: `pending → approved → executing → executed | failed`, or
 //! `pending → denied`. Trusted-side and un-writable by the box: the executor
 //! acts only on a real gate here, never on the journal. See
-//! docs/supervisor-spec.md.
+//! docs/actions-and-trust.md.
 
 use crate::paths;
 use crate::util::now_rfc3339;

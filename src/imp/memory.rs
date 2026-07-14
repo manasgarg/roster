@@ -128,7 +128,7 @@ pub struct RunContext {
 impl RunContext {
     /// Did interaction content or context enter this run? Tainted runs get
     /// knowledge read-only; clean runs get no memory recall — the two halves
-    /// of the memory/knowledge boundary (docs/knowledge-boundary.md). One
+    /// of the memory/knowledge boundary (docs/knowledge.md). One
     /// predicate, shared by provisioning and context compilation.
     pub fn tainted(&self) -> bool {
         self.channel_id.is_some() || self.user_id.is_some() || self.inbound

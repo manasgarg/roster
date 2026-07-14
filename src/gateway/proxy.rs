@@ -1,8 +1,6 @@
 //! The proxy core: accept a connection, answer /healthz, and for CONNECT either
 //! raw-tunnel (the `tunnel` verdict, for cert-pinning clients) or terminate TLS
-//! and judge each decrypted request before forwarding. Ports the server +
-//! judge + forward loop in `src/gateway.ts`. Injection/refresh land in P3.
-//! See docs/rust-port.md (P2).
+//! and judge each decrypted request before forwarding. See docs/gateway.md.
 
 use crate::credential::vault;
 use crate::gateway::ca::Ca;

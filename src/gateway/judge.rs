@@ -1,6 +1,5 @@
 //! The judge: pure `(request, policy) -> verdict`. First matching rule wins;
-//! no match denies. Ports `src/judge.ts` exactly (structured matcher; CEL comes
-//! with the metering increment, D18). See docs/rust-port.md (P2).
+//! no match denies. See docs/gateway.md.
 
 use crate::gateway::schema::{GovernedRequest, Match, Policy, Verdict};
 

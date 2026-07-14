@@ -1,7 +1,7 @@
 //! The imp journal — the shared, append-only timeline every actor writes to
 //! (box, gateway, approval desk, executors). One file per imp,
-//! `state/imps/<name>/journal/events.jsonl`. It is the imp's *view* of its own
-//! history and gate state (see docs/supervisor-spec.md, "Visibility"); it is
+//! `<data>/imps/<name>/journal/events.jsonl`. It is the imp's *view* of its own
+//! history and gate state (see docs/actions-and-trust.md); it is
 //! never an enforcement input — the authoritative state is the gates/ store.
 
 use crate::paths;

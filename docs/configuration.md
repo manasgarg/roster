@@ -1,0 +1,232 @@
+# Configuration reference
+
+All configuration is hand-edited TOML under the config root
+(`~/.config/impyard`), read **live**: edits take effect on the next read,
+there is no deploy step, and `impyard server validate` runs the exact
+loader the daemon uses and prints every error, not just the first. Broken
+config fails closed — the gateway denies, dispatch pauses, `server start`
+refuses to boot.
+
+The files:
+
+```
+org.toml                 org-wide policy: grants, actions, trust, budgets,
+                         memory/knowledge/context policy
+imps/<name>/imp.toml     one imp: channels, triggers, overlays
+imps/<name>/identity.md  who the imp is (prose, not config)
+connections/<name>.toml  one service capability (usually wizard-written)
+providers.toml           optional overlay on the built-in provider registry
+```
+
+One rule to know: `scope` is never hand-written. The loader tags everything
+in `org.toml` as org-wide and everything in an imp's file as that imp's,
+and rules, budgets, and trust all match subjects by ancestry.
+
+Config that grants nothing is safe by default: no grants means no egress,
+no actions means no proposals, no limits means no caps (the default-deny
+judge is the security floor; budgets are an opt-in ceiling).
+
+## org.toml
+
+### `[engine]`
+
+| key | default | meaning |
+|---|---|---|
+| `dir` | unset | Dev override: mount this checkout read-only over the engine baked into the box image. Unset is the normal, production posture. |
+
+### `[[grant]]` — egress rules
+
+Ordered; first match wins; no match denies. See [gateway.md](gateway.md)
+for the full match vocabulary and semantics.
+
+```toml
+[[grant]]
+name    = "model-api"
+match   = { host = ["chatgpt.com", "api.anthropic.com"], port = 443 }
+verdict = "allow"                      # allow | deny | tunnel
+inject  = { credential = "openai-codex" }
+```
+
+| key | required | meaning |
+|---|---|---|
+| `name` | yes | The rule's name — budgets, trust, and audit lines bind to it |
+| `match` | no (default: match everything) | Nested table: `protocol`, `host`, `port`, `method`, `pathPrefix`, `headerContains`, `maxBodySize`, `mcp = { method, tool }`; scalars or arrays |
+| `verdict` | yes | `allow`, `deny`, or `tunnel` |
+| `inject` | no | `{ credential = "<vault name>", provider?, headers? }` — swap the box's sentinel for the real credential in transit |
+
+### `[[action]]` — what an imp may propose
+
+```toml
+[[action]]
+name     = "email-send"
+executor = "email"
+trust    = "gate"            # default; "auto" skips the desk
+wake_on_resolve = true       # file a continuation task when the gate resolves
+```
+
+Executors: `message-user`, `email`, `git-pr`, `identity`, `purpose`,
+`discord`, `slack`, `task`, `note`. An intent with no grant is refused, not
+gated. See [actions-and-trust.md](actions-and-trust.md).
+
+### `[[trust]]` — the ladder
+
+```toml
+[[trust]]
+intent = "email-send"
+match  = { to = "*@ourco.com" }   # glob predicates over the payload
+level  = "earned"                 # auto | gate | earned
+after  = 10                       # earned: auto after N clean approvals
+```
+
+First matching rule decides. Every `match` field must hold, and a list
+payload field matches only if *every* element does. `earned` promotes to
+auto after `after` (default 5) executed gates with zero denials — one
+denial revokes it. No rule → the action grant's own `trust` default.
+
+### `[budget]` — currencies, meters, limits
+
+```toml
+[budget]
+currencies = ["usd", "model_calls"]
+vars       = { price = { model_call = 0.05 } }
+
+[[budget.meter]]
+match = 'decision.rule == "model-api"'
+spend = { model_calls = "1", usd = "vars.price.model_call" }
+
+[[budget.limit]]
+currency = "usd"
+window   = "day"          # minute | hour | day | month
+max      = 20.0
+```
+
+Meters are CEL over `request`, `decision`, `subject`, `vars`. Limits at org
+scope cap the whole fleet; per-imp limits go in the imp's file. Details and
+enforcement semantics in [gateway.md](gateway.md).
+
+### `[[expose]]` — sentinel env vars
+
+```toml
+[[expose]]
+credential = "github"     # must exist in the vault (fail-closed)
+env        = "GH_TOKEN"   # set in the box, to the sentinel value
+```
+
+Gives box tools an env var that *looks* authenticated; the gateway injects
+the real value only where a grant's injection applies. Reserved names
+(`HOME`, the proxy/CA variables, anything starting `IMPYARD_`) are
+rejected, as are overlapping-scope duplicates. Connections write these for
+you — hand-written exposes are for credentials outside the connection
+model.
+
+### `[context]` — prompt budgets (characters)
+
+| key | default |
+|---|---|
+| `max_injected_chars` | 48000 |
+| `identity_max_chars` | 12000 |
+| `purpose_max_chars` | 8000 |
+| `briefing_max_chars` | 4000 |
+| `task_max_chars` | 24000 |
+
+Mandatory blocks fail rather than truncate; see [context.md](context.md).
+
+### `[knowledge]`
+
+| key | default | meaning |
+|---|---|---|
+| `enabled` | `true` | |
+| `write_from` | `"clean-room"` | `"clean-room"`: only runs without person-data may write; `"any-run"`: scan-only legacy behavior |
+| `normal_mode` | `"append"` | the only supported value |
+| `max_file_chars` | 200000 | per-record cap |
+| `max_repo_bytes` | 1000000000 | repo size cap |
+| `checkpoint_on_clean_exit` | `true` | integrate on clean exit |
+| `reorganization_requires_exclusive_lease` | `true` | must stay `true` |
+
+### `[memory]`
+
+| key | default | meaning |
+|---|---|---|
+| `enabled` | `true` | |
+| `allowed_kinds` | all four | subset of `preference`, `fact`, `decision`, `interaction` |
+| `max_note_chars` | 2000 | |
+| `max_notes_per_scope` | 100 | |
+| `recall_max_notes` | 20 | |
+| `recall_char_budget` | 6000 | |
+| `max_retention_days` | unset | notes expire after this many days |
+| `allow_inferred_user_auto` | `false` | inferred personal facts save without review |
+| `allow_imp_auto` | `false` | imp-wide notes save without review |
+| `cross_channel_user_recall` | `false` | recall a user's memory outside its home channel |
+| `user_memory_in_groups` | `false` | recall user memory in group contexts |
+
+## imps/\<name\>/imp.toml
+
+```toml
+name = "yuko"                # must equal the folder name
+
+[channels]
+discord = "discord"          # vault credential for its bot (also: slack = "…")
+
+[[trigger]]
+schedule    = "every 1h"     # interval: s / m / h / d — not cron
+prompt      = "check the feeds and file anything worth deeper work"
+ceiling_min = 20
+
+[[budget.limit]]             # per-imp cap (limits only; currencies,
+currency = "model_calls"     # vars, and meters are org-level)
+window   = "hour"
+max      = 60
+```
+
+An imp's file may also carry its own `[[grant]]`, `[[action]]`,
+`[[trust]]`, `[[expose]]`, and `[memory]`/`[context]`/`[knowledge]`
+overlays. Overlays merge over org defaults; the knowledge overlay can only
+narrow (disable features, reduce limits) — it cannot re-enable, raise, or
+relax what the org set. Two imps cannot bind the same channel credential.
+
+`identity.md` sits next to it: owner-authored prose defining who the imp
+is, composed into every run, editable by admins — imp-proposed edits always
+gate ([actions-and-trust.md](actions-and-trust.md)).
+
+## connections/\<name\>.toml
+
+Usually written by `impyard connection add`; hand-editable after. The file
+stem is the vault credential name.
+
+| key | required | meaning |
+|---|---|---|
+| `provider` | yes | registry entry (login flow + inject template), or any name if inline inject is given |
+| `imps` / `scope` | one of the two | `imps = ["yuko"]` grants per-imp; `scope = "org"` grants fleet-wide |
+| `hosts` | yes | allowed hostnames |
+| `methods` | no (default `["GET"]`) | allowed HTTP methods — writes are a deliberate edit |
+| `env` | yes | the sentinel env var the box sees |
+| `inject_header` / `inject_value` | together | custom injection, e.g. `"private-token"` / `"{token}"` |
+
+A connection whose secret is missing from the vault is **disabled** — grant
+and exposure omitted, loud warning in `validate` and `connection ls` — not
+a fatal config error. See [connections.md](connections.md).
+
+## providers.toml
+
+The binary ships a provider registry: `openai-codex` and `anthropic`
+(OAuth model providers), `github`, `gitlab`, `notion`, `linear`,
+`slack-api` (token services with catalog presets), and `discord`, `slack`,
+`smtp` (host-side channel/email infrastructure). `providers.toml` overlays
+it — one top-level table per provider, each entry **replacing** that
+provider's default wholesale:
+
+```toml
+[acme]
+auth = "api_key"
+inject = [{ header = "authorization", value = "Bearer {key}" }]
+connection = { hosts = ["api.acme.com"], env = "ACME_TOKEN" }
+```
+
+## Environment variables
+
+| variable | meaning |
+|---|---|
+| `IMPYARD_ROOT` | self-contained mode: everything under `$IMPYARD_ROOT/{config,data,state}` — tests, scratch deployments, side-by-side instances |
+| `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_STATE_HOME` | standard XDG overrides for the three roots |
+| `IMPYARD_VAULT_DIR`, `IMPYARD_CA_DIR` | relocate the vault or CA individually |
+| `IMPYARD_EMAIL_SINK` | testing: write outbound email to `state/outbox/` instead of SMTP |

@@ -125,10 +125,10 @@ memory, knowledge), `channel/` (Discord, Slack), and `cli/`.
 
 ## Docs
 
-The design, the decisions and why they were made, and the build plan:
-[docs/impyard-handoff.md](docs/impyard-handoff.md). The rest of `docs/` goes
-deep on individual pieces — the gateway, budgets, memory, knowledge, the
-memory/knowledge boundary, connections, and the CLI.
+Full documentation lives in [docs/](docs/README.md): getting started, the
+architecture and security model, and a page for each piece — the gateway,
+actions and trust, work and scheduling, channels, the box, memory,
+knowledge, and the configuration and CLI references.
 
 ## License
 

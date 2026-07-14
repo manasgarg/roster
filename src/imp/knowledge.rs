@@ -22,7 +22,7 @@ pub enum KnowledgeMode {
     Reorganization,
     /// The shelf, consultation only: mounted `:ro`, no namespace, no
     /// checkpoint. What tainted runs get under the clean-room boundary
-    /// (docs/knowledge-boundary.md).
+    /// (docs/knowledge.md).
     Read,
 }
 

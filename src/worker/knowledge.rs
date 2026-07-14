@@ -20,6 +20,10 @@ const ALLOWED_EXTENSIONS: &[&str] = &["md", "json", "jsonl", "yaml", "yml", "csv
 pub enum KnowledgeMode {
     Append,
     Reorganization,
+    /// The shelf, consultation only: mounted `:ro`, no namespace, no
+    /// checkpoint. What tainted runs get under the clean-room boundary
+    /// (docs/knowledge-boundary.md).
+    Read,
 }
 
 impl KnowledgeMode {
@@ -27,6 +31,7 @@ impl KnowledgeMode {
         match value {
             "append" => Ok(Self::Append),
             "reorganization" => Ok(Self::Reorganization),
+            "read" => Ok(Self::Read),
             other => Err(format!("unknown knowledge mode \"{other}\"")),
         }
     }
@@ -35,6 +40,7 @@ impl KnowledgeMode {
         match self {
             Self::Append => "append",
             Self::Reorganization => "reorganization",
+            Self::Read => "read",
         }
     }
 }
@@ -170,12 +176,23 @@ impl ValidatedChanges {
     }
 }
 
-pub fn provision(worker: &str, run_id: &str, requested_mode: &str) -> Result<RunStorage, String> {
+pub fn provision(worker: &str, run_id: &str, requested_mode: &str, tainted: bool) -> Result<RunStorage, String> {
     let worker = short_worker(worker);
     safe_component(worker, "worker")?;
     safe_component(run_id, "run id")?;
-    let mode = KnowledgeMode::parse(requested_mode)?;
+    let mut mode = KnowledgeMode::parse(requested_mode)?;
     let policy = crate::worker::storage::load(worker);
+    // The memory/knowledge boundary: a run that saw interaction content or
+    // context never gets a writable mount under clean-room policy — the
+    // provenance of the run decides, not the model.
+    if tainted {
+        if mode == KnowledgeMode::Reorganization {
+            return Err("a knowledge reorganization cannot run with interaction context".into());
+        }
+        if policy.knowledge.write_from == "clean-room" {
+            mode = KnowledgeMode::Read;
+        }
+    }
     let run_dir = paths::run_dir(run_id);
 
     if !policy.knowledge.enabled {
@@ -220,13 +237,14 @@ pub fn provision(worker: &str, run_id: &str, requested_mode: &str) -> Result<Run
     fs::remove_dir_all(path.join(".git")).map_err(|error| error.to_string())?;
 
     let record_namespace = format!("n_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    let state = if mode == KnowledgeMode::Read { "read-only" } else { "active" };
     crate::run::runlog::attach_storage(
         run_id,
         Some(KnowledgeRunRecord {
             base_commit: base_commit.clone(),
             mode: mode.as_str().into(),
             record_namespace: record_namespace.clone(),
-            state: "active".into(),
+            state: state.into(),
             produced_commit: None,
             error: None,
         }),
@@ -256,6 +274,9 @@ pub fn provision(worker: &str, run_id: &str, requested_mode: &str) -> Result<Run
 }
 
 pub fn checkpoint(checkout: &Checkout) -> Result<Checkpoint, String> {
+    if checkout.mode == KnowledgeMode::Read {
+        return Err("a read-only checkout does not checkpoint".into());
+    }
     match checkpoint_inner(checkout) {
         Ok(result) => {
             crate::run::runlog::update_knowledge(
@@ -290,6 +311,10 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
     let base = TempTree::new(&worker_dir, "base")?;
     clone_at(&repo, &base.path, &checkout.base_commit)?;
     let changes = match checkout.mode {
+        // Unreachable: checkpoint() rejects read-only checkouts before here.
+        KnowledgeMode::Read => {
+            return Err(CheckpointError::from("a read-only checkout does not checkpoint".to_string()))
+        }
         KnowledgeMode::Append => {
             let new_records = validate_append(
                 &base.path,
@@ -322,6 +347,29 @@ fn checkpoint_inner(checkout: &Checkout) -> Result<Checkpoint, CheckpointError> 
             commit: None,
             files: 0,
         });
+    }
+
+    // The boundary scan, defense-in-depth: knowledge describes the world,
+    // never the run's own participants. Clean runs have no participants, so
+    // this only bites in any-run mode or on mention syntax — the hard
+    // guarantee is the read-only mount, not this scan.
+    {
+        let context = crate::worker::memory::load_run_context(&checkout.run_id);
+        let markers = crate::worker::boundary::participant_markers(&context);
+        let all_changed = changes
+            .new_records
+            .iter()
+            .chain(changes.organization.iter().flatten());
+        for (path, file) in all_changed {
+            if let Ok(text) = std::str::from_utf8(&file.bytes) {
+                if let Some(hit) = crate::worker::boundary::scan(text, &markers, false) {
+                    return Err(CheckpointError::from(format!(
+                        "{} references a conversation participant (\"{hit}\") — that belongs in memory, not in knowledge",
+                        path.display()
+                    )));
+                }
+            }
+        }
     }
 
     let _lease = acquire_lease(&worker_dir.join("integrate.lock"))?;

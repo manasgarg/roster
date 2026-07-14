@@ -555,7 +555,7 @@ async fn provision_box(
     let pihome = run_dir.join(".pihome");
     std::fs::create_dir_all(&workspace)?;
     std::fs::create_dir_all(&session)?;
-    let storage = crate::worker::knowledge::provision(worker, run_id, knowledge_mode)?;
+    let storage = crate::worker::knowledge::provision(worker, run_id, knowledge_mode, run_context.tainted())?;
 
     // Code task: a writable git worktree on a fresh per-run branch.
     let worktree: Option<PathBuf> = match code {
@@ -633,10 +633,11 @@ async fn provision_box(
         mount(&pihome),
     ]);
     if let Some(knowledge) = storage.knowledge.as_ref() {
+        let ro = if knowledge.mode == crate::worker::knowledge::KnowledgeMode::Read { ":ro" } else { "" };
         args.extend([
             "-v".into(),
             format!(
-                "{}:{}",
+                "{}:{}{ro}",
                 knowledge.path.display(),
                 knowledge.knowledge_mount()
             ),
@@ -682,10 +683,15 @@ async fn provision_box(
             "-e".into(),
             format!("ROSTER_KNOWLEDGE_BASE={}", knowledge.base_commit),
             "-e".into(),
-            format!("ROSTER_RECORD_NAMESPACE={}", knowledge.record_namespace),
-            "-e".into(),
             format!("ROSTER_KNOWLEDGE_MODE={}", knowledge.mode.as_str()),
         ]);
+        // Read-only checkouts have no write contract, so no namespace.
+        if knowledge.mode != crate::worker::knowledge::KnowledgeMode::Read {
+            args.extend([
+                "-e".into(),
+                format!("ROSTER_RECORD_NAMESPACE={}", knowledge.record_namespace),
+            ]);
+        }
     }
     if !task_id.is_empty() {
         args.extend(["-e".into(), format!("ROSTER_TASK_ID={task_id}")]);
@@ -734,7 +740,9 @@ async fn provision_box(
 
 fn finalize_storage(storage: &mut crate::worker::knowledge::RunStorage, clean: bool) {
     if let Some(checkout) = storage.knowledge.as_ref() {
-        if clean && checkout.knowledge_policy.checkpoint_on_clean_exit {
+        if checkout.mode == crate::worker::knowledge::KnowledgeMode::Read {
+            // Consultation only: nothing to integrate, nothing to quarantine.
+        } else if clean && checkout.knowledge_policy.checkpoint_on_clean_exit {
             match crate::worker::knowledge::checkpoint(checkout) {
                 Ok(result) if result.files > 0 => eprintln!(
                     "knowledge {}: integrated {} file(s) at {}",

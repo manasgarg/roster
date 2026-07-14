@@ -14,6 +14,11 @@ pub struct KnowledgePolicy {
     pub max_repo_bytes: u64,
     pub checkpoint_on_clean_exit: bool,
     pub reorganization_requires_exclusive_lease: bool,
+    /// The memory/knowledge boundary (docs/knowledge-boundary.md):
+    /// "clean-room" — only untainted runs get a writable knowledge mount
+    /// (tainted runs read-only, clean runs recall-free); "any-run" — legacy
+    /// behavior, participant scanning only.
+    pub write_from: String,
 }
 
 impl Default for KnowledgePolicy {
@@ -25,6 +30,7 @@ impl Default for KnowledgePolicy {
             max_repo_bytes: 1_000_000_000,
             checkpoint_on_clean_exit: true,
             reorganization_requires_exclusive_lease: true,
+            write_from: "clean-room".into(),
         }
     }
 }
@@ -64,6 +70,12 @@ pub fn validate(policy: &StoragePolicy) -> Result<(), String> {
     if !policy.knowledge.reorganization_requires_exclusive_lease {
         return Err("knowledge reorganization must require an exclusive lease".into());
     }
+    if !matches!(policy.knowledge.write_from.as_str(), "clean-room" | "any-run") {
+        return Err(format!(
+            "knowledge.write_from must be \"clean-room\" or \"any-run\", not \"{}\"",
+            policy.knowledge.write_from
+        ));
+    }
     Ok(())
 }
 
@@ -81,6 +93,9 @@ pub fn validate_worker_overlay(base: &StoragePolicy, worker: &StoragePolicy) -> 
         || worker.knowledge.max_repo_bytes > base.knowledge.max_repo_bytes
     {
         return Err("worker knowledge limits cannot exceed org limits".into());
+    }
+    if worker.knowledge.write_from == "any-run" && base.knowledge.write_from == "clean-room" {
+        return Err("worker cannot relax the clean-room knowledge boundary set by org policy".into());
     }
     Ok(())
 }

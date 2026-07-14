@@ -172,6 +172,7 @@ fn task_memory_context(task: &queue::Task) -> crate::worker::memory::RunContext 
             .unwrap_or("")
             .to_string(),
         is_dm: d.get("is_dm").and_then(|v| v.as_bool()).unwrap_or(false),
+        inbound: task.context.get("inbound").is_some(),
     }
 }
 

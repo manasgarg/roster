@@ -309,6 +309,7 @@ async fn handle_message(worker: &str, d: &Value, bot_id: &str, guilds: &HashMap<
         message_id: d["id"].as_str().map(String::from),
         role: role.to_string(),
         is_dm,
+        inbound: false, // live channel context carries ids; inbound marks relay tasks
     };
     eprintln!("discord: {author} ({role}) in {channel_id} → session");
     route_to_session(
@@ -545,6 +546,7 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
         message_id: None,
         role: role.to_string(),
         is_dm: d["guild_id"].as_str().is_none(),
+        inbound: false,
     };
     let arg = |name: &str| -> String {
         data["options"][0]["options"]

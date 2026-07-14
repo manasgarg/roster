@@ -304,6 +304,30 @@ export default function rosterActionTools(api: PiToolApi): void {
   });
 
   api.registerTool({
+    name: "file_task",
+    label: "file_task",
+    description:
+      "Queue durable work for your next run — research to do, records to write. Use this from conversations: " +
+      "the knowledge shelf is read-only there, and the filed task runs later with a writable shelf and a clean slate. " +
+      "Describe the WORK, not the people — prompts naming conversation participants are refused.",
+    promptSnippet: "file_task(prompt[, ceiling_min]): queue durable research/work for a later clean run",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "What to research or do, self-contained — the next run sees only this text." },
+        ceiling_min: { type: "number", description: "Optional wall-clock ceiling in minutes (default 30)." },
+      },
+      required: ["prompt"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const { prompt, ceiling_min } = params as { prompt: string; ceiling_min?: number };
+      const s = await submit("file-task", { prompt, ceiling_min }, "");
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
     name: "check_gates",
     label: "check_gates",
     description:

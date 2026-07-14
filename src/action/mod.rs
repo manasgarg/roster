@@ -320,6 +320,7 @@ pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &
         "purpose" => exec_purpose(payload),
         "discord" => exec_discord(worker, payload).await,
         "slack" => exec_slack(worker, payload).await,
+        "task" => exec_file_task(worker, payload, run_id),
         "note" => crate::worker::memory::execute(worker, intent, payload, run_id),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
@@ -328,6 +329,46 @@ pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &
 /// Deliver a note from the worker to its lead: a Discord DM when a bot token +
 /// lead id are configured, else the local inbox. The bot token stays in the
 /// vault; the box never holds it.
+/// `file_task` — the bridge across the memory/knowledge boundary: a tainted
+/// run queues durable work instead of writing records. The filed task is
+/// worker-only by construction (context: null — no channel, no participants),
+/// so it runs clean with a writable knowledge mount. The prompt is the entire
+/// crossing, and the participant scan polices it (docs/knowledge-boundary.md).
+fn exec_file_task(worker: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
+    if run_id.is_empty() {
+        return Err("file-task needs a trusted run context".into());
+    }
+    let prompt = payload
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or("file-task needs a non-empty \"prompt\"")?;
+    let ceiling = payload.get("ceiling_min").and_then(|v| v.as_f64()).unwrap_or(30.0).clamp(1.0, 240.0);
+
+    let context = crate::worker::memory::load_run_context(run_id);
+    if let Err(reason) = crate::worker::boundary::check_task_prompt(&context, prompt) {
+        journal::append(worker, run_id, "boundary-denied", json!({ "intent": "file-task", "reason": reason }));
+        return Err(reason);
+    }
+
+    let task = crate::work::queue::create(
+        crate::paths::short_worker(worker),
+        prompt,
+        "worker",
+        true, // worker-initiated: budget-gated at dispatch like other proactive work
+        ceiling,
+        "append",
+        Value::Null,
+        None,
+        None,
+    )
+    .map_err(|e| e.to_string())?;
+    journal::append(worker, run_id, "task-filed", json!({ "task_id": task.id, "prompt": prompt }));
+    eprintln!("file-task [{worker}] → {} ({} min)", task.id, ceiling);
+    Ok(json!({ "task_id": task.id, "state": "waiting" }))
+}
+
 async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, String> {
     let text = payload.get("text").and_then(|v| v.as_str()).ok_or("message-user needs a \"text\" field")?;
 

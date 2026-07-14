@@ -120,6 +120,20 @@ pub struct RunContext {
     pub role: String,
     #[serde(default)]
     pub is_dm: bool,
+    /// The run's prompt embeds inbound third-party content (a relay task) —
+    /// person-tainted even without channel/user identifiers.
+    #[serde(default)]
+    pub inbound: bool,
+}
+
+impl RunContext {
+    /// Did interaction content or context enter this run? Tainted runs get
+    /// knowledge read-only; clean runs get no memory recall — the two halves
+    /// of the memory/knowledge boundary (docs/knowledge-boundary.md). One
+    /// predicate, shared by provisioning and context compilation.
+    pub fn tainted(&self) -> bool {
+        self.channel_id.is_some() || self.user_id.is_some() || self.inbound
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

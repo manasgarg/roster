@@ -229,6 +229,7 @@ async fn handle_message(worker: &str, event: &Value, bot_user_id: &str, bot_toke
         message_id: event["ts"].as_str().map(String::from),
         role: role.to_string(),
         is_dm,
+        inbound: false, // live channel context carries ids; inbound marks relay tasks
     };
     eprintln!("slack: {user_id} ({role}) in {channel_id} → session");
     route_to_session(worker, channel_id, user_id.to_string(), format!("{text}{hint}"), context).await;

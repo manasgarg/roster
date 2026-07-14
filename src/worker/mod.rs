@@ -1,6 +1,7 @@
 //! What a worker is and knows: trusted context compilation, scoped interaction
 //! memory, Git-backed world knowledge, the journal, and knowledge policy.
 
+pub mod boundary;
 pub mod context;
 pub mod journal;
 pub mod knowledge;

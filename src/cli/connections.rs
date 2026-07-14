@@ -6,16 +6,26 @@
 use crate::util::BErr;
 use serde_json::Value;
 
-pub async fn connect(
-    service: String,
-    imps: Vec<String>,
-    org: bool,
-    alias: Option<String>,
-    host_overrides: Vec<String>,
-    header_override: Option<String>,
-    env_override: Option<String>,
-    method_overrides: Vec<String>,
-) -> Result<(), BErr> {
+pub struct ConnectOptions {
+    pub imps: Vec<String>,
+    pub org: bool,
+    pub alias: Option<String>,
+    pub hosts: Vec<String>,
+    pub header: Option<String>,
+    pub env: Option<String>,
+    pub methods: Vec<String>,
+}
+
+pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BErr> {
+    let ConnectOptions {
+        imps,
+        org,
+        alias,
+        hosts: host_overrides,
+        header: header_override,
+        env: env_override,
+        methods: method_overrides,
+    } = options;
     let registry = crate::credential::registry::registry_json();
     let name = alias.unwrap_or_else(|| service.clone());
     let path = crate::paths::connections_dir().join(format!("{name}.toml"));
@@ -32,8 +42,10 @@ pub async fn connect(
         )
         .into());
     }
-    if registered.is_some() && catalog_meta.is_none() && !generic {
-        let p = registered.as_ref().unwrap();
+    if let Some(p) = registered
+        .as_ref()
+        .filter(|_| catalog_meta.is_none() && !generic)
+    {
         let auth = p.get("auth").and_then(Value::as_str).unwrap_or("");
         if matches!(auth, "discord" | "smtp" | "slack") {
             return Err(format!(

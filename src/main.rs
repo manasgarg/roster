@@ -436,8 +436,19 @@ async fn main() {
                 method,
             } => match service {
                 Some(service) => {
-                    cli::connections::connect(service, imp, org, name, host, header, env, method)
-                        .await
+                    cli::connections::connect(
+                        service,
+                        cli::connections::ConnectOptions {
+                            imps: imp,
+                            org,
+                            alias: name,
+                            hosts: host,
+                            header,
+                            env,
+                            methods: method,
+                        },
+                    )
+                    .await
                 }
                 None if org
                     || !imp.is_empty()

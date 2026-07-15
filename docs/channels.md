@@ -132,6 +132,19 @@ connection and role-checked per command:
 Slack has no slash commands yet — administer via the CLI, or
 conversationally in trusted channels.
 
+## The terminal
+
+`roster talk <worker>` makes your own terminal a channel with the same
+model as the platforms above — not a side door. It opens the durable
+channel `term-<user>-<worker>`: trusted automatically (it's the operator's
+own shell, the definition of a sought-out 1:1), history recorded under
+`data/channels/`, a purpose the worker may propose, DM-grade memory recall
+(worker + channel + your user scope), and warm-session turns with the same
+lockdown and governance. The one difference is delivery: there is no send
+tool — the worker's reply text prints directly in your terminal. And like
+every conversation, the knowledge shelf is read-only; durable research goes
+through `file_task`.
+
 ## History on disk
 
 The listener records everything under `data/channels/<id>/`: the full

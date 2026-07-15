@@ -308,6 +308,7 @@ pub async fn run_session(
     start_context: crate::worker::memory::RunContext,
     mut rx: tokio::sync::mpsc::Receiver<SessionMessage>,
     idle_secs: u64,
+    reply_tx: Option<tokio::sync::mpsc::Sender<String>>,
 ) -> Result<(), BErr> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -377,6 +378,12 @@ pub async fn run_session(
     let mut clean_exit = false;
     let mut pending: std::collections::VecDeque<SessionMessage> = std::collections::VecDeque::new();
     loop {
+        // The sender is gone (stdin EOF, listener shutdown) and nothing is in
+        // flight: end the session now instead of sitting out the idle window.
+        if !rx_open && !busy && pending.is_empty() {
+            clean_exit = true;
+            break;
+        }
         // Serialize: feed the next message only once the previous turn is done, so
         // rapid messages become distinct turns (in order) rather than coalescing.
         if !busy {
@@ -433,6 +440,11 @@ pub async fn run_session(
                     if let Some(f) = log.as_mut() {
                         let _ = f.write_all(line.as_bytes()).await;
                         let _ = f.write_all(b"\n").await;
+                    }
+                    if let Some(tx) = reply_tx.as_ref() {
+                        for text in assistant_text(&line) {
+                            let _ = tx.send(text).await;
+                        }
                     }
                     if line.contains("\"type\":\"agent_end\"") {
                         busy = false; // turn complete
@@ -492,6 +504,31 @@ fn pi_prefix(engine: &Engine, mode: &str, session_dir: &Path) -> Result<Vec<Stri
 /// Pi maps its session id to provider cache-affinity fields. Per-run session
 /// directories keep pi's local transcripts separate even when equivalent runs
 /// intentionally share this stable cache route key.
+/// The assistant's reply text in a pi rpc `message_end` event, if this line is
+/// one. A turn may end several assistant messages; only those with text parts
+/// (the words meant for the human) yield output — thinking and tool calls don't.
+fn assistant_text(line: &str) -> Vec<String> {
+    if !line.contains("\"type\":\"message_end\"") {
+        return Vec::new();
+    }
+    let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Vec::new();
+    };
+    if event["type"] != "message_end" || event["message"]["role"] != "assistant" {
+        return Vec::new();
+    }
+    let Some(parts) = event["message"]["content"].as_array() else {
+        return Vec::new();
+    };
+    parts
+        .iter()
+        .filter(|p| p["type"] == "text")
+        .filter_map(|p| p["text"].as_str())
+        .map(str::to_string)
+        .filter(|t| !t.trim().is_empty())
+        .collect()
+}
+
 fn append_cache_session_id(args: &mut Vec<String>, route_key: &str) {
     if !route_key.is_empty() {
         args.extend(["--session-id".into(), route_key.into()]);

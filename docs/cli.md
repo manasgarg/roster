@@ -27,6 +27,7 @@ Conventions, everywhere:
 
 ```
 init              create the config/data/state roots (XDG; idempotent)
+talk              <worker> [--idle SECS]  chat with a worker, right here
 
 server start      [--cap N] [--once] [--no-listen] [--addr HOST:PORT]
 server status     [--json]
@@ -68,6 +69,16 @@ worker knowledge  <name>
 Creates the three deployment roots (config, data, state — see
 [layout.md](layout.md)). Idempotent: it fills in anything missing and never
 overwrites what exists.
+
+## `roster talk`
+
+Your terminal as a chat channel — the Discord/Slack interaction model
+without leaving the shell. `roster talk yuko` opens (or resumes) the durable
+channel `term-<you>-yuko`: trusted like a DM, history recorded under
+`data/channels/`, a purpose the worker can propose, channel and user memory
+scopes, and warm-session turns. Replies print straight to your terminal;
+Ctrl-D ends the session immediately. `--idle SECS` (default 300) ends it
+after that much quiet. See [channels.md](channels.md).
 
 ## `roster server`
 
@@ -140,8 +151,11 @@ earned, and the promotion rules in effect.
 **`worker run <name> "<prompt>"`** runs one governed session now, bypassing the
 queue. `--ceiling M` caps wall-clock minutes (default 30).
 
-**`worker chat <name>`** opens an interactive warm session fed from stdin, one
-message per turn. `--idle SECS` ends it after that much quiet (default 20).
+**`worker chat <name>`** opens a bare interactive warm session fed from
+stdin, one message per turn — no channel identity, history, or memory
+(useful for testing the session machinery). For actual conversation use
+`roster talk`, which is a real channel. `--idle SECS` ends it after that
+much quiet (default 20).
 
 **`worker task`** manages the worker's durable queue:
 

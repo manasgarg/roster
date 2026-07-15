@@ -24,8 +24,8 @@ governance.*
   execute, the approval desk, and the earned-trust ladder.
 - **[Work](work.md)** — the durable task queue, schedules, code tasks, and
   the run log.
-- **[Channels](channels.md)** — Discord and Slack: authority, response
-  modes, warm sessions, purposes.
+- **[Channels](channels.md)** — Discord, Slack, and your terminal:
+  authority, response modes, warm sessions, purposes.
 - **[The box](box.md)** — the locked-down container: no route, no secrets,
   a real toolbelt.
 

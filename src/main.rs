@@ -50,6 +50,14 @@ enum Cmd {
     /// The governed identities: lifecycle, trust, memory, knowledge, work
     #[command(subcommand)]
     Worker(WorkerCmd),
+    /// Talk with a worker right here in the terminal — a trusted chat channel
+    Talk {
+        /// The worker to talk to
+        name: String,
+        /// End after this much quiet, in seconds
+        #[arg(long, default_value_t = 300)]
+        idle: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -468,6 +476,7 @@ async fn main() {
             CredentialCmd::Add { provider } => credential::connect::run(&provider).await,
             CredentialCmd::Ls { json } => cli::vault::ls(json),
         },
+        Cmd::Talk { name, idle } => run::session::talk(&name, idle).await,
         Cmd::Worker(cmd) => match cmd {
             WorkerCmd::Init { name } => cli::create::run(&name),
             WorkerCmd::Ls { json } => cli::worker::ls(json),

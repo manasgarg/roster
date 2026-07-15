@@ -14,7 +14,7 @@ the reasoning attached.
 ## Install
 
 ```bash
-cargo install roster-agents         # installs the `roster` binary
+cargo install digital-roster         # installs the `roster` binary
 docker build -t roster-box -f box/Dockerfile .   # the container image
                                                   # (clone the repo for box/)
 ```

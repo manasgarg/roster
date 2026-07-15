@@ -3,7 +3,7 @@
 **Rent the intelligence. Own the governance.**
 
 [![ci](https://github.com/manasgarg/roster/actions/workflows/ci.yml/badge.svg)](https://github.com/manasgarg/roster/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/roster-agents.svg)](https://crates.io/crates/roster-agents)
+[![crates.io](https://img.shields.io/crates/v/digital-roster.svg)](https://crates.io/crates/digital-roster)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
 [![status](https://img.shields.io/badge/status-alpha-yellow.svg)](#where-this-is)
@@ -55,7 +55,7 @@ Two other things worth knowing:
 You need Rust and Docker.
 
 ```bash
-cargo install roster-agents                      # installs the `roster` binary
+cargo install digital-roster                      # installs the `roster` binary
 docker build -t roster-box -f box/Dockerfile .   # the container workers run in
                                                   # (clone the repo for box/)
 

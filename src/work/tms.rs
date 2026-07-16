@@ -502,11 +502,14 @@ fn check_ceiling(ceiling_min: f64) -> Result<(), String> {
 
 fn check_scheduled_at(s: &Option<String>) -> Result<(), BErr> {
     if let Some(t) = s {
-        if !t.ends_with('Z') || t.len() < 20 {
-            return Err(format!(
-                "scheduled_at must be RFC3339 UTC ending in Z (got \"{t}\")"
-            )
-            .into());
+        // Must end in Z (UTC, so the lexical due-compare is valid) AND actually
+        // parse — otherwise "tomorrow-at-nine-amZ" is accepted and the task
+        // silently never comes due (its lexical compare never precedes `now`).
+        if !t.ends_with('Z') {
+            return Err(format!("scheduled_at must be RFC3339 UTC ending in Z (got \"{t}\")").into());
+        }
+        if time::OffsetDateTime::parse(t, &time::format_description::well_known::Rfc3339).is_err() {
+            return Err(format!("scheduled_at is not a valid RFC3339 timestamp (got \"{t}\")").into());
         }
     }
     Ok(())
@@ -682,6 +685,31 @@ pub fn set_tasks(
         if let Err(e) = check_ceiling(t.ceiling_min) {
             return Err(reject(format!("task {}: {e}", t.id), &current));
         }
+        if !matches!(t.knowledge_mode.as_str(), "append" | "reorganization") {
+            return Err(reject(
+                format!("task {}: unknown knowledge mode \"{}\"", t.id, t.knowledge_mode),
+                &current,
+            ));
+        }
+        if t.knowledge_mode == "reorganization" && t.repo.is_some() {
+            return Err(reject(
+                format!("task {}: a knowledge reorganization cannot also be a code task", t.id),
+                &current,
+            ));
+        }
+    }
+    // At most one reorganization may be live at a time (matches add()); the
+    // supervisor also serializes them, but reject the shape up front.
+    if tasks
+        .iter()
+        .filter(|t| t.knowledge_mode == "reorganization" && t.live())
+        .count()
+        > 1
+    {
+        return Err(reject(
+            "at most one reorganization task may be live at a time".into(),
+            &current,
+        ));
     }
 
     // System templates (the heartbeat) are host-owned, byte for byte.
@@ -1063,7 +1091,11 @@ fn window_state(w: &Option<Window>, now: &str) -> &'static str {
         }
     }
     if let Some(from) = &w.from {
-        if now < from.as_str() && !from.starts_with(&now[..10.min(now.len())]) {
+        // Plain lexical compare (both are RFC3339 UTC). This honors the time of
+        // day of a full-timestamp `from`, and still treats a date-only `from`
+        // ("2026-07-16") as open from that day's start, since a bare date sorts
+        // before any timestamp within it.
+        if now < from.as_str() {
             return "early";
         }
     }

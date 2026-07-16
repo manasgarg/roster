@@ -24,9 +24,15 @@ pub async fn supervised(worker: String, platform: String, credential: String) {
     let mut backoff = 5u64;
     loop {
         match listen_worker(&worker, &platform, &credential).await {
+            // The gateway/socket loop handles transient reconnects internally and
+            // only RETURNS on a fatal stop (bad token, disallowed intent). Re-
+            // dialing would just re-hit it and hammer the platform, so stop.
             Ok(()) => {
-                eprintln!("listener {worker}/{platform}: disconnected; reconnecting in {backoff}s")
+                eprintln!("listener {worker}/{platform}: stopped (fatal — see the reason above)");
+                return;
             }
+            // A setup error (e.g. the credential isn't connected yet) may resolve,
+            // so retry those with backoff.
             Err(e) => eprintln!("listener {worker}/{platform}: {e}; retrying in {backoff}s"),
         }
         tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;

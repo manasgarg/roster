@@ -3,14 +3,14 @@
 //! main.rs; the machinery lives in the blocks (gateway, credential, action,
 //! work, run, worker, channel).
 
+pub mod approvals;
 pub mod channel;
 pub mod connections;
 pub mod create;
-pub mod approvals;
-pub mod worker;
 pub mod init;
 pub mod knowledge;
 pub mod memory;
 pub mod runs;
 pub mod server;
 pub mod task;
+pub mod worker;

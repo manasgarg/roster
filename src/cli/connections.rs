@@ -176,9 +176,15 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
     };
 
     // Capability fields: catalog defaults ← existing file ← flags.
-    let catalog_meta = registered.as_ref().and_then(|p| p.get("connection")).cloned();
+    let catalog_meta = registered
+        .as_ref()
+        .and_then(|p| p.get("connection"))
+        .cloned();
     let hosts = if host_overrides.is_empty() {
-        if let Some(hosts) = catalog_meta.as_ref().and_then(|meta| meta["hosts"].as_array()) {
+        if let Some(hosts) = catalog_meta
+            .as_ref()
+            .and_then(|meta| meta["hosts"].as_array())
+        {
             hosts
                 .iter()
                 .filter_map(Value::as_str)
@@ -374,7 +380,10 @@ async fn verify_connection(name: &str, service: &str) -> Result<(), BErr> {
     let Some(cred) = crate::credential::vault::get_credential(name) else {
         return Err(format!("verify: credential \"{name}\" is not in the vault").into());
     };
-    let method = recipe.get("method").and_then(Value::as_str).unwrap_or("GET");
+    let method = recipe
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("GET");
     let url = recipe
         .get("url")
         .and_then(Value::as_str)
@@ -421,7 +430,9 @@ async fn verify_connection(name: &str, service: &str) -> Result<(), BErr> {
         )
         .into())
     } else {
-        println!("verify inconclusive: {method} {url} → {status} (the credential may still be fine)");
+        println!(
+            "verify inconclusive: {method} {url} → {status} (the credential may still be fine)"
+        );
         Ok(())
     }
 }
@@ -533,12 +544,17 @@ fn bind_channel(platform: &str, credential: &str, worker_flags: &[String]) -> Re
     if !known.contains(&worker) {
         return Err(format!("no such worker \"{worker}\" (have: {})", known.join(", ")).into());
     }
-    let spec = crate::paths::workers_dir().join(&worker).join("worker.toml");
+    let spec = crate::paths::workers_dir()
+        .join(&worker)
+        .join("worker.toml");
     let text = std::fs::read_to_string(&spec)?;
     match upsert_channel_binding(&text, platform, credential) {
         Ok(Some(new_text)) => {
             std::fs::write(&spec, new_text)?;
-            println!("bound   {platform} = \"{credential}\" in {}", spec.display());
+            println!(
+                "bound   {platform} = \"{credential}\" in {}",
+                spec.display()
+            );
         }
         Ok(None) => println!("kept    \"{worker}\" already binds {platform} = \"{credential}\""),
         Err(e) => return Err(format!("worker \"{worker}\": {e}").into()),
@@ -804,7 +820,9 @@ fn declare_oauth(name: &str) -> Result<(), BErr> {
     let token_url = must("token URL: ")?;
     let client_id = must("client id (from your app registration): ")?;
     let redirect_uri = ask_default("redirect URI", "http://localhost:1455/callback")?;
-    let scope = ask("scopes (space-separated; Enter for none): ")?.trim().to_string();
+    let scope = ask("scopes (space-separated; Enter for none): ")?
+        .trim()
+        .to_string();
     let token_encoding = ask_default("token request encoding (json/form)", "json")?;
     if token_encoding != "json" && token_encoding != "form" {
         return Err("token encoding must be \"json\" or \"form\"".into());
@@ -951,10 +969,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         println!("no connections — see the catalog: roster connection catalog");
         return Ok(());
     }
-    println!(
-        "{:<16} {:<11} {:<44} STATE",
-        "CONNECTION", "USE", "DETAIL"
-    );
+    println!("{:<16} {:<11} {:<44} STATE", "CONNECTION", "USE", "DETAIL");
     for row in &rows {
         println!(
             "{:<16} {:<11} {:<44} {}",
@@ -1069,7 +1084,9 @@ fn references(name: &str) -> Vec<String> {
         scan_grants(&org, "org.toml", &mut out);
     }
     for worker in crate::worker::names() {
-        let spec = crate::paths::workers_dir().join(&worker).join("worker.toml");
+        let spec = crate::paths::workers_dir()
+            .join(&worker)
+            .join("worker.toml");
         if let Some(w) = read_toml(&spec) {
             scan_grants(&w, &format!("workers/{worker}/worker.toml"), &mut out);
         }
@@ -1082,7 +1099,9 @@ fn references(name: &str) -> Vec<String> {
 fn channel_binding_refs(name: &str) -> Vec<(String, String, PathBuf)> {
     let mut out = Vec::new();
     for worker in crate::worker::names() {
-        let spec = crate::paths::workers_dir().join(&worker).join("worker.toml");
+        let spec = crate::paths::workers_dir()
+            .join(&worker)
+            .join("worker.toml");
         let Some(w) = read_toml(&spec) else { continue };
         let Some(channels) = w.get("channels").and_then(|c| c.as_table()) else {
             continue;
@@ -1105,9 +1124,21 @@ fn read_toml(path: &std::path::Path) -> Option<toml::Value> {
 /// The registry, grouped by what connecting gives you.
 fn print_catalog(registry: &serde_json::Map<String, Value>) -> Result<(), BErr> {
     let mut groups: [(&str, &str, Vec<String>); 3] = [
-        ("capability", "Capabilities — a worker's box may act on the service", vec![]),
-        ("channel", "Channels — the worker talks there (bound in worker.toml)", vec![]),
-        ("model", "Models — grants inject them into model-API calls", vec![]),
+        (
+            "capability",
+            "Capabilities — a worker's box may act on the service",
+            vec![],
+        ),
+        (
+            "channel",
+            "Channels — the worker talks there (bound in worker.toml)",
+            vec![],
+        ),
+        (
+            "model",
+            "Models — grants inject them into model-API calls",
+            vec![],
+        ),
     ];
     let mut names: Vec<&String> = registry
         .iter()
@@ -1155,7 +1186,9 @@ fn print_catalog(registry: &serde_json::Map<String, Value>) -> Result<(), BErr> 
         }
     }
     println!("\nConnect one: roster connection add <name> [--worker W].. [--org] [--use U]..");
-    println!("Anything else: roster connection add <name> --host <hostname>   (--declare for OAuth)");
+    println!(
+        "Anything else: roster connection add <name> --host <hostname>   (--declare for OAuth)"
+    );
     Ok(())
 }
 
@@ -1175,8 +1208,11 @@ fn auth_label(p: &Value) -> String {
         // A list offers alternatives: the first is the default, the rest
         // reachable via --auth.
         Some(Value::Array(l)) => {
-            let mut labels: Vec<String> =
-                l.iter().filter_map(Value::as_str).map(|s| one(s).to_string()).collect();
+            let mut labels: Vec<String> = l
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|s| one(s).to_string())
+                .collect();
             if labels.len() > 1 {
                 let alternatives = l
                     .iter()
@@ -1210,7 +1246,11 @@ fn ask_uses(service: &str, supported: &[String]) -> Result<Vec<String>, BErr> {
         return Ok(supported.to_vec());
     }
     let mut chosen = Vec::new();
-    for u in answer.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    for u in answer
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         if !supported.iter().any(|s| s == u) {
             return Err(format!(
                 "\"{u}\" is not a use of \"{service}\" (supports: {})",
@@ -1306,7 +1346,9 @@ mod tests {
     #[test]
     fn binding_inserts_under_an_existing_channels_table() {
         let text = "name = \"yuko\"\n\n[channels]\ndiscord = \"discord\"\n";
-        let out = upsert_channel_binding(text, "slack", "slack").unwrap().unwrap();
+        let out = upsert_channel_binding(text, "slack", "slack")
+            .unwrap()
+            .unwrap();
         assert_eq!(
             out,
             "name = \"yuko\"\n\n[channels]\nslack = \"slack\"\ndiscord = \"discord\"\n"
@@ -1339,11 +1381,7 @@ mod tests {
         let text = "[channels]\n\n[memory]\nrecall = 4\n";
         let out = upsert_channel_binding(text, "slack", "s").unwrap().unwrap();
         let parsed: toml::Value = toml::from_str(&out).unwrap();
-        assert_eq!(
-            parsed["channels"]["slack"].as_str(),
-            Some("s"),
-            "{out}"
-        );
+        assert_eq!(parsed["channels"]["slack"].as_str(), Some("s"), "{out}");
         assert!(parsed["memory"].get("slack").is_none());
     }
 }

@@ -43,7 +43,9 @@ pub fn evaluate(
     denied: u32,
 ) -> String {
     for r in rules {
-        if applies(&r.scope, worker) && r.intent == intent && predicate_matches(&r.predicate, payload)
+        if applies(&r.scope, worker)
+            && r.intent == intent
+            && predicate_matches(&r.predicate, payload)
         {
             if r.level == "earned" {
                 let after = r.after.unwrap_or(5);

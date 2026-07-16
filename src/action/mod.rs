@@ -12,9 +12,9 @@ pub mod trust;
 use crate::action::gate::Gate;
 use crate::action::trust::TrustRule;
 use crate::gateway::proxy::Body;
-use crate::worker::journal;
 use crate::paths;
 use crate::util::now_rfc3339;
+use crate::worker::journal;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{Response, StatusCode};
@@ -133,10 +133,14 @@ pub async fn handle_action(
                 .collect();
             reply(StatusCode::OK, json!({ "gates": gates }))
         }
-        ("GET", "/journal") => reply(StatusCode::OK, json!({ "events": journal::tail(worker, 30) })),
+        ("GET", "/journal") => reply(
+            StatusCode::OK,
+            json!({ "events": journal::tail(worker, 30) }),
+        ),
         ("GET", "/memory") => {
             let memories = crate::worker::memory::visible_to_current_actor(worker, trusted_run_id);
-            let user_settings = crate::worker::memory::current_user_settings(worker, trusted_run_id);
+            let user_settings =
+                crate::worker::memory::current_user_settings(worker, trusted_run_id);
             journal::append(
                 worker,
                 trusted_run_id,
@@ -182,7 +186,10 @@ fn outcome(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> {
             json!({ "status": "error", "error": "outcome status must be \"completed\" or \"failed\"" }),
         );
     }
-    let note = v.get("note").and_then(Value::as_str).filter(|n| !n.trim().is_empty());
+    let note = v
+        .get("note")
+        .and_then(Value::as_str)
+        .filter(|n| !n.trim().is_empty());
     if let Err(e) = crate::run::runlog::record_outcome_report(trusted_run_id, status, note) {
         return reply(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -318,7 +325,10 @@ async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Bod
                 audit(worker, &env.intent, "failed", None, None);
                 // A failed side effect must not read as HTTP success: a caller
                 // keying off the status code would report an unsent email as sent.
-                reply(StatusCode::BAD_GATEWAY, json!({ "status": "error", "error": e }))
+                reply(
+                    StatusCode::BAD_GATEWAY,
+                    json!({ "status": "error", "error": e }),
+                )
             }
         }
     } else {
@@ -496,7 +506,11 @@ fn resolve_followup(g: &Gate) {
     if !wake {
         return;
     }
-    let short = g.worker.strip_prefix("org/").unwrap_or(&g.worker).to_string();
+    let short = g
+        .worker
+        .strip_prefix("org/")
+        .unwrap_or(&g.worker)
+        .to_string();
     let outcome = if g.state == "executed" {
         format!(
             "was approved and executed. Result: {}",
@@ -607,10 +621,7 @@ fn exec_file_task(worker: &str, payload: &Value, run_id: &str) -> Result<Value, 
     } else {
         "proactive"
     };
-    let scheduled_at = payload
-        .get("at")
-        .and_then(|v| v.as_str())
-        .map(String::from);
+    let scheduled_at = payload.get("at").and_then(|v| v.as_str()).map(String::from);
     let task = crate::work::tms::add(
         crate::paths::short_worker(worker),
         crate::work::tms::Draft {
@@ -684,9 +695,13 @@ fn exec_set_tasks(worker: &str, payload: &Value, run_id: &str) -> Result<Value, 
     let tasks: Vec<crate::work::tms::Task> =
         serde_json::from_value(payload.get("tasks").cloned().unwrap_or_else(|| json!([])))
             .map_err(|e| format!("tasks: {e}"))?;
-    let recurring: Vec<crate::work::tms::Recurring> =
-        serde_json::from_value(payload.get("recurring").cloned().unwrap_or_else(|| json!([])))
-            .map_err(|e| format!("recurring: {e}"))?;
+    let recurring: Vec<crate::work::tms::Recurring> = serde_json::from_value(
+        payload
+            .get("recurring")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    )
+    .map_err(|e| format!("recurring: {e}"))?;
     let context = crate::worker::memory::load_run_context(run_id);
     let short = crate::paths::short_worker(worker);
     match crate::work::tms::set_tasks(short, base_version, tasks, recurring, &context) {
@@ -787,9 +802,11 @@ pub async fn deliver_notice(provider: &str, channel: &str, worker: &str, text: &
         },
         "slack" => {
             let name = slack_credential_name(worker);
-            match crate::credential::vault::get_credential(&name)
-                .and_then(|c| c.get("bot_token").and_then(|v| v.as_str()).map(String::from))
-            {
+            match crate::credential::vault::get_credential(&name).and_then(|c| {
+                c.get("bot_token")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            }) {
                 Some(token) => crate::channel::slack::post_chunked(&token, channel, text, None)
                     .await
                     .map(|_| ()),
@@ -1020,7 +1037,10 @@ fn exec_identity(worker: &str, payload: &Value) -> Result<Value, String> {
         ));
     }
     write_atomic(&path, content)?;
-    eprintln!("identity [{worker}] updated ({} bytes)", content.trim().len());
+    eprintln!(
+        "identity [{worker}] updated ({} bytes)",
+        content.trim().len()
+    );
     Ok(json!({ "written": path.display().to_string(), "bytes": content.trim().len() }))
 }
 

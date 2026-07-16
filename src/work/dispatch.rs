@@ -61,11 +61,9 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
         }
 
         if !creds_ok && once && set.is_empty() {
-            return Err(
-                "no model credential — tasks cannot run. Connect one: \
+            return Err("no model credential — tasks cannot run. Connect one: \
                  roster connection add anthropic  (or openai-codex)"
-                    .into(),
-            );
+                .into());
         }
 
         // The TMS keeps heartbeats honest and spawns due recurrences inside
@@ -315,7 +313,9 @@ fn finalize(task: tms::Task, outcome: Result<boxed::Outcome, String>) {
     // otherwise a Discord/Slack user who queued work just watches it vanish.
     if next == "failed" {
         if let Some((provider, channel)) = reply_route(&task) {
-            let reason = error.clone().unwrap_or_else(|| "the run did not complete".into());
+            let reason = error
+                .clone()
+                .unwrap_or_else(|| "the run did not complete".into());
             let (worker, task_id) = (task.worker.clone(), task.id.clone());
             let text = format!("⚠️ I couldn't finish task `{task_id}` — {reason}");
             tokio::spawn(async move {

@@ -119,7 +119,9 @@ pub fn worker_tasks_journal(worker: &str) -> PathBuf {
 /// The box-facing view of a worker's partition (state: rewritten in place on
 /// every mutation so live bind mounts stay fresh; edits to it are scratch).
 pub fn tms_view_file(worker: &str) -> PathBuf {
-    state_root().join("tms-view").join(format!("{}.json", short_worker(worker)))
+    state_root()
+        .join("tms-view")
+        .join(format!("{}.json", short_worker(worker)))
 }
 
 /// Recurrence cursors (last spawn per template) — reconstructible state.

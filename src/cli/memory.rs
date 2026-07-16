@@ -2,8 +2,8 @@
 //! interaction memory. (Module name is the legacy storage name; the physical
 //! `notes/` → `memory/` migration finishes via `compact`.)
 
-use crate::worker::memory::{self, MemoryScope};
 use crate::util::BErr;
+use crate::worker::memory::{self, MemoryScope};
 
 pub fn compact(worker: &str) -> Result<(), BErr> {
     crate::worker::require_worker(worker)?;

@@ -43,7 +43,9 @@ pub async fn chat(worker: &str, idle: u64) -> Result<(), BErr> {
     reader.abort();
     println!(
         "session ended — transcript: {}",
-        crate::paths::run_dir(&run_id).join("stdout.jsonl").display()
+        crate::paths::run_dir(&run_id)
+            .join("stdout.jsonl")
+            .display()
     );
     Ok(())
 }
@@ -253,11 +255,12 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
     let (info_tx, info_rx) = tokio::sync::mpsc::channel::<String>(32);
 
     let (reply_sink, info_sink) = if interactive {
-        let mut rl = rustyline::Editor::<SlashHelper, rustyline::history::DefaultHistory>::with_config(
-            rustyline::Config::builder()
-                .completion_type(rustyline::CompletionType::List)
-                .build(),
-        )?;
+        let mut rl =
+            rustyline::Editor::<SlashHelper, rustyline::history::DefaultHistory>::with_config(
+                rustyline::Config::builder()
+                    .completion_type(rustyline::CompletionType::List)
+                    .build(),
+            )?;
         rl.set_helper(Some(SlashHelper {
             worker: worker.to_string(),
         }));
@@ -271,18 +274,13 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
         // session end. Not joined: it may still be blocked in readline
         // when the session ends elsewhere.
         std::thread::spawn(move || {
-            loop {
-                match rl.readline("you> ") {
-                    Ok(line) => {
-                        if line.trim().is_empty() {
-                            continue;
-                        }
-                        let _ = rl.add_history_entry(line.as_str());
-                        if line_tx.blocking_send(line).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok(line) = rl.readline("you> ") {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let _ = rl.add_history_entry(line.as_str());
+                if line_tx.blocking_send(line).is_err() {
+                    break;
                 }
             }
             let _ = rl.save_history(&crate::paths::talk_history_file());
@@ -411,8 +409,13 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
         }
         if let Some(m) = msg {
             let _ = info_tx.send(format!("(waking {worker}…)")).await;
-            let (tx, handle) =
-                spawn_session(worker, idle, context.clone(), reply_tx.clone(), info_tx.clone());
+            let (tx, handle) = spawn_session(
+                worker,
+                idle,
+                context.clone(),
+                reply_tx.clone(),
+                info_tx.clone(),
+            );
             if tx.send(m).await.is_err() {
                 let _ = info_tx
                     .send("(message not delivered — the session failed to start; try again)".into())

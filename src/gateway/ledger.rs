@@ -276,7 +276,11 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        assert_eq!(allowed.load(Ordering::SeqCst), 100, "reserve overshot the cap");
+        assert_eq!(
+            allowed.load(Ordering::SeqCst),
+            100,
+            "reserve overshot the cap"
+        );
     }
 
     #[test]

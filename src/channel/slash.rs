@@ -30,31 +30,91 @@ impl SlashCall {
 const GRAMMAR: &[(&str, &str, &[&str], &str)] = &[
     ("help", "", &[], "these commands"),
     ("approvals", "ls", &[], "what is pending your approval"),
-    ("approvals", "show", &["id"], "the exact action that would run"),
+    (
+        "approvals",
+        "show",
+        &["id"],
+        "the exact action that would run",
+    ),
     ("approvals", "approve", &["id"], "approve and execute"),
     ("approvals", "deny", &["id"], "record the refusal"),
     ("task", "ls", &[], "tasks, newest first"),
     ("task", "add", &["prompt"], "file a task for this worker"),
     ("task", "show", &["id"], "one task: state, gates, prompt"),
-    ("task", "requeue", &["id"], "put a stuck task back to waiting"),
+    (
+        "task",
+        "requeue",
+        &["id"],
+        "put a stuck task back to waiting",
+    ),
     ("runs", "ls", &[], "this worker's recent sessions"),
     ("runs", "show", &["run"], "one session's record"),
     ("channel", "show", &[], "this channel's settings"),
     ("channel", "trust", &[], "participants here may administer"),
-    ("channel", "untrust", &[], "participants here are content-only"),
-    ("channel", "mode", &["mode"], "all = every message, mention = only when @mentioned"),
-    ("channel", "memory", &["state"], "memory in this channel: on or off"),
-    ("channel", "memory-inferred", &["state"], "inferred channel notes: auto or review"),
-    ("channel", "memory-kinds", &["kinds"], "default, or comma-separated kinds"),
-    ("channel", "memory-retention", &["days"], "default, or a number of days"),
+    (
+        "channel",
+        "untrust",
+        &[],
+        "participants here are content-only",
+    ),
+    (
+        "channel",
+        "mode",
+        &["mode"],
+        "all = every message, mention = only when @mentioned",
+    ),
+    (
+        "channel",
+        "memory",
+        &["state"],
+        "memory in this channel: on or off",
+    ),
+    (
+        "channel",
+        "memory-inferred",
+        &["state"],
+        "inferred channel notes: auto or review",
+    ),
+    (
+        "channel",
+        "memory-kinds",
+        &["kinds"],
+        "default, or comma-separated kinds",
+    ),
+    (
+        "channel",
+        "memory-retention",
+        &["days"],
+        "default, or a number of days",
+    ),
     ("memory", "show", &[], "memories visible here"),
-    ("memory", "ls", &["scope"], "notes by scope: worker | channel | user"),
+    (
+        "memory",
+        "ls",
+        &["scope"],
+        "notes by scope: worker | channel | user",
+    ),
     ("memory", "forget", &["id"], "forget a memory"),
-    ("memory", "correct", &["id", "text"], "replace a memory's content"),
+    (
+        "memory",
+        "correct",
+        &["id", "text"],
+        "replace a memory's content",
+    ),
     ("purpose", "show", &[], "this channel's purpose"),
     ("purpose", "set", &["text"], "set this channel's purpose"),
-    ("worker", "show", &[], "this worker: tasks, approvals, memory"),
-    ("worker", "trust", &[], "per-action trust and earned history"),
+    (
+        "worker",
+        "show",
+        &[],
+        "this worker: tasks, approvals, memory",
+    ),
+    (
+        "worker",
+        "trust",
+        &[],
+        "per-action trust and earned history",
+    ),
     ("identity", "show", &[], "the worker's fixed identity"),
 ];
 
@@ -357,8 +417,7 @@ pub async fn run(
                     created_by: "user".into(),
                     standing: "owner".into(),
                     tags: crate::work::tms::Tags {
-                        provider: Some(memory_context.provider.clone())
-                            .filter(|p| !p.is_empty()),
+                        provider: Some(memory_context.provider.clone()).filter(|p| !p.is_empty()),
                         channel: memory_context.channel_id.clone(),
                         user: memory_context.user_id.clone(),
                     },
@@ -378,14 +437,12 @@ pub async fn run(
             }
             let id = call.arg("id");
             let tasks = crate::work::tms::list_all();
-            let resolved = match crate::util::resolve_prefix(
-                "task",
-                &id,
-                tasks.iter().map(|t| t.id.as_str()),
-            ) {
-                Ok(full) => Some(tasks.into_iter().find(|t| t.id == full).expect("resolved")),
-                Err(_) => crate::work::tms::find(&id),
-            };
+            let resolved =
+                match crate::util::resolve_prefix("task", &id, tasks.iter().map(|t| t.id.as_str()))
+                {
+                    Ok(full) => Some(tasks.into_iter().find(|t| t.id == full).expect("resolved")),
+                    Err(_) => crate::work::tms::find(&id),
+                };
             match resolved {
                 None => format!("Could not show `{id}`: no such task"),
                 Some(t) => {
@@ -409,7 +466,11 @@ pub async fn run(
                     if !gates.is_empty() {
                         lines.push(format!(
                             "pending approval: {}",
-                            gates.iter().map(|g| g.id.as_str()).collect::<Vec<_>>().join(", ")
+                            gates
+                                .iter()
+                                .map(|g| g.id.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         ));
                     }
                     lines.push(format!(
@@ -438,7 +499,12 @@ pub async fn run(
                 .into_iter()
                 .filter(|r| r.worker == worker)
                 .take(10)
-                .map(|r| format!("• `{}` [{}] {} started {}", r.id, r.state, r.kind, r.started_at))
+                .map(|r| {
+                    format!(
+                        "• `{}` [{}] {} started {}",
+                        r.id, r.state, r.kind, r.started_at
+                    )
+                })
                 .collect();
             if runs.is_empty() {
                 format!("No runs for {worker} yet.")
@@ -467,10 +533,7 @@ pub async fn run(
                     if let Some(channel) = &run.channel_id {
                         lines.push(format!("channel {channel}"));
                     }
-                    lines.push(format!(
-                        "full detail: roster server runs show {}",
-                        run.id
-                    ));
+                    lines.push(format!("full detail: roster server runs show {}", run.id));
                     lines.join("\n")
                 }
             }
@@ -501,7 +564,11 @@ pub async fn run(
                 if s.trusted { "trusted" } else { "untrusted" },
                 s.mode,
                 if s.memory_enabled { "on" } else { "off" },
-                if s.memory_inferred_auto { "auto" } else { "review" },
+                if s.memory_inferred_auto {
+                    "auto"
+                } else {
+                    "review"
+                },
                 s.memory_allowed_kinds
                     .as_ref()
                     .map(|v| v.join(","))
@@ -691,8 +758,13 @@ pub async fn run(
         }
         ("memory", "forget") => {
             let id = call.arg("id");
-            match crate::worker::memory::participant_mutate(worker, "forget", &id, None, memory_context)
-            {
+            match crate::worker::memory::participant_mutate(
+                worker,
+                "forget",
+                &id,
+                None,
+                memory_context,
+            ) {
                 Ok(()) => format!("Forgot `{id}`."),
                 Err(e) => format!("Could not forget `{id}`: {e}"),
             }
@@ -740,7 +812,10 @@ pub async fn run(
             }
             let mut by_state: std::collections::BTreeMap<String, usize> =
                 std::collections::BTreeMap::new();
-            for t in crate::work::tms::list_all().into_iter().filter(|t| t.worker == worker) {
+            for t in crate::work::tms::list_all()
+                .into_iter()
+                .filter(|t| t.worker == worker)
+            {
                 *by_state.entry(t.state).or_insert(0) += 1;
             }
             let queue_line = if by_state.is_empty() {
@@ -836,7 +911,14 @@ mod tests {
         // a space starts the next slot
         let (from, c) = complete("/memory ls ", 11, "w");
         assert_eq!(from, 11);
-        assert_eq!(c, vec!["channel".to_string(), "user".to_string(), "worker".to_string()]);
+        assert_eq!(
+            c,
+            vec![
+                "channel".to_string(),
+                "user".to_string(),
+                "worker".to_string()
+            ]
+        );
         // slot 2: argument values, prefix-filtered
         let (from, c) = complete("/channel mode a", 15, "w");
         assert_eq!((from, c), (14, vec!["all".to_string()]));
@@ -853,7 +935,7 @@ mod tests {
         let out = first_words(&s);
         assert!(out.ends_with('…'));
         assert_eq!(out.chars().count(), 61); // 60 chars + ellipsis
-        // Short strings pass through untouched.
+                                             // Short strings pass through untouched.
         assert_eq!(first_words("hello"), "hello");
     }
 }

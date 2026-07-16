@@ -44,11 +44,15 @@ async fn api(token: &str, method: &str, body: Value) -> Result<Value, String> {
                 .and_then(|s| s.parse::<f64>().ok())
                 .unwrap_or(1.0);
             if attempt < 4 {
-                tokio::time::sleep(std::time::Duration::from_secs_f64(wait.clamp(0.0, 60.0) + 0.05))
-                    .await;
+                tokio::time::sleep(std::time::Duration::from_secs_f64(
+                    wait.clamp(0.0, 60.0) + 0.05,
+                ))
+                .await;
                 continue;
             }
-            return Err(format!("slack {method} rate limited; gave up after retries"));
+            return Err(format!(
+                "slack {method} rate limited; gave up after retries"
+            ));
         }
         let payload: Value = res.json().await.unwrap_or(Value::Null);
         if !status.is_success() || !payload["ok"].as_bool().unwrap_or(false) {
@@ -413,7 +417,11 @@ async fn route_to_session(
         .map(|e| e.to_string());
         {
             let mut map = sessions().lock().unwrap();
-            if map.get(&session_map_key).map(|tx| tx.is_closed()).unwrap_or(false) {
+            if map
+                .get(&session_map_key)
+                .map(|tx| tx.is_closed())
+                .unwrap_or(false)
+            {
                 map.remove(&session_map_key);
             }
         }

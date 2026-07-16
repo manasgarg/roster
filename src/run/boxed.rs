@@ -21,6 +21,20 @@ const BOX_CA_BUNDLE_PATH: &str = "/opt/roster/ca-bundle.crt";
 const SENTINEL: &str = "roster-sentinel-no-real-credential-in-box";
 const CONTAINER_TEMP: &str = "/tmp:rw,nosuid,nodev,size=2147483648,mode=1777";
 
+// Writable run storage is bind-mounted at these fixed CONTAINER paths — never at
+// the identical host path — so nothing inside the box (pwd, $HOME, a stack
+// trace) reveals the host layout, and the box can't name a real host path to
+// plant a file at (F4, defense in depth for the identity boundary). Read-only
+// mounts (channel history, CA, the dev engine) keep their paths: they can't be
+// used to smuggle a host-visible writable file.
+const WORKSPACE_MOUNT: &str = "/workspace";
+const SESSION_MOUNT: &str = "/session";
+const PIHOME_MOUNT: &str = "/pihome";
+const WORKTREE_MOUNT: &str = "/worktree";
+// The custom iptables chain that pins the box network's host egress to the
+// gateway port when `[box] egress_lockdown` is on (F3).
+const EGRESS_CHAIN: &str = "ROSTER-LOCKED";
+
 pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<(), BErr> {
     if ceiling_min <= 0.0 {
         return Err("--ceiling wants a positive number of minutes".into());
@@ -349,6 +363,15 @@ pub async fn run_session(
             return Err(error);
         }
     };
+    // Warm-session wall-clock bounds (F5): the idle timer only fires between
+    // turns, so a turn that never ends (a tool loop, a wedged agent) would run
+    // forever. A per-turn ceiling and a whole-session ceiling backstop it.
+    let box_policy = crate::config::snapshot()
+        .map(|c| c.box_policy.clone())
+        .unwrap_or_default();
+    let session_ceiling = Duration::from_secs_f64(box_policy.session_ceiling_min * 60.0);
+    let turn_ceiling = Duration::from_secs_f64(box_policy.turn_ceiling_min * 60.0);
+
     args.insert(1, "-i".into()); // keep stdin open for the rpc protocol
     args.extend(pi_prefix(&engine, "rpc", &session_dir)?);
     append_cache_session_id(&mut args, &start.cache.route_key);
@@ -382,6 +405,8 @@ pub async fn run_session(
         eprintln!("session {run_id} [{worker}] started");
     }
     let idle = Duration::from_secs(idle_secs);
+    let session_deadline = tokio::time::Instant::now() + session_ceiling;
+    let mut turn_started: Option<tokio::time::Instant> = None;
     let mut rx_open = true;
     let mut busy = false; // a turn is in progress
     let mut clean_exit = false;
@@ -437,6 +462,7 @@ pub async fn run_session(
                 }
                 let _ = stdin.flush().await;
                 busy = true;
+                turn_started = Some(tokio::time::Instant::now());
             }
         }
         tokio::select! {
@@ -457,11 +483,22 @@ pub async fn run_session(
                     }
                     if line.contains("\"type\":\"agent_end\"") {
                         busy = false; // turn complete
+                        turn_started = None;
                     }
                 }
                 _ => break, // box closed stdout / exited
             },
             _ = tokio::time::sleep(idle), if !busy => { clean_exit = true; break; }, // idle only when not mid-turn
+            _ = tokio::time::sleep_until(session_deadline) => {
+                eprintln!("session {run_id}: reached the session ceiling ({:.0}m); ending", box_policy.session_ceiling_min);
+                clean_exit = !busy; // a clean bound between turns; an error if it cuts a turn
+                break;
+            }
+            _ = sleep_until_opt(turn_started.map(|t| t + turn_ceiling)), if busy => {
+                eprintln!("session {run_id}: a turn ran past the turn ceiling ({:.0}m); ending", box_policy.turn_ceiling_min);
+                clean_exit = false;
+                break;
+            }
         }
     }
 
@@ -570,7 +607,8 @@ async fn provision_box(
     knowledge_mode: &str,
     ceiling_min: Option<f64>,
 ) -> Result<Provisioned, BErr> {
-    ensure_lockdown().await?;
+    let config = crate::config::snapshot().map_err(|e| format!("config invalid:\n{e}"))?;
+    ensure_lockdown(&config.box_policy).await?;
 
     let home = home_dir();
     let host_ca = crate::paths::ca_dir().join("ca.crt");
@@ -581,8 +619,6 @@ async fn provision_box(
     // the box is pointed at. Ensured here too, so a CLI run works even if the
     // daemon predates the bundle.
     let host_bundle = crate::gateway::ca::ensure_bundle().map_err(|e| e.to_string())?;
-
-    let config = crate::config::snapshot().map_err(|e| format!("config invalid:\n{e}"))?;
 
     // The engine: baked into the image by default; `[engine] dir` (a dev
     // checkout, the ONLY roster-adjacent directory the box ever mounts) wins
@@ -662,18 +698,39 @@ async fn provision_box(
         "-u".into(),
         format!("{uid}:{gid}"),
     ];
+    // Container hardening (F2). Non-root already blocks the easy cases; these
+    // close the rest: drop every capability, forbid setuid privilege escalation
+    // (the image still ships su/mount/newgrp…), and bound processes so a rogue
+    // or prompt-injected agent can't fork-bomb or memory/CPU-starve the *host*
+    // (a shared kernel). Memory/CPU caps apply only when configured.
+    let box_policy = &config.box_policy;
+    args.extend([
+        "--cap-drop".into(),
+        "ALL".into(),
+        "--security-opt".into(),
+        "no-new-privileges".into(),
+    ]);
+    if box_policy.pids_limit > 0 {
+        args.extend(["--pids-limit".into(), box_policy.pids_limit.to_string()]);
+    }
+    if let Some(mem) = &box_policy.memory {
+        args.extend(["--memory".into(), mem.clone()]);
+    }
+    if let Some(cpus) = &box_policy.cpus {
+        args.extend(["--cpus".into(), cpus.clone()]);
+    }
     if let Engine::Mounted(repo) = &engine {
         args.extend(["-v".into(), format!("{0}:{0}:ro", repo.display())]);
     }
     append_container_temp(&mut args);
-    let mount = |p: &Path| format!("{0}:{0}", p.display());
+    // Writable run storage at fixed container paths, not identical host paths (F4).
     args.extend([
         "-v".into(),
-        mount(&workspace),
+        format!("{}:{WORKSPACE_MOUNT}", workspace.display()),
         "-v".into(),
-        mount(&session),
+        format!("{}:{SESSION_MOUNT}", session.display()),
         "-v".into(),
-        mount(&pihome),
+        format!("{}:{PIHOME_MOUNT}", pihome.display()),
     ]);
     if let Some(knowledge) = storage.knowledge.as_ref() {
         let ro = if knowledge.mode == crate::worker::knowledge::KnowledgeMode::Read {
@@ -706,16 +763,16 @@ async fn provision_box(
         format!("{}:{TASKS_MOUNT}", tasks_view.display()),
     ]);
     if let Some(wt) = &worktree {
-        args.extend(["-v".into(), mount(wt)]);
+        args.extend(["-v".into(), format!("{}:{WORKTREE_MOUNT}", wt.display())]);
     }
     args.push("-v".into());
     args.push(format!("{}:{BOX_CA_PATH}:ro", host_ca.display()));
     args.push("-v".into());
     args.push(format!("{}:{BOX_CA_BUNDLE_PATH}:ro", host_bundle.display()));
-    args.extend(["-e".into(), format!("HOME={}", pihome.display())]);
+    args.extend(["-e".into(), format!("HOME={PIHOME_MOUNT}")]);
     args.extend([
         "-e".into(),
-        format!("PI_CODING_AGENT_DIR={}", pihome.join("agent").display()),
+        format!("PI_CODING_AGENT_DIR={PIHOME_MOUNT}/agent"),
     ]);
     args.extend(["-e".into(), format!("ROSTER_RUN_ID={run_id}")]);
     args.extend(["-e".into(), format!("ROSTER_TASKS_FILE={TASKS_MOUNT}")]);
@@ -781,14 +838,20 @@ async fn provision_box(
             args.extend(["-e".into(), format!("ANTHROPIC_API_KEY={key}")]);
         }
     }
-    let cwd = worktree.as_ref().unwrap_or(&workspace);
-    args.extend(["-w".into(), cwd.display().to_string(), "roster-box".into()]);
+    let cwd = if worktree.is_some() {
+        WORKTREE_MOUNT
+    } else {
+        WORKSPACE_MOUNT
+    };
+    args.extend(["-w".into(), cwd.into(), "roster-box".into()]);
 
     Ok(Provisioned {
         args,
         identity_file,
         container,
-        session_dir: session,
+        // The container-side session path pi is pointed at (`--session-dir`);
+        // on the host this maps back to `session` (run_dir/session).
+        session_dir: PathBuf::from(SESSION_MOUNT),
         run_dir,
         engine,
         storage,
@@ -836,9 +899,18 @@ fn append_container_temp(args: &mut Vec<String>) {
     args.extend(["--tmpfs".into(), CONTAINER_TEMP.into()]);
 }
 
+/// Sleep until a deadline, or never if there is none — lets the warm-session
+/// select arm the per-turn ceiling only while a turn is actually in flight.
+async fn sleep_until_opt(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(d) => tokio::time::sleep_until(d).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
 // ── lockdown ─────────────────────────────────────────────────────────────────
 
-async fn ensure_lockdown() -> Result<(), BErr> {
+async fn ensure_lockdown(box_policy: &crate::config::BoxPolicy) -> Result<(), BErr> {
     let ok = docker_ok(&["network", "inspect", LOCKDOWN_NETWORK])
         || docker_ok(&[
             "network",
@@ -849,6 +921,14 @@ async fn ensure_lockdown() -> Result<(), BErr> {
         ]);
     if !ok {
         return Err(format!("refusing to start the box with open egress: the \"{LOCKDOWN_NETWORK}\" docker network could not be created").into());
+    }
+    // Masquerade-off breaks the *internet* return path, but the host itself
+    // stays reachable on every port (F3). Pin host egress to the gateway when
+    // asked; otherwise make the residual reach legible, once per process.
+    if box_policy.egress_lockdown {
+        ensure_egress_lockdown()?;
+    } else {
+        warn_open_host_egress();
     }
     let healthy = reqwest::Client::new()
         .get(format!("http://127.0.0.1:{GATEWAY_PORT}/healthz"))
@@ -861,6 +941,102 @@ async fn ensure_lockdown() -> Result<(), BErr> {
         return Err(format!("refusing to start the box with open egress: the gateway is not answering on :{GATEWAY_PORT} — start it with: roster server start").into());
     }
     Ok(())
+}
+
+fn warn_open_host_egress() {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        eprintln!(
+            "note: the box can't reach the internet, but the host stays reachable on all ports \
+             (a local DB, another container's published port, a TCP docker socket, ssh) — these \
+             bypass the gateway. Set `[box] egress_lockdown = true` in org.toml to pin box egress \
+             to the gateway on :{GATEWAY_PORT} (needs root / CAP_NET_ADMIN for iptables)."
+        );
+    });
+}
+
+/// Pin the locked network's host egress to the gateway port only. Uses a
+/// dedicated iptables chain, rebuilt each run so ordering is deterministic and
+/// idempotent without touching any other INPUT rule; a single `-s <subnet>`
+/// jump routes box→host traffic into it. Fails closed (refuses to start the
+/// box) if the rules can't be installed — matching the rest of the lockdown.
+fn ensure_egress_lockdown() -> Result<(), BErr> {
+    let subnet = locked_subnet()?;
+    let priv_err = || -> BErr {
+        format!(
+            "[box] egress_lockdown is on but the iptables rules could not be installed for {subnet} \
+             (need root / CAP_NET_ADMIN). Run the daemon with the capability, or unset egress_lockdown."
+        )
+        .into()
+    };
+    // Our own chain: create if absent, then flush so we own its exact contents.
+    let _ = ipt(&["-N", EGRESS_CHAIN]); // ignore "chain already exists"
+    if !ipt(&["-F", EGRESS_CHAIN]) {
+        return Err(priv_err());
+    }
+    for rule in egress_chain_rules(GATEWAY_PORT) {
+        let args: Vec<&str> = std::iter::once("-A")
+            .chain(std::iter::once(EGRESS_CHAIN))
+            .chain(rule.iter().map(String::as_str))
+            .collect();
+        if !ipt(&args) {
+            return Err(priv_err());
+        }
+    }
+    // Route box→host traffic into the chain (idempotent via -C before -I).
+    let jump = ["INPUT", "-s", subnet.as_str(), "-j", EGRESS_CHAIN];
+    let present = ipt(&[&["-C"], &jump[..]].concat());
+    if !present && !ipt(&[&["-I"], &jump[..]].concat()) {
+        return Err(priv_err());
+    }
+    eprintln!("box egress locked: {subnet} may reach the host only on :{GATEWAY_PORT}");
+    Ok(())
+}
+
+/// The ordered contents of the egress chain: accept the gateway port, drop the
+/// rest. Pure, so the ordering (accept before drop) is unit-tested.
+fn egress_chain_rules(gateway_port: u16) -> Vec<Vec<String>> {
+    vec![
+        vec![
+            "-p".into(),
+            "tcp".into(),
+            "--dport".into(),
+            gateway_port.to_string(),
+            "-j".into(),
+            "ACCEPT".into(),
+        ],
+        vec!["-j".into(), "DROP".into()],
+    ]
+}
+
+fn locked_subnet() -> Result<String, BErr> {
+    let out = std::process::Command::new("docker")
+        .args([
+            "network",
+            "inspect",
+            LOCKDOWN_NETWORK,
+            "-f",
+            "{{range .IPAM.Config}}{{.Subnet}}{{end}}",
+        ])
+        .output()?;
+    let subnet = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if subnet.is_empty() {
+        return Err(
+            format!("could not read the {LOCKDOWN_NETWORK} subnet for egress lockdown").into(),
+        );
+    }
+    Ok(subnet)
+}
+
+/// Run one `iptables` invocation, quietly; true on success.
+fn ipt(args: &[&str]) -> bool {
+    std::process::Command::new("iptables")
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn docker_ok(args: &[&str]) -> bool {
@@ -1037,9 +1213,18 @@ mod tests {
     fn cache_route_key_becomes_the_pi_session_id() {
         let mut args = vec!["node".into(), "pi".into()];
         append_cache_session_id(&mut args, "roster-pc-abc123");
+        assert_eq!(args, vec!["node", "pi", "--session-id", "roster-pc-abc123"]);
+    }
+
+    #[test]
+    fn egress_chain_accepts_gateway_port_before_dropping() {
+        let rules = egress_chain_rules(GATEWAY_PORT);
+        // Order is load-bearing: the gateway-port ACCEPT must precede the DROP,
+        // or the box would lose its only exit.
         assert_eq!(
-            args,
-            vec!["node", "pi", "--session-id", "roster-pc-abc123"]
+            rules[0],
+            vec!["-p", "tcp", "--dport", "7300", "-j", "ACCEPT"]
         );
+        assert_eq!(rules[1], vec!["-j", "DROP"]);
     }
 }

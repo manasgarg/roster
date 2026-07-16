@@ -43,6 +43,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 # pnpm/yarn shims via corepack (ships with node).
 RUN corepack enable
 
+# Strip every setuid/setgid bit (su, mount, newgrp, passwd, …). The box runs as
+# a non-root uid with --security-opt=no-new-privileges, so these are already
+# neutralized at runtime; removing the bits is belt-and-suspenders and shrinks
+# the in-container privilege-escalation surface to nothing (F2).
+RUN find / -xdev -type f \( -perm -4000 -o -perm -2000 \) -exec chmod -s {} + 2>/dev/null || true
+
 # Tier 2 — org choice, heavy: document/media tooling.
 #   docker build --build-arg TIER2=1 -t roster-box -f box/Dockerfile .
 ARG TIER2=0

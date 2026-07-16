@@ -193,18 +193,36 @@ fn empty() -> Body {
 
 // ── identity ────────────────────────────────────────────────────────────────
 
+/// A subject that no grant, action, or budget can ever match — the resolved
+/// identity for a box that presents a token that isn't a real minted one. Scope
+/// matching is `subject == scope || subject.startsWith("scope/")`, and every
+/// real scope is "org" or "org/<worker>", so this leading-'!' subject nests
+/// under nothing and default-denies everywhere (invariant #11, fail closed).
+const UNRESOLVED_SUBJECT: &str = "!unresolved";
+
 /// Resolve the call's subject and run from the CONNECT's Proxy-Authorization. The
 /// trusted runner sets `HTTP(S)_PROXY=http://<token>@…` and registers
-/// `<state>/identity/<token>.json = {subject}` (never mounted into the box), so the box
-/// can present only its own random token — it can't claim another worker's
-/// identity. Unknown/absent ⇒ "org" (host-side tools with no creds).
+/// `<state>/identity/<token>.json = {subject}` (never mounted into the box).
+///
+/// The token IS box-controlled input — the agent has a shell and can craft any
+/// `Proxy-Authorization` it likes — so this must never (a) trust it as identity
+/// or (b) let it steer a filesystem path. Two guards:
+///   - No proxy credential at all ⇒ a trusted host-side caller (the roster
+///     binary itself never proxies through here); resolve to "org".
+///   - A box-presented token must be exactly a minted v4 UUID. Anything else, or
+///     a well-formed token with no matching registration, resolves to the
+///     un-grantable UNRESOLVED_SUBJECT — never to a real subject and never to
+///     the fleet root. Validating the UUID *before* the join also closes the
+///     path-traversal: no valid UUID contains `/`, `\`, or `.`, so the token
+///     can't escape identity_dir or point at a box-written file.
 fn resolve_identity(proxy_auth: Option<&hyper::header::HeaderValue>) -> (String, String) {
-    let default = || ("org".to_string(), String::new());
+    let host_side = || ("org".to_string(), String::new());
+    let unresolved = || (UNRESOLVED_SUBJECT.to_string(), String::new());
     let Some(b64) = proxy_auth
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Basic "))
     else {
-        return default();
+        return host_side();
     };
     use base64::Engine;
     let token = base64::engine::general_purpose::STANDARD
@@ -214,7 +232,12 @@ fn resolve_identity(proxy_auth: Option<&hyper::header::HeaderValue>) -> (String,
         .map(|creds| creds.split(':').next().unwrap_or("").to_string())
         .unwrap_or_default();
     if token.is_empty() {
-        return default();
+        // A "Basic :" style empty username is not a host-side caller (those send
+        // no Proxy-Authorization at all) — treat it as an unresolved box token.
+        return unresolved();
+    }
+    if uuid::Uuid::parse_str(&token).is_err() {
+        return unresolved();
     }
     let path = crate::paths::identity_dir().join(format!("{token}.json"));
     std::fs::read_to_string(path)
@@ -229,7 +252,7 @@ fn resolve_identity(proxy_auth: Option<&hyper::header::HeaderValue>) -> (String,
                 .to_string();
             Some((subject, run_id))
         })
-        .unwrap_or_else(default)
+        .unwrap_or_else(unresolved)
 }
 
 /// A policy denial a CLI can read: the status line carries the verdict and
@@ -697,4 +720,141 @@ fn upstream_connector() -> tokio_rustls::TlsConnector {
             tokio_rustls::TlsConnector::from(Arc::new(config))
         })
         .clone()
+}
+
+// ── Regression guard: F1 — a box cannot impersonate another worker ───────────
+//
+// The former exploit, now asserted CLOSED, against the REAL gateway code
+// (`resolve_identity` + `judge`/`scope`), no Docker/daemon needed.
+//
+// Run:  cargo test poc_f1 -- --nocapture
+//
+// The attack was: the box fully controls the CONNECT `Proxy-Authorization`
+// header (it has a shell + curl), and `resolve_identity` fed the username
+// straight into a filesystem path. Because run dirs are bind-mounted writable,
+// the box could write a forged `{ "subject": … }` file and point the token at
+// its absolute path — an absolute path makes `identity_dir().join(...)` discard
+// `identity_dir` entirely — impersonating any worker. The fix validates the
+// token is a minted UUID before any filesystem access and fails closed to an
+// un-grantable subject otherwise.
+#[cfg(test)]
+mod poc_f1_identity_spoof {
+    use super::{resolve_identity, UNRESOLVED_SUBJECT};
+    use crate::gateway::judge::judge;
+    use crate::gateway::schema::{GovernedRequest, Policy, Verdict};
+    use base64::Engine as _;
+    use std::collections::HashMap;
+
+    /// Build a `Proxy-Authorization: Basic …` value the way curl would from
+    /// `--proxy-user '<username>:x'`. `username` is the attacker-chosen "token".
+    fn proxy_auth(username: &str) -> hyper::header::HeaderValue {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(format!("{username}:x"));
+        hyper::header::HeaderValue::from_str(&format!("Basic {b64}")).unwrap()
+    }
+
+    /// A GET only the *victim* worker (org/finance-bot) is allowed to make; the
+    /// gateway would also inject the victim's GitHub PAT in transit on it.
+    fn victim_request(subject: &str) -> GovernedRequest {
+        GovernedRequest {
+            worker: Some(subject.to_string()),
+            protocol: "https".into(),
+            method: "GET".into(),
+            host: "api.github.com".into(),
+            port: 443,
+            path: "/user/repos".into(),
+            query: String::new(),
+            headers: HashMap::new(),
+            body_size: 0,
+            mcp: None,
+        }
+    }
+
+    /// Admin policy: only org/finance-bot may reach api.github.com, injecting
+    /// its credential. Any other subject falls through to default-deny.
+    fn policy() -> Policy {
+        serde_json::from_str(
+            r#"{"rules":[{
+                "name":"finance-bot-github",
+                "scope":"org/finance-bot",
+                "match":{"host":"api.github.com","port":443,"method":"GET"},
+                "verdict":"allow",
+                "inject":{"credential":"finance_bot_github_pat"}
+            }]}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn poc_f1_box_cannot_assume_another_workers_identity() {
+        let pol = policy();
+
+        // A scratch dir standing in for the box's writable workspace mount. In a
+        // real deployment this is $ROSTER_ROOT/state/runs/<run_id>/workspace —
+        // writable, and the box knows its absolute path (via pwd).
+        let workspace = std::env::temp_dir().join(format!(
+            "roster-f1-{}/runs/run-abc/workspace",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        // The former exploit: forge an identity file and present its absolute
+        // path as the proxy token. The path is not a UUID, so resolution now
+        // rejects it BEFORE reading the file — no impersonation.
+        let forged = workspace.join("evil.json");
+        std::fs::write(
+            &forged,
+            r#"{"subject":"org/finance-bot","run_id":"forged"}"#,
+        )
+        .unwrap();
+        let (spoofed, _) = resolve_identity(Some(&proxy_auth(
+            forged.with_extension("").to_str().unwrap(),
+        )));
+        assert_eq!(
+            spoofed, UNRESOLVED_SUBJECT,
+            "F1: absolute-path token must not resolve to a worker"
+        );
+        assert_ne!(spoofed, "org/finance-bot", "F1: no impersonation");
+        assert_eq!(
+            judge(&victim_request(&spoofed), &pol).0,
+            Verdict::Deny,
+            "F1: no grant"
+        );
+
+        // A `..` traversal token is likewise rejected (not a UUID).
+        let (trav, _) = resolve_identity(Some(&proxy_auth("../../../../etc/passwd")));
+        assert_eq!(trav, UNRESOLVED_SUBJECT, "F1: traversal token rejected");
+
+        // Junk fails CLOSED to an un-grantable subject — no longer the fleet root.
+        let (junk, _) = resolve_identity(Some(&proxy_auth("not-a-real-token")));
+        assert_eq!(
+            junk, UNRESOLVED_SUBJECT,
+            "F1: unknown token no longer becomes org"
+        );
+        assert_eq!(judge(&victim_request(&junk), &pol).0, Verdict::Deny);
+
+        // A well-formed but UNREGISTERED UUID (no file on disk) also fails closed.
+        let (ghost, _) = resolve_identity(Some(&proxy_auth(&uuid::Uuid::new_v4().to_string())));
+        assert_eq!(
+            ghost, UNRESOLVED_SUBJECT,
+            "F1: valid-shape but unknown token denied"
+        );
+
+        // A host-side caller (the roster binary itself) sends NO proxy auth and
+        // still resolves to the org subject — the legitimate path is preserved.
+        assert_eq!(
+            resolve_identity(None).0,
+            "org",
+            "host-side default preserved"
+        );
+
+        println!("\n=== F1 regression guard: identity spoofing is blocked ===");
+        println!("absolute-path token -> {spoofed}   (was: org/finance-bot)");
+        println!("traversal token     -> {trav}");
+        println!("junk token          -> {junk}   (was: org)");
+        println!("unregistered UUID   -> {ghost}");
+        println!("no proxy auth       -> org (host-side, preserved)");
+        println!("=> every box-controlled token now default-denies; #11 holds.\n");
+
+        let _ = std::fs::remove_dir_all(workspace.parent().unwrap().parent().unwrap());
+    }
 }

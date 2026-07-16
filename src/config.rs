@@ -12,10 +12,10 @@
 use crate::action::ActionPolicy;
 use crate::gateway::budget::BudgetPolicy;
 use crate::gateway::schema::Policy;
+use crate::paths;
 use crate::worker::context::{CompiledContextPolicy, ContextPolicy};
 use crate::worker::memory::{CompiledMemoryPolicy, MemoryPolicy};
 use crate::worker::storage::{CompiledStoragePolicy, StoragePolicy};
-use crate::paths;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -48,6 +48,78 @@ pub struct Expose {
     pub env: String,
 }
 
+/// `[box]` in org.toml — the container's hardening and resource envelope, plus
+/// warm-session wall-clock ceilings. All optional; the defaults below apply
+/// when the section (or a key) is absent. A bad value falls back to the default
+/// rather than failing the whole config (these are operational knobs, not
+/// grants).
+#[derive(Clone, Debug)]
+pub struct BoxPolicy {
+    /// `--pids-limit` (fork-bomb guard). <= 0 disables the flag.
+    pub pids_limit: i64,
+    /// `--memory` (e.g. "4g"). None = unlimited (a host-DoS risk; set it).
+    pub memory: Option<String>,
+    /// `--cpus` (e.g. "2"). None = unlimited.
+    pub cpus: Option<String>,
+    /// Install host firewall rules pinning the locked network's egress to the
+    /// gateway host:port only (F3). Off by default: it needs root/CAP_NET_ADMIN,
+    /// and when off the runner warns that host-local services stay reachable.
+    pub egress_lockdown: bool,
+    /// Hard wall-clock ceiling for a whole warm session (minutes).
+    pub session_ceiling_min: f64,
+    /// Hard wall-clock ceiling for a single warm-session turn (minutes) — the
+    /// bound the idle timer can't provide, since a wedged turn never goes idle.
+    pub turn_ceiling_min: f64,
+}
+
+impl Default for BoxPolicy {
+    fn default() -> Self {
+        Self {
+            pids_limit: 1024,
+            memory: None,
+            cpus: None,
+            egress_lockdown: false,
+            session_ceiling_min: 60.0,
+            turn_ceiling_min: 15.0,
+        }
+    }
+}
+
+fn parse_box_policy(v: Option<&toml::Value>) -> BoxPolicy {
+    let d = BoxPolicy::default();
+    let Some(v) = v else { return d };
+    let num = |key: &str| -> Option<f64> {
+        v.get(key)
+            .and_then(|x| x.as_float().or_else(|| x.as_integer().map(|i| i as f64)))
+    };
+    let string_like = |key: &str| -> Option<String> {
+        v.get(key).and_then(|x| {
+            x.as_str()
+                .map(str::to_string)
+                .or_else(|| x.as_integer().map(|i| i.to_string()))
+                .or_else(|| x.as_float().map(|f| f.to_string()))
+        })
+    };
+    BoxPolicy {
+        pids_limit: v
+            .get("pids_limit")
+            .and_then(|x| x.as_integer())
+            .unwrap_or(d.pids_limit),
+        memory: string_like("memory"),
+        cpus: string_like("cpus"),
+        egress_lockdown: v
+            .get("egress_lockdown")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(d.egress_lockdown),
+        session_ceiling_min: num("session_ceiling_min")
+            .filter(|m| *m > 0.0)
+            .unwrap_or(d.session_ceiling_min),
+        turn_ceiling_min: num("turn_ceiling_min")
+            .filter(|m| *m > 0.0)
+            .unwrap_or(d.turn_ceiling_min),
+    }
+}
+
 pub struct Loaded {
     pub policy: Policy,
     pub budget: BudgetPolicy,
@@ -76,6 +148,8 @@ pub struct Loaded {
     /// engine baked into the roster-box image. Unset (the default) runs the
     /// baked engine.
     pub engine_dir: Option<PathBuf>,
+    /// `[box]` — container hardening/resource envelope and session ceilings.
+    pub box_policy: BoxPolicy,
 }
 
 /// Parse and validate everything, collecting every error (not just the first).
@@ -95,7 +169,8 @@ pub fn load() -> Result<Loaded, Vec<String>> {
     let mut limits: Vec<Value> = Vec::new();
     let mut actions: Vec<Value> = Vec::new();
     let mut trust: Vec<Value> = Vec::new();
-    let mut heartbeats: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut heartbeats: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut listeners: Vec<(String, String, String)> = Vec::new();
     let mut exposes: Vec<Expose> = Vec::new();
     let mut workers: Vec<String> = Vec::new();
@@ -138,6 +213,8 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         .and_then(|e| e.get("dir"))
         .and_then(|v| v.as_str())
         .map(PathBuf::from);
+
+    let box_policy = parse_box_policy(org.get("box"));
 
     let workers_dir = paths::workers_dir();
     if workers_dir.is_dir() {
@@ -184,7 +261,10 @@ pub fn load() -> Result<Loaded, Vec<String>> {
             }
             match storage_policy(&w, Some(&default_storage)) {
                 Ok(storage) => {
-                    match crate::worker::storage::validate_worker_overlay(&default_storage, &storage) {
+                    match crate::worker::storage::validate_worker_overlay(
+                        &default_storage,
+                        &storage,
+                    ) {
                         Ok(()) => {
                             worker_storage.insert(name.clone(), storage);
                         }
@@ -355,6 +435,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         warnings,
         workers,
         engine_dir,
+        box_policy,
     })
 }
 
@@ -872,7 +953,9 @@ mod tests {
         )
         .unwrap_err();
         assert!(errors.iter().any(|e| e.contains("unknown provider")));
-        assert!(errors.iter().any(|e| e.contains("no such worker \"ghost\"")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("no such worker \"ghost\"")));
         assert!(errors.iter().any(|e| e.contains("needs hosts")));
         assert!(errors.iter().any(|e| e.contains("needs env")));
     }

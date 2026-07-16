@@ -22,11 +22,11 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
     if cap == 0 {
         return Err("--cap wants a positive integer".into());
     }
-    reclaim();
     let mut set: JoinSet<(tms::Task, Result<boxed::Outcome, String>)> = JoinSet::new();
     // Tasks handed to boxes this tick-cycle but not yet joined, so a slow
     // journal write can't double-dispatch.
     let mut in_flight: HashSet<String> = HashSet::new();
+    reclaim(&mut set, &mut in_flight);
     let mut credential_warned = false;
 
     loop {
@@ -189,16 +189,24 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
 }
 
 /// On startup, any task still `claimed` is orphaned from a previous supervisor.
-/// If its box container is gone, put it back to pending so it runs again; if a
-/// container is somehow still alive, leave it be (don't double-run).
-fn reclaim() {
+/// If its box is gone, put it back to pending so it runs again. If its box is
+/// still running, ADOPT it — wait for it and finalize the task on exit — rather
+/// than leaving it wedged in `claimed` forever (never attested, then requeued
+/// and re-run on the next restart, repeating its side effects).
+fn reclaim(
+    set: &mut JoinSet<(tms::Task, Result<boxed::Outcome, String>)>,
+    in_flight: &mut HashSet<String>,
+) {
     for t in tms::list_all().into_iter().filter(|t| t.state == "claimed") {
-        if t.run_id.as_deref().map(boxed::box_alive).unwrap_or(false) {
-            eprintln!(
-                "reclaim: {} still has a live box ({}) — leaving it",
-                t.id,
-                t.run_id.as_deref().unwrap_or("")
-            );
+        let run_id = t.run_id.clone().unwrap_or_default();
+        if !run_id.is_empty() && boxed::box_alive(&run_id) {
+            eprintln!("reclaim: adopting live box {run_id} for {}", t.id);
+            in_flight.insert(t.id.clone());
+            let task = t.clone();
+            set.spawn(async move {
+                let out = boxed::adopt(&run_id).await;
+                (task, out)
+            });
         } else if tms::finish(&t.worker, &t.id, "pending").is_ok() {
             eprintln!("reclaim: {} → pending (no live box)", t.id);
         }

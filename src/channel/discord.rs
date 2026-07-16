@@ -684,15 +684,35 @@ async fn handle_interaction(worker: &str, d: &Value, guilds: &HashMap<String, Gu
         .unwrap_or("someone");
     let text = run_command(worker, d, role, caller).await;
 
-    // Fill in the deferred response (webhook uses the interaction token).
-    let _ = reqwest::Client::new()
+    // Fill in the deferred response, chunked to Discord's 2000-char limit: the
+    // first chunk edits the deferred @original, the rest are ephemeral followups.
+    // Without chunking a long reply (e.g. `/task ls`) 400s and the user is left
+    // on "thinking…"; the failure was previously swallowed too.
+    let client = reqwest::Client::new();
+    let chunks = crate::util::chunk_message(&text, 2000);
+    let first = chunks.first().map(|s| s.as_str()).unwrap_or("(no output)");
+    match client
         .patch(format!(
             "{}/webhooks/{app_id}/{itoken}/messages/@original",
             base()
         ))
-        .json(&json!({ "content": text }))
+        .json(&json!({ "content": first }))
         .send()
-        .await;
+        .await
+    {
+        Ok(r) if !r.status().is_success() => {
+            eprintln!("discord interaction reply failed: {}", r.status())
+        }
+        Err(e) => eprintln!("discord interaction reply error: {e}"),
+        _ => {}
+    }
+    for chunk in chunks.iter().skip(1) {
+        let _ = client
+            .post(format!("{}/webhooks/{app_id}/{itoken}", base()))
+            .json(&json!({ "content": chunk, "flags": 64 }))
+            .send()
+            .await;
+    }
 }
 
 /// Adapt a Discord interaction into the shared slash surface (channel::slash)

@@ -101,36 +101,64 @@ struct Guild {
     channels: usize,
 }
 
+/// Enough to RESUME a dropped session (op 6) rather than re-IDENTIFY: Discord
+/// only replays messages missed during the gap on a resume, so without this
+/// every message sent during a reconnect is lost.
+#[derive(Clone)]
+struct ResumeState {
+    session_id: String,
+    seq: i64,
+    url: String,
+}
+
 struct GwError {
     fatal: bool,
     msg: String,
+    /// Present when the drop is resumable — the next dial should RESUME, not
+    /// re-IDENTIFY. Absent (op 9 / fatal) means start a fresh session.
+    resume: Option<ResumeState>,
 }
 
 /// Run the gateway for one worker: dial out, identify, and dispatch events.
-/// Reconnects on transient errors; stops on fatal ones (bad token / disallowed
-/// intent).
+/// Reconnects on transient errors, resuming the session when possible so no
+/// messages are dropped in the gap; stops on fatal ones (bad token / intent).
 pub async fn run_gateway(worker: &str, token: &str) {
+    let mut resume: Option<ResumeState> = None;
     loop {
-        match connect_once(worker, token).await {
+        match connect_once(worker, token, resume.take()).await {
             Ok(()) => {}
             Err(e) if e.fatal => {
                 eprintln!("discord gateway: {} — stopping.", e.msg);
                 return;
             }
             Err(e) => {
-                eprintln!("discord gateway: {} — reconnecting in 5s", e.msg);
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                resume = e.resume;
+                // A resume can retry promptly; a fresh reconnect waits longer.
+                let delay = if resume.is_some() { 1 } else { 5 };
+                eprintln!("discord gateway: {} — reconnecting in {delay}s", e.msg);
+                tokio::time::sleep(Duration::from_secs(delay)).await;
             }
         }
     }
 }
 
-async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
+async fn connect_once(
+    worker: &str,
+    token: &str,
+    resume: Option<ResumeState>,
+) -> Result<(), GwError> {
     let transient = |m: String| GwError {
         fatal: false,
         msg: m,
+        resume: None,
     };
-    let (ws, _) = tokio_tungstenite::connect_async(GATEWAY_URL)
+    // Resume against the session's own gateway url; a fresh session uses the
+    // well-known one.
+    let dial = resume
+        .as_ref()
+        .map(|r| format!("{}/?v=10&encoding=json", r.url.trim_end_matches('/')))
+        .unwrap_or_else(|| GATEWAY_URL.to_string());
+    let (ws, _) = tokio_tungstenite::connect_async(&dial)
         .await
         .map_err(|e| transient(format!("connect: {e}")))?;
     let (mut sink, mut stream) = ws.split();
@@ -145,13 +173,18 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
         }
     });
 
-    let seq: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(None));
+    let seq: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(resume.as_ref().map(|r| r.seq)));
     let mut heartbeat: Option<tokio::task::JoinHandle<()>> = None;
     let mut bot_id = String::new();
     let mut app_id = String::new();
     let mut guilds: HashMap<String, Guild> = HashMap::new();
+    // Carried across a resume so a resumable drop can re-supply them; a fresh
+    // READY overwrites them.
+    let mut session_id = resume.as_ref().map(|r| r.session_id.clone()).unwrap_or_default();
+    let mut resume_url = resume.as_ref().map(|r| r.url.clone()).unwrap_or_default();
+    let mut can_resume = true;
 
-    let result = loop {
+    let result: Result<(), GwError> = loop {
         let Some(msg) = stream.next().await else {
             break Err(transient("stream ended".into()));
         };
@@ -169,11 +202,12 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
                 let code = frame.as_ref().map(|f| u16::from(f.code)).unwrap_or(0);
                 // 4004 auth failed, 4013/4014 (dis)allowed intents — don't spin.
                 if code == 4014 || code == 4013 {
-                    break Err(GwError { fatal: true, msg: "a privileged intent (MESSAGE CONTENT) isn't enabled — Developer Portal → Bot → Privileged Gateway Intents".into() });
+                    break Err(GwError { fatal: true, resume: None, msg: "a privileged intent (MESSAGE CONTENT) isn't enabled — Developer Portal → Bot → Privileged Gateway Intents".into() });
                 }
                 if code == 4004 {
                     break Err(GwError {
                         fatal: true,
+                        resume: None,
                         msg: "authentication failed — bad bot token".into(),
                     });
                 }
@@ -190,7 +224,8 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
         }
         match v["op"].as_i64().unwrap_or(-1) {
             10 => {
-                // HELLO → start heartbeat, then IDENTIFY.
+                // HELLO → start heartbeat, then RESUME (op 6) if we're
+                // reconnecting a live session, else IDENTIFY (op 2) fresh.
                 let interval = v["d"]["heartbeat_interval"].as_u64().unwrap_or(45_000);
                 let (tx2, seq2) = (tx.clone(), seq.clone());
                 heartbeat = Some(tokio::spawn(async move {
@@ -206,21 +241,27 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
                         tokio::time::sleep(Duration::from_millis(interval)).await;
                     }
                 }));
-                let identify = json!({ "op": 2, "d": {
-                    "token": token, "intents": INTENTS,
-                    "properties": { "os": "linux", "browser": "roster", "device": "roster" },
-                }});
-                let _ = tx.send(Ws::text(identify.to_string()));
+                let frame = match &resume {
+                    Some(r) => json!({ "op": 6, "d": {
+                        "token": token, "session_id": r.session_id, "seq": r.seq,
+                    }}),
+                    None => json!({ "op": 2, "d": {
+                        "token": token, "intents": INTENTS,
+                        "properties": { "os": "linux", "browser": "roster", "device": "roster" },
+                    }}),
+                };
+                let _ = tx.send(Ws::text(frame.to_string()));
             }
             1 => {
                 let s = *seq.lock().unwrap();
                 let _ = tx.send(Ws::text(json!({ "op": 1, "d": s }).to_string()));
             }
-            7 | 9 => {
-                break Err(transient(format!(
-                    "gateway asked to reconnect (op {})",
-                    v["op"]
-                )))
+            // op 7: reconnect and resume. op 9: session invalidated — a resume
+            // can't be replayed, so the next dial must start fresh.
+            7 => break Err(transient("gateway asked to reconnect (op 7)".into())),
+            9 => {
+                can_resume = false;
+                break Err(transient("session invalidated (op 9)".into()));
             }
             0 => {
                 let d = &v["d"];
@@ -228,11 +269,15 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
                     "READY" => {
                         bot_id = d["user"]["id"].as_str().unwrap_or("").to_string();
                         app_id = d["application"]["id"].as_str().unwrap_or("").to_string();
+                        // Capture what a later reconnect needs to RESUME.
+                        session_id = d["session_id"].as_str().unwrap_or("").to_string();
+                        resume_url = d["resume_gateway_url"].as_str().unwrap_or("").to_string();
                         eprintln!(
                             "discord: connected as {} ({bot_id})",
                             d["user"]["username"].as_str().unwrap_or("?")
                         );
                     }
+                    "RESUMED" => eprintln!("discord: resumed session (missed events replayed)"),
                     "GUILD_CREATE" => {
                         let g = ingest_guild(d);
                         eprintln!(
@@ -265,7 +310,20 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
         h.abort();
     }
     writer.abort();
-    result
+    // On a resumable drop, hand the session details forward so the next dial
+    // RESUMEs and Discord replays whatever we missed. op 9 / a fresh start
+    // clears can_resume, forcing a clean IDENTIFY.
+    result.map_err(|mut e| {
+        if !e.fatal && can_resume && !session_id.is_empty() && !resume_url.is_empty() {
+            let seq = seq.lock().unwrap().unwrap_or(0);
+            e.resume = Some(ResumeState {
+                session_id,
+                seq,
+                url: resume_url,
+            });
+        }
+        e
+    })
 }
 
 /// Remember a channel's human identity so the CLI never shows a bare id.

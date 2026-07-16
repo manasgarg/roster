@@ -212,6 +212,7 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
         channel_id: Some(channel_id.clone()),
         user_id: Some(user.clone()),
         message_id: None,
+        thread_ts: None,
         role: "host-op".into(),
         is_dm: true,
         inbound: false,

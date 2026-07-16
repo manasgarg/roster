@@ -297,6 +297,8 @@ async fn handle_message(
         channel_id: Some(channel_id.to_string()),
         user_id: Some(user_id.to_string()),
         message_id: event["ts"].as_str().map(String::from),
+        // Reply back into the thread the message came from, when it was in one.
+        thread_ts: event["thread_ts"].as_str().map(String::from),
         role: role.to_string(),
         is_dm,
         inbound: false, // live channel context carries ids; inbound marks relay tasks

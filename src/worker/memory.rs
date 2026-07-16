@@ -116,6 +116,10 @@ pub struct RunContext {
     pub user_id: Option<String>,
     #[serde(default)]
     pub message_id: Option<String>,
+    /// Slack thread the inbound message belongs to (its own ts, or the parent's).
+    /// Carried so a reply lands back in the thread, not the channel top level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_ts: Option<String>,
     #[serde(default)]
     pub role: String,
     #[serde(default)]

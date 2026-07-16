@@ -421,6 +421,7 @@ async fn handle_message(
         channel_id: Some(channel_id.to_string()),
         user_id: d["author"]["id"].as_str().map(String::from),
         message_id: d["id"].as_str().map(String::from),
+        thread_ts: None, // Discord has no Slack-style thread ts
         role: role.to_string(),
         is_dm,
         inbound: false, // live channel context carries ids; inbound marks relay tasks
@@ -689,6 +690,7 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
         channel_id: Some(channel_id.to_string()).filter(|s| !s.is_empty()),
         user_id: Some(caller_id.to_string()).filter(|s| !s.is_empty()),
         message_id: None,
+        thread_ts: None,
         role: role.to_string(),
         is_dm: d["guild_id"].as_str().is_none(),
         inbound: false,

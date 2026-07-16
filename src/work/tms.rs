@@ -1466,6 +1466,7 @@ mod tests {
             channel_id: channel.map(String::from),
             user_id: channel.map(|_| "u1".to_string()),
             message_id: None,
+            thread_ts: None,
             role: role.into(),
             is_dm: true,
             inbound: false,

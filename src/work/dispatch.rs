@@ -236,6 +236,10 @@ fn task_memory_context(task: &tms::Task) -> crate::worker::memory::RunContext {
             .get("message_id")
             .and_then(|v| v.as_str())
             .map(String::from),
+        thread_ts: d
+            .get("thread_ts")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         role: d
             .get("role")
             .and_then(|v| v.as_str())

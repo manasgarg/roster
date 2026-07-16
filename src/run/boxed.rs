@@ -20,6 +20,16 @@ const BOX_CA_BUNDLE_PATH: &str = "/opt/roster/ca-bundle.crt";
 const SENTINEL: &str = "roster-sentinel-no-real-credential-in-box";
 const CONTAINER_TEMP: &str = "/tmp:rw,nosuid,nodev,size=2147483648,mode=1777";
 
+/// Minutes → a wall-clock `Duration`, never panicking. `Duration::from_secs_f64`
+/// aborts on a negative, NaN, infinite, or out-of-range value, and the ceiling
+/// once reached this point after the container was already spawned — orphaning a
+/// live box. The TMS validates queued ceilings, so this is the backstop: clamp a
+/// nonsensical value to a 1-minute floor rather than crash.
+fn ceiling_duration(minutes: f64) -> Duration {
+    let secs = (minutes.max(0.0) * 60.0).clamp(1.0, (u64::MAX / 2) as f64);
+    Duration::from_secs_f64(secs)
+}
+
 // Writable run storage is bind-mounted at these fixed CONTAINER paths — never at
 // the identical host path — so nothing inside the box (pwd, $HOME, a stack
 // trace) reveals the host layout, and the box can't name a real host path to
@@ -308,7 +318,7 @@ async fn run_box(
     });
 
     // Wait, enforcing the ceiling and Ctrl-C / SIGTERM by killing the container.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(ceiling_min * 60.0);
+    let deadline = tokio::time::Instant::now() + ceiling_duration(ceiling_min);
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut ended_by = "exit";
     let mut killed = false;
@@ -386,8 +396,8 @@ pub async fn run_session(
     let box_policy = crate::config::snapshot()
         .map(|c| c.box_policy.clone())
         .unwrap_or_default();
-    let session_ceiling = Duration::from_secs_f64(box_policy.session_ceiling_min * 60.0);
-    let turn_ceiling = Duration::from_secs_f64(box_policy.turn_ceiling_min * 60.0);
+    let session_ceiling = ceiling_duration(box_policy.session_ceiling_min);
+    let turn_ceiling = ceiling_duration(box_policy.turn_ceiling_min);
 
     args.insert(1, "-i".into()); // keep stdin open for the rpc protocol
     args.extend(pi_prefix(&engine, "rpc", &session_dir)?);

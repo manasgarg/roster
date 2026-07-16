@@ -240,6 +240,27 @@ pub fn box_alive(run_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Wait for an orphaned box — one a previous supervisor claimed and left running
+/// across a restart — to exit, and report its outcome. This lets the new
+/// supervisor finalize the task once the box finishes, instead of leaving it
+/// wedged in `claimed` (never attested) until the next restart requeues and
+/// re-runs work the box already did. We can't reconstruct *why* it ended, only
+/// its exit code, so `ended_by` is "exit".
+pub async fn adopt(run_id: &str) -> Result<Outcome, String> {
+    let container = container_name(run_id);
+    let out = tokio::process::Command::new("docker")
+        .args(["wait", &container])
+        .output()
+        .await
+        .map_err(|e| format!("docker wait {container}: {e}"))?;
+    let exit_code = String::from_utf8_lossy(&out.stdout).trim().parse::<i32>().ok();
+    Ok(Outcome {
+        run_id: run_id.to_string(),
+        ended_by: "exit",
+        exit_code,
+    })
+}
+
 /// A fresh run id: a second-granularity timestamp plus a random suffix so two
 /// boxes started in the same second never collide.
 pub fn new_run_id() -> String {

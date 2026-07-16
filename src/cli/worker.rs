@@ -184,6 +184,81 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
     Ok(())
 }
 
+/// Retire a worker: archive its spec and data, never delete. Refuses while
+/// live work or pending gates exist — finish, requeue, or cancel first. The
+/// archive keeps everything (identity, memory, knowledge, task history) so a
+/// removal is auditable and reversible by moving the directories back.
+pub fn rm(name: &str, yes: bool) -> Result<(), BErr> {
+    crate::worker::require_worker(name)?;
+    let live: Vec<String> = tms::load(name)
+        .tasks
+        .iter()
+        .filter(|t| t.live())
+        .map(|t| format!("{} ({})", t.id, t.state))
+        .collect();
+    if !live.is_empty() {
+        return Err(format!(
+            "{name} still has live work: {} — let it finish or curate it first (roster worker task ls)",
+            live.join(", ")
+        )
+        .into());
+    }
+    let gates = gate::for_worker(name)
+        .iter()
+        .filter(|g| g.state == "pending")
+        .count();
+    if gates > 0 {
+        return Err(format!(
+            "{name} has {gates} gate(s) pending your approval — resolve them first: roster server approvals ls"
+        )
+        .into());
+    }
+
+    let stamp: String = crate::util::now_rfc3339()
+        .chars()
+        .take(19)
+        .map(|c| if c == ':' { '-' } else { c })
+        .collect();
+    let spec_trash = paths::config_root().join("trash").join(format!("{name}-{stamp}"));
+    let data_trash = paths::data_root().join("trash").join(format!("{name}-{stamp}"));
+
+    if !yes {
+        let interactive = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
+        if !interactive {
+            return Err(format!(
+                "removing a worker needs confirmation — re-run with --yes: roster worker rm {name} --yes"
+            )
+            .into());
+        }
+        println!(
+            "this archives {name}'s spec, identity, memory, knowledge, and task history under:\n  {}\n  {}",
+            spec_trash.display(),
+            data_trash.display()
+        );
+        let answer = crate::credential::connect::ask("type the worker's name to confirm: ")?;
+        if answer.trim() != name {
+            return Err("confirmation did not match — nothing was removed".into());
+        }
+    }
+
+    // Same-root renames (config→config trash, data→data trash) so this never
+    // crosses a filesystem boundary.
+    std::fs::create_dir_all(spec_trash.parent().unwrap())?;
+    std::fs::rename(paths::worker_dir(name), &spec_trash)?;
+    let data_dir = paths::worker_data_dir(name);
+    if data_dir.exists() {
+        std::fs::create_dir_all(data_trash.parent().unwrap())?;
+        std::fs::rename(&data_dir, &data_trash)?;
+    }
+    println!("archived {name}:");
+    println!("  spec  → {}", spec_trash.display());
+    if data_dir.exists() || data_trash.exists() {
+        println!("  data  → {}", data_trash.display());
+    }
+    println!("restore: move the directories back; delete for good: remove the trash entries");
+    Ok(())
+}
+
 /// Per-action trust, read-only: what the worker may propose, the default level,
 /// the owner's ladder rules, and the earned history behind them. Trust is never
 /// set here — it is earned through gate outcomes; grants live in the specs.

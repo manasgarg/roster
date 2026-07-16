@@ -46,6 +46,7 @@ rustls-native-certs = "0.8"
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 futures-util = "0.3"
 rustyline = "18.0.1"
+clap_complete = "4"
 
 [dev-dependencies]
 tempfile = "3.27.0"

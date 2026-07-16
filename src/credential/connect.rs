@@ -36,7 +36,14 @@ pub async fn run(name: &str) -> Result<(), BErr> {
 /// `channel_use` widens field collection where a use needs more (slack's
 /// Socket Mode app token exists only for the channel listener).
 pub async fn login(provider_name: &str, p: &Value, channel_use: bool) -> Result<Value, BErr> {
-    match p.get("auth").and_then(|v| v.as_str()) {
+    // "auth" is a string, or a list of offered methods whose first entry is
+    // the default (the connections wizard resolves --auth before calling).
+    let auth = match p.get("auth") {
+        Some(Value::String(s)) => Some(s.as_str()),
+        Some(Value::Array(l)) => l.first().and_then(Value::as_str),
+        _ => None,
+    };
+    match auth {
         Some("api_key") => connect_api_key(),
         Some("smtp") => connect_smtp(),
         Some("discord") => connect_discord(),

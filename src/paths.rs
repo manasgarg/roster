@@ -123,6 +123,13 @@ pub fn tms_view_file(worker: &str) -> PathBuf {
 }
 
 /// Recurrence cursors (last spawn per template) — reconstructible state.
+/// Where the running daemon records its gateway binding (port, addresses,
+/// config root, pid) — how the CLI, boxes, and probes find the gateway
+/// without assuming the well-known port.
+pub fn gateway_state_file() -> PathBuf {
+    state_root().join("gateway.json")
+}
+
 pub fn tms_cursors_file() -> PathBuf {
     state_root().join("tms-cursors.json")
 }

@@ -5,8 +5,12 @@ and it decides — allowed, or not — using rules you wrote. It also swaps the
 box's fake credentials for real ones on the way out, counts what everything
 costs, and writes down every decision it makes, forever.
 
-It listens on `:7300` (set with `server start --addr`) as part of the one
-daemon, and answers `/healthz` for liveness.
+It listens on `:7300` (set with `server start --addr`; by default it binds
+loopback plus the docker bridge, not every interface) as part of the one
+daemon, and answers `/healthz` for liveness — the reply carries the
+deployment's config root, so probes and boxes can tell this deployment's
+daemon from another one squatting on the same port. The daemon records its
+binding in `state/gateway.json` for the CLI and boxes to follow.
 
 ## Seeing inside requests
 

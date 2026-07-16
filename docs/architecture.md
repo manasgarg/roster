@@ -30,7 +30,8 @@ what comes through. See [security.md](security.md) for what this buys and
 `roster server start` runs everything as supervised siblings in a single
 process:
 
-- **The gateway** (default `0.0.0.0:7300`) — the only network exit from any
+- **The gateway** (default: loopback + the docker bridge on `:7300`) — the
+  only network exit from any
   box. It terminates TLS with a host-minted CA, judges every request against
   your grants (default-deny), injects real credentials in transit, meters
   spend against budgets, and appends every decision to the audit log. It

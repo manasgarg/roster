@@ -14,7 +14,6 @@ use std::time::Duration;
 type BErr = Box<dyn std::error::Error>;
 
 const LOCKDOWN_NETWORK: &str = "roster-locked";
-const GATEWAY_PORT: u16 = 7300;
 const BOX_CA_PATH: &str = "/opt/roster/ca.crt";
 const TASKS_MOUNT: &str = "/opt/roster/tasks.json";
 const BOX_CA_BUNDLE_PATH: &str = "/opt/roster/ca-bundle.crt";
@@ -197,6 +196,13 @@ pub async fn dispatch(
 /// tell whether a task marked `running` still has a live box.
 pub fn container_name(run_id: &str) -> String {
     format!("roster-box-{run_id}")
+}
+
+/// The port the daemon's gateway actually bound (from its state file) — the
+/// well-known default when no daemon has recorded one. Boxes, egress rules,
+/// and liveness probes all follow the daemon instead of assuming :7300.
+fn gateway_port() -> u16 {
+    crate::gateway::recorded_port()
 }
 
 /// Can a box authenticate to a model right now? The vault first (roster-owned
@@ -689,7 +695,7 @@ async fn provision_box(
         &format!("{}\n", json!({ "subject": subject, "run_id": run_id })),
     )?;
 
-    let proxy_url = format!("http://{token}@host.docker.internal:{GATEWAY_PORT}");
+    let proxy_url = format!("http://{token}@host.docker.internal:{}", gateway_port());
     let container = container_name(run_id);
     let (uid, gid) = (unsafe { libc_getuid() }, unsafe { libc_getgid() });
 
@@ -934,35 +940,69 @@ async fn ensure_lockdown(box_policy: &crate::config::BoxPolicy) -> Result<(), BE
     if !ok {
         return Err(format!("refusing to start the box with open egress: the \"{LOCKDOWN_NETWORK}\" docker network could not be created").into());
     }
+    let port = gateway_port();
     // Masquerade-off breaks the *internet* return path, but the host itself
     // stays reachable on every port (F3). Pin host egress to the gateway when
     // asked; otherwise make the residual reach legible, once per process.
     if box_policy.egress_lockdown {
-        ensure_egress_lockdown()?;
+        ensure_egress_lockdown(port)?;
     } else {
-        warn_open_host_egress();
+        warn_open_host_egress(port);
     }
-    let healthy = reqwest::Client::new()
-        .get(format!("http://127.0.0.1:{GATEWAY_PORT}/healthz"))
+    // A loopback-only daemon is healthy from the host but unreachable from a
+    // container — refuse with the fix instead of a confusing timeout later.
+    if let Some(addrs) = crate::gateway::recorded_addrs() {
+        let box_reachable = addrs
+            .iter()
+            .any(|a| !a.starts_with("127.") && !a.starts_with("localhost"));
+        if !box_reachable {
+            return Err(format!(
+                "the gateway is bound to loopback only ({}) — boxes reach it via \
+                 host.docker.internal and can't connect. Restart without --addr (the default \
+                 also binds the docker bridge) or with --addr 0.0.0.0:{port}",
+                addrs.join(", ")
+            )
+            .into());
+        }
+    }
+    let health = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{port}/healthz"))
         .timeout(Duration::from_secs(2))
         .send()
-        .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false);
-    if !healthy {
-        return Err(format!("refusing to start the box with open egress: the gateway is not answering on :{GATEWAY_PORT} — start it with: roster server start").into());
+        .await;
+    let body: Option<serde_json::Value> = match health {
+        Ok(r) if r.status().is_success() => r.json().await.ok(),
+        _ => {
+            return Err(format!("refusing to start the box with open egress: the gateway is not answering on :{port} — start it with: roster server start").into());
+        }
+    };
+    // The right port answering is not enough — it must be THIS deployment's
+    // daemon, or the box would run under another deployment's policy.
+    if let Some(root) = body
+        .as_ref()
+        .and_then(|v| v.get("config_root"))
+        .and_then(|v| v.as_str())
+    {
+        let ours = crate::paths::config_root().display().to_string();
+        if root != ours {
+            return Err(format!(
+                "the gateway on :{port} belongs to another deployment (config {root}) — \
+                 start this deployment's own server: roster server start"
+            )
+            .into());
+        }
     }
     Ok(())
 }
 
-fn warn_open_host_egress() {
+fn warn_open_host_egress(gateway_port: u16) {
     static WARNED: std::sync::Once = std::sync::Once::new();
     WARNED.call_once(|| {
         eprintln!(
             "note: the box can't reach the internet, but the host stays reachable on all ports \
              (a local DB, another container's published port, a TCP docker socket, ssh) — these \
              bypass the gateway. Set `[box] egress_lockdown = true` in org.toml to pin box egress \
-             to the gateway on :{GATEWAY_PORT} (needs root / CAP_NET_ADMIN for iptables)."
+             to the gateway on :{gateway_port} (needs root / CAP_NET_ADMIN for iptables)."
         );
     });
 }
@@ -972,7 +1012,7 @@ fn warn_open_host_egress() {
 /// idempotent without touching any other INPUT rule; a single `-s <subnet>`
 /// jump routes box→host traffic into it. Fails closed (refuses to start the
 /// box) if the rules can't be installed — matching the rest of the lockdown.
-fn ensure_egress_lockdown() -> Result<(), BErr> {
+fn ensure_egress_lockdown(gateway_port: u16) -> Result<(), BErr> {
     let subnet = locked_subnet()?;
     let priv_err = || -> BErr {
         format!(
@@ -986,7 +1026,7 @@ fn ensure_egress_lockdown() -> Result<(), BErr> {
     if !ipt(&["-F", EGRESS_CHAIN]) {
         return Err(priv_err());
     }
-    for rule in egress_chain_rules(GATEWAY_PORT) {
+    for rule in egress_chain_rules(gateway_port) {
         let args: Vec<&str> = std::iter::once("-A")
             .chain(std::iter::once(EGRESS_CHAIN))
             .chain(rule.iter().map(String::as_str))
@@ -1001,7 +1041,7 @@ fn ensure_egress_lockdown() -> Result<(), BErr> {
     if !present && !ipt(&[&["-I"], &jump[..]].concat()) {
         return Err(priv_err());
     }
-    eprintln!("box egress locked: {subnet} may reach the host only on :{GATEWAY_PORT}");
+    eprintln!("box egress locked: {subnet} may reach the host only on :{gateway_port}");
     Ok(())
 }
 
@@ -1129,7 +1169,7 @@ fn sentinelize_known_fields(entry: &Value) -> Value {
     let masked = sentinelize(entry);
     let mut out = Map::new();
     if let Some(o) = masked.as_object() {
-        for k in ["type", "access", "refresh", "accountId", "expires"] {
+        for k in ["type", "access", "refresh", "accountId", "expires", "key"] {
             if let Some(v) = o.get(k) {
                 out.insert(k.into(), v.clone());
             }
@@ -1153,6 +1193,9 @@ fn sentinelize(entry: &Value) -> Value {
     }
     if e.get("refresh").and_then(|v| v.as_str()).is_some() {
         e.insert("refresh".into(), json!(SENTINEL));
+    }
+    if e.get("key").and_then(|v| v.as_str()).is_some() {
+        e.insert("key".into(), json!(SENTINEL));
     }
     if e.get("accountId").and_then(|v| v.as_str()).is_some() {
         e.insert("accountId".into(), json!("roster-sentinel-account"));
@@ -1262,7 +1305,7 @@ mod tests {
 
     #[test]
     fn egress_chain_accepts_gateway_port_before_dropping() {
-        let rules = egress_chain_rules(GATEWAY_PORT);
+        let rules = egress_chain_rules(7300);
         // Order is load-bearing: the gateway-port ACCEPT must precede the DROP,
         // or the box would lose its only exit.
         assert_eq!(

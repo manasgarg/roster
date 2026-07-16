@@ -29,6 +29,8 @@ pub struct ConnectOptions {
     pub auth: Option<String>,
     /// Interview for an unknown service first (`--declare`).
     pub declare: bool,
+    /// Test the stored credential against the live service (`--verify`).
+    pub verify: bool,
 }
 
 pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BErr> {
@@ -43,6 +45,7 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
         uses: use_flags,
         auth: auth_override,
         declare,
+        verify,
     } = options;
 
     let mut registry = crate::credential::registry::registry_json();
@@ -134,18 +137,27 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
     let channel = uses.iter().any(|u| u == "channel");
     let model = uses.iter().any(|u| u == "model");
 
-    // --auth: today every entry carries one method; the flag validates it.
-    // Multi-method entries arrive with the provider-catalog import.
-    if let Some(want) = &auth_override {
-        let have = registered
-            .as_ref()
-            .and_then(|p| p.get("auth"))
-            .and_then(Value::as_str)
-            .unwrap_or("api_key");
-        if want != have {
-            return Err(format!("\"{service}\" offers only \"{have}\" auth").into());
+    // --auth: pick among the entry's offered methods. "auth" is a string or
+    // a list whose first entry is the default.
+    let offered: Vec<String> = match registered.as_ref().and_then(|p| p.get("auth")) {
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(l)) => l
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        _ => vec!["api_key".to_string()],
+    };
+    let chosen_auth = match &auth_override {
+        Some(want) if offered.contains(want) => want.clone(),
+        Some(_) => {
+            return Err(format!("\"{service}\" offers {} auth", offered.join(" or ")).into());
         }
-    }
+        None => offered
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "api_key".to_string()),
+    };
 
     // Capability fields: catalog defaults ← existing file ← flags.
     let catalog_meta = registered.as_ref().and_then(|p| p.get("connection")).cloned();
@@ -251,9 +263,10 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
     // when this add is for another use (rotation must not break the bot).
     let channel_bound = !channel_binding_refs(&name).is_empty();
     let rotating = crate::credential::vault::get_credential(&name).is_some();
-    let login_provider = registered
+    let mut login_provider = registered
         .clone()
         .unwrap_or_else(|| serde_json::json!({ "auth": "api_key" }));
+    login_provider["auth"] = serde_json::json!(chosen_auth);
     let cred =
         crate::credential::connect::login(&service, &login_provider, channel || channel_bound)
             .await?;
@@ -324,7 +337,74 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
             .into());
         }
     }
+    if verify {
+        verify_connection(&name, &service).await?;
+    }
     Ok(())
+}
+
+/// `--verify`: one authenticated call against the live service, per the
+/// provider's registry recipe, so a mistyped token fails here — not later,
+/// silently, inside a worker's run. No recipe (custom services) = skipped.
+async fn verify_connection(name: &str, service: &str) -> Result<(), BErr> {
+    let registry = crate::credential::registry::registry_json();
+    let Some(recipe) = registry.get(service).and_then(|p| p.get("verify")).cloned() else {
+        println!("verify: no recipe for \"{service}\" — skipped");
+        return Ok(());
+    };
+    let Some(cred) = crate::credential::vault::get_credential(name) else {
+        return Err(format!("verify: credential \"{name}\" is not in the vault").into());
+    };
+    let method = recipe.get("method").and_then(Value::as_str).unwrap_or("GET");
+    let url = recipe
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or("verify recipe has no url")?;
+    let mut req = reqwest::Client::new()
+        .request(method.parse::<reqwest::Method>()?, url)
+        .timeout(std::time::Duration::from_secs(10));
+    if let Some(headers) = recipe.get("headers").and_then(Value::as_object) {
+        for (k, v) in headers {
+            if let Some(v) = v.as_str() {
+                req = req.header(k.as_str(), v);
+            }
+        }
+    }
+    for (k, v) in crate::credential::vault::render_injection(&cred, service) {
+        req = req.header(k.as_str(), v);
+    }
+    if let Some(body) = recipe.get("body").and_then(Value::as_str) {
+        req = req
+            .header("content-type", "application/json")
+            .body(body.to_string());
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("verify: could not reach {url}: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    // Some APIs (slack) answer 200 with an error body — the recipe may pin a
+    // marker the success body must contain.
+    let body_ok = recipe
+        .get("body_contains")
+        .and_then(Value::as_str)
+        .map(|marker| text.contains(marker))
+        .unwrap_or(true);
+    if status.is_success() && body_ok {
+        println!("verified: {method} {url} → {status}");
+        Ok(())
+    } else if status.as_u16() == 401 || status.as_u16() == 403 || (status.is_success() && !body_ok)
+    {
+        Err(format!(
+            "verify FAILED: {method} {url} → {status} — the service rejected the credential; \
+             paste a fresh one: roster connection add {service}"
+        )
+        .into())
+    } else {
+        println!("verify inconclusive: {method} {url} → {status} (the credential may still be fine)");
+        Ok(())
+    }
 }
 
 /// The connection file: scaffolded once, human-owned after. A rotation never
@@ -990,14 +1070,38 @@ fn print_catalog(registry: &serde_json::Map<String, Value>) -> Result<(), BErr> 
     Ok(())
 }
 
-fn auth_label(p: &Value) -> &'static str {
-    match p.get("auth").and_then(Value::as_str) {
-        Some("api_key") => "paste a key",
-        Some("oauth") => "OAuth login",
-        Some("slack") => "paste bot (+ app) tokens",
-        Some("discord") => "paste a bot token",
-        Some("smtp") => "SMTP details",
-        _ => "?",
+fn auth_label(p: &Value) -> String {
+    let one = |s: &str| -> &'static str {
+        match s {
+            "api_key" => "paste a key",
+            "oauth" => "OAuth login",
+            "slack" => "paste bot (+ app) tokens",
+            "discord" => "paste a bot token",
+            "smtp" => "SMTP details",
+            _ => "?",
+        }
+    };
+    match p.get("auth") {
+        Some(Value::String(s)) => one(s).to_string(),
+        // A list offers alternatives: the first is the default, the rest
+        // reachable via --auth.
+        Some(Value::Array(l)) => {
+            let mut labels: Vec<String> =
+                l.iter().filter_map(Value::as_str).map(|s| one(s).to_string()).collect();
+            if labels.len() > 1 {
+                let alternatives = l
+                    .iter()
+                    .skip(1)
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", --auth ");
+                labels.truncate(1);
+                format!("{} (or --auth {alternatives})", labels[0])
+            } else {
+                labels.pop().unwrap_or_else(|| "?".into())
+            }
+        }
+        _ => "?".to_string(),
     }
 }
 

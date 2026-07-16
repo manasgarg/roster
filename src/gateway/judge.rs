@@ -181,11 +181,13 @@ mod tests {
         r.mcp = Some(Mcp {
             method: "tools/call".into(),
             tool: Some("get_issue".into()),
+            batch: false,
         });
         assert_eq!(judge(&r, &p).0, Verdict::Allow);
         r.mcp = Some(Mcp {
             method: "tools/call".into(),
             tool: Some("create_pr".into()),
+            batch: false,
         });
         assert_eq!(judge(&r, &p).0, Verdict::Deny);
         r.mcp = None;

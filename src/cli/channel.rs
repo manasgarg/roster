@@ -166,12 +166,25 @@ pub fn set_help(channel_id: &str) -> Result<(), BErr> {
         (
             "memory-inferred",
             "auto | review",
-            if s.memory_inferred_auto { "auto" } else { "review" }.to_string(),
+            if s.memory_inferred_auto {
+                "auto"
+            } else {
+                "review"
+            }
+            .to_string(),
         ),
         ("memory-kinds", "default | kind,kind,…", current_kinds),
         ("memory-retention", "default | days", current_retention),
-        ("memory-notes", "default | max notes recalled", current_notes),
-        ("memory-chars", "default | max chars recalled", current_chars),
+        (
+            "memory-notes",
+            "default | max notes recalled",
+            current_notes,
+        ),
+        (
+            "memory-chars",
+            "default | max chars recalled",
+            current_chars,
+        ),
     ];
     for (key, values, current) in rows {
         println!("{key:<18}  {values:<34}  {current}");

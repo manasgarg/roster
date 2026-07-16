@@ -26,7 +26,12 @@ pub fn append(worker: &str, run_id: &str, kind: &str, detail: Value) {
 /// Durable content operations use the journal as their recovery index. They
 /// call this variant and fail closed instead of claiming success when the
 /// pointer could not be recorded.
-pub fn append_required(worker: &str, run_id: &str, kind: &str, detail: Value) -> Result<(), String> {
+pub fn append_required(
+    worker: &str,
+    run_id: &str,
+    kind: &str,
+    detail: Value,
+) -> Result<(), String> {
     let p = path(worker);
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;

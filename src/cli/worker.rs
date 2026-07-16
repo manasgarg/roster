@@ -6,11 +6,11 @@ use crate::action::gate;
 use crate::gateway::budget;
 use crate::gateway::ledger;
 use crate::gateway::scope::applies;
-use crate::worker::memory;
 use crate::paths;
 use crate::util::now_ms;
 use crate::util::BErr;
 use crate::work::tms;
+use crate::worker::memory;
 use std::collections::BTreeMap;
 
 fn knowledge_head(worker: &str) -> Option<String> {
@@ -242,8 +242,12 @@ pub fn rm(name: &str, yes: bool) -> Result<(), BErr> {
         .take(19)
         .map(|c| if c == ':' { '-' } else { c })
         .collect();
-    let spec_trash = paths::config_root().join("trash").join(format!("{name}-{stamp}"));
-    let data_trash = paths::data_root().join("trash").join(format!("{name}-{stamp}"));
+    let spec_trash = paths::config_root()
+        .join("trash")
+        .join(format!("{name}-{stamp}"));
+    let data_trash = paths::data_root()
+        .join("trash")
+        .join(format!("{name}-{stamp}"));
 
     if !yes {
         let interactive = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;

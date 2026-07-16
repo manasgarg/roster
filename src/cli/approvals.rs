@@ -82,7 +82,10 @@ pub fn render_show(id: &str) -> Result<String, BErr> {
                 .unwrap_or("");
             match action::identity_diff(&g.worker, proposed) {
                 Some(d) => writeln!(out, "\nidentity change — current vs proposed:\n{d}")?,
-                None => writeln!(out, "\n(the proposed identity is identical to the current one)")?,
+                None => writeln!(
+                    out,
+                    "\n(the proposed identity is identical to the current one)"
+                )?,
             }
         }
         "purpose" => {
@@ -97,14 +100,26 @@ pub fn render_show(id: &str) -> Result<String, BErr> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             match action::purpose_diff(ch, proposed) {
-                Some(d) => writeln!(out, "\npurpose change (channel {ch}) — current vs proposed:\n{d}")?,
-                None => writeln!(out, "\n(the proposed purpose is identical to the current one)")?,
+                Some(d) => writeln!(
+                    out,
+                    "\npurpose change (channel {ch}) — current vs proposed:\n{d}"
+                )?,
+                None => writeln!(
+                    out,
+                    "\n(the proposed purpose is identical to the current one)"
+                )?,
             }
         }
         "git-pr" => {
-            writeln!(out, "\npayload:\n{}", serde_json::to_string_pretty(&g.payload)?)?;
+            writeln!(
+                out,
+                "\npayload:\n{}",
+                serde_json::to_string_pretty(&g.payload)?
+            )?;
             match action::worktree_diff(&g.run_id) {
-                Some(d) if !d.is_empty() => writeln!(out, "\ndiff — what would be committed:\n{d}")?,
+                Some(d) if !d.is_empty() => {
+                    writeln!(out, "\ndiff — what would be committed:\n{d}")?
+                }
                 _ => writeln!(out, "\ndiff — (no changes found in the worktree)")?,
             }
         }

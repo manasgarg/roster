@@ -107,11 +107,7 @@ pub fn fail(run_id: &str, error: Option<&str>) {
 
 /// The worker's own claim about how its task went — evidence for the host's
 /// attestation, never the attestation itself. Last report wins.
-pub fn record_outcome_report(
-    run_id: &str,
-    status: &str,
-    note: Option<&str>,
-) -> Result<(), String> {
+pub fn record_outcome_report(run_id: &str, status: &str, note: Option<&str>) -> Result<(), String> {
     let path = paths::run_dir(run_id).join("outcome.json");
     let dir = path.parent().ok_or("bad run dir")?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;

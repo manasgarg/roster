@@ -2,9 +2,9 @@
 //! with no Git metadata. The trusted host validates additions and creates the
 //! commit in a serialized per-worker integration lane.
 
-use crate::worker::storage::KnowledgePolicy;
 use crate::paths;
 use crate::run::runlog::KnowledgeRunRecord;
+use crate::worker::storage::KnowledgePolicy;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -211,7 +211,9 @@ pub fn provision(
 
     let repo = ensure_repo(worker)?;
     let reorganization_lease = if mode == KnowledgeMode::Reorganization {
-        Some(acquire_lease(&worker_dir(worker).join("reorganization.lock"))?)
+        Some(acquire_lease(
+            &worker_dir(worker).join("reorganization.lock"),
+        )?)
     } else {
         None
     };

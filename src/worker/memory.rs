@@ -356,7 +356,9 @@ pub fn load_run_context(run_id: &str) -> RunContext {
             RunContext::tainted_unknown()
         }
         Err(e) => {
-            eprintln!("memory: could not read run context for {run_id} ({e}); treating run as tainted");
+            eprintln!(
+                "memory: could not read run context for {run_id} ({e}); treating run as tainted"
+            );
             RunContext::tainted_unknown()
         }
     }
@@ -763,7 +765,11 @@ fn effective_expiry(
         .and_then(|at| at.format(format).ok())
 }
 
-fn set_user_preferences(worker: &str, payload: &Value, context: &RunContext) -> Result<Value, String> {
+fn set_user_preferences(
+    worker: &str,
+    payload: &Value,
+    context: &RunContext,
+) -> Result<Value, String> {
     let scope_id = context
         .user_scope_id()
         .ok_or("memory preferences require an active user")?;
@@ -814,7 +820,12 @@ fn operation_name(intent: &str) -> Result<&'static str, String> {
     }
 }
 
-fn mutate(worker: &str, intent: &str, payload: &Value, context: &RunContext) -> Result<Value, String> {
+fn mutate(
+    worker: &str,
+    intent: &str,
+    payload: &Value,
+    context: &RunContext,
+) -> Result<Value, String> {
     let id = payload
         .get("note_id")
         .and_then(Value::as_str)
@@ -1205,7 +1216,13 @@ mod tests {
     #[test]
     fn dm_recall_combines_worker_channel_and_user() {
         let notes = vec![
-            note("1", MemoryScope::Worker, None, MemoryBasis::Inferred, "worker"),
+            note(
+                "1",
+                MemoryScope::Worker,
+                None,
+                MemoryBasis::Inferred,
+                "worker",
+            ),
             note(
                 "2",
                 MemoryScope::Channel,
@@ -1267,7 +1284,13 @@ mod tests {
             MemoryBasis::Explicit,
             "explicit",
         );
-        let mut pinned = note("3", MemoryScope::Worker, None, MemoryBasis::Inferred, "pinned");
+        let mut pinned = note(
+            "3",
+            MemoryScope::Worker,
+            None,
+            MemoryBasis::Inferred,
+            "pinned",
+        );
         pinned.pinned = true;
         let selected = select_for_recall(
             &[inferred, explicit, pinned],

@@ -181,7 +181,11 @@ fn lift_mcp(headers: &HashMap<String, String>, body: &[u8]) -> Option<Mcp> {
     } else {
         None
     };
-    Some(Mcp { method, tool, batch })
+    Some(Mcp {
+        method,
+        tool,
+        batch,
+    })
 }
 
 // ── body helpers ────────────────────────────────────────────────────────────

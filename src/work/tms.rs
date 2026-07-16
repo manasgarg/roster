@@ -296,7 +296,11 @@ fn journal_append(worker: &str, event: &str, record: Value) {
         let _ = std::fs::create_dir_all(dir);
     }
     let line = json!({ "ts": now_rfc3339(), "event": event, "record": record });
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = writeln!(f, "{line}");
     }
 }
@@ -401,9 +405,13 @@ fn migrate_legacy_queue(worker: &str) {
     let _ = std::fs::create_dir_all(&shelf);
     let mut imported = 0usize;
     for entry in std::fs::read_dir(&qdir).into_iter().flatten().flatten() {
-        let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
         let _ = std::fs::rename(entry.path(), shelf.join(entry.file_name()));
-        let Ok(l) = serde_json::from_str::<Legacy>(&text) else { continue };
+        let Ok(l) = serde_json::from_str::<Legacy>(&text) else {
+            continue;
+        };
         if p.tasks.iter().any(|t| t.id == l.id) || journal_find(worker, &l.id).is_some() {
             continue; // already imported
         }
@@ -506,10 +514,14 @@ fn check_scheduled_at(s: &Option<String>) -> Result<(), BErr> {
         // parse — otherwise "tomorrow-at-nine-amZ" is accepted and the task
         // silently never comes due (its lexical compare never precedes `now`).
         if !t.ends_with('Z') {
-            return Err(format!("scheduled_at must be RFC3339 UTC ending in Z (got \"{t}\")").into());
+            return Err(
+                format!("scheduled_at must be RFC3339 UTC ending in Z (got \"{t}\")").into(),
+            );
         }
         if time::OffsetDateTime::parse(t, &time::format_description::well_known::Rfc3339).is_err() {
-            return Err(format!("scheduled_at is not a valid RFC3339 timestamp (got \"{t}\")").into());
+            return Err(
+                format!("scheduled_at is not a valid RFC3339 timestamp (got \"{t}\")").into(),
+            );
         }
     }
     Ok(())
@@ -623,7 +635,11 @@ pub fn set_tasks(
         r.worker = worker.to_string();
     }
     let mut seen = HashSet::new();
-    for id in tasks.iter().map(|t| &t.id).chain(recurring.iter().map(|r| &r.id)) {
+    for id in tasks
+        .iter()
+        .map(|t| &t.id)
+        .chain(recurring.iter().map(|r| &r.id))
+    {
         if !seen.insert(id.clone()) {
             return Err(reject(format!("duplicate id {id}"), &current));
         }
@@ -687,13 +703,19 @@ pub fn set_tasks(
         }
         if !matches!(t.knowledge_mode.as_str(), "append" | "reorganization") {
             return Err(reject(
-                format!("task {}: unknown knowledge mode \"{}\"", t.id, t.knowledge_mode),
+                format!(
+                    "task {}: unknown knowledge mode \"{}\"",
+                    t.id, t.knowledge_mode
+                ),
                 &current,
             ));
         }
         if t.knowledge_mode == "reorganization" && t.repo.is_some() {
             return Err(reject(
-                format!("task {}: a knowledge reorganization cannot also be a code task", t.id),
+                format!(
+                    "task {}: a knowledge reorganization cannot also be a code task",
+                    t.id
+                ),
                 &current,
             ));
         }
@@ -869,7 +891,11 @@ pub fn set_tasks(
 /// Cycle check over the live task graph. Edges to ids not present are allowed
 /// (they block; a failed or canceled dependency looks like this).
 fn check_acyclic(tasks: &[Task]) -> Result<(), String> {
-    let index: HashMap<&str, usize> = tasks.iter().enumerate().map(|(i, t)| (t.id.as_str(), i)).collect();
+    let index: HashMap<&str, usize> = tasks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.id.as_str(), i))
+        .collect();
     // 0 = unvisited, 1 = in stack, 2 = done
     fn visit(
         i: usize,
@@ -1007,10 +1033,7 @@ pub fn list_recurring() -> Vec<Recurring> {
 
 /// Every live task across workers, oldest first.
 pub fn list_all() -> Vec<Task> {
-    let mut out: Vec<Task> = worker_names()
-        .iter()
-        .flat_map(|w| load(w).tasks)
-        .collect();
+    let mut out: Vec<Task> = worker_names().iter().flat_map(|w| load(w).tasks).collect();
     out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     out
 }
@@ -1106,10 +1129,10 @@ fn window_state(w: &Option<Window>, now: &str) -> &'static str {
 /// (an edge to a non-live id blocks), at most one reorganization in flight.
 fn claimable(p: &Partition, now: &str) -> Vec<Task> {
     let live: HashSet<&str> = p.tasks.iter().map(|t| t.id.as_str()).collect();
-    let reorg_open = p
-        .tasks
-        .iter()
-        .any(|t| t.knowledge_mode == "reorganization" && matches!(t.state.as_str(), "claimed" | "needs-review"));
+    let reorg_open = p.tasks.iter().any(|t| {
+        t.knowledge_mode == "reorganization"
+            && matches!(t.state.as_str(), "claimed" | "needs-review")
+    });
     let mut out: Vec<Task> = Vec::new();
     let mut reorg_offered = false;
     let mut sorted: Vec<&Task> = p.tasks.iter().collect();
@@ -1153,7 +1176,8 @@ fn save_cursors(c: &HashMap<String, i64>) {
     if let Ok(text) = serde_json::to_string_pretty(c) {
         // Atomic: a torn write here would reset every template's cursor and
         // re-fire (or skip) recurrences across the fleet.
-        if let Err(e) = crate::statefile::write_atomic(&paths::tms_cursors_file(), text.as_bytes()) {
+        if let Err(e) = crate::statefile::write_atomic(&paths::tms_cursors_file(), text.as_bytes())
+        {
             eprintln!("tms: could not save recurrence cursors: {e}");
         }
     }
@@ -1183,7 +1207,9 @@ fn run_recurrence(worker: &str, p: &mut Partition, now_str: &str, now: i64) -> b
             "early" => continue,
             _ => {}
         }
-        let Some(schedule) = parse_schedule(&r.schedule) else { continue };
+        let Some(schedule) = parse_schedule(&r.schedule) else {
+            continue;
+        };
         let last = cursors.get(&key).copied().unwrap_or(0);
         if last == 0 {
             cursors.insert(key, now);
@@ -1241,7 +1267,8 @@ fn run_recurrence(worker: &str, p: &mut Partition, now_str: &str, now: i64) -> b
     changed
 }
 
-pub const HEARTBEAT_PROMPT: &str = "Heartbeat: read your tasks file and your recent conversations' asks. \
+pub const HEARTBEAT_PROMPT: &str =
+    "Heartbeat: read your tasks file and your recent conversations' asks. \
 Reshape the task list if your purpose needs it (set_tasks); do any small due work directly; \
 exit immediately if nothing needs doing.";
 
@@ -1321,7 +1348,8 @@ pub fn due(heartbeats: &HashMap<String, String>) -> Vec<DueWorker> {
             }
         };
         let mut p = load(&worker);
-        let mut changed = ensure_heartbeat(&worker, &mut p, heartbeats.get(&worker).map(|s| s.as_str()));
+        let mut changed =
+            ensure_heartbeat(&worker, &mut p, heartbeats.get(&worker).map(|s| s.as_str()));
         changed |= run_recurrence(&worker, &mut p, &now_str, now);
         if changed {
             let _ = save(&worker, &mut p);
@@ -1529,18 +1557,40 @@ mod tests {
         let _dir = sandbox();
         for bad in [0.0, -5.0, f64::NAN, f64::INFINITY] {
             assert!(
-                add("wc", Draft { prompt: "x".into(), ceiling_min: bad, ..Draft::default() })
-                    .is_err(),
+                add(
+                    "wc",
+                    Draft {
+                        prompt: "x".into(),
+                        ceiling_min: bad,
+                        ..Draft::default()
+                    }
+                )
+                .is_err(),
                 "ceiling {bad} should be rejected"
             );
         }
-        assert!(add("wc", Draft { prompt: "ok".into(), ceiling_min: 15.0, ..Draft::default() }).is_ok());
+        assert!(add(
+            "wc",
+            Draft {
+                prompt: "ok".into(),
+                ceiling_min: 15.0,
+                ..Draft::default()
+            }
+        )
+        .is_ok());
     }
 
     #[test]
     fn add_claim_finish_journal_roundtrip() {
         let _dir = sandbox();
-        let t = add("w1", Draft { prompt: "do a thing".into(), ..Draft::default() }).unwrap();
+        let t = add(
+            "w1",
+            Draft {
+                prompt: "do a thing".into(),
+                ..Draft::default()
+            },
+        )
+        .unwrap();
         assert_eq!(t.state, "pending");
         let claimed = claim("w1", &t.id, "run-1").unwrap();
         assert_eq!(claimed.state, "claimed");
@@ -1554,10 +1604,21 @@ mod tests {
     #[test]
     fn completion_releases_dependents_and_failure_blocks() {
         let _dir = sandbox();
-        let a = add("w2", Draft { prompt: "a".into(), ..Draft::default() }).unwrap();
+        let a = add(
+            "w2",
+            Draft {
+                prompt: "a".into(),
+                ..Draft::default()
+            },
+        )
+        .unwrap();
         let b = add(
             "w2",
-            Draft { prompt: "b".into(), depends_on: vec![a.id.clone()], ..Draft::default() },
+            Draft {
+                prompt: "b".into(),
+                depends_on: vec![a.id.clone()],
+                ..Draft::default()
+            },
         )
         .unwrap();
         let now = now_rfc3339();
@@ -1566,10 +1627,21 @@ mod tests {
         finish("w2", &a.id, "completed").unwrap();
         assert!(claimable(&load("w2"), &now).iter().any(|t| t.id == b.id));
 
-        let c = add("w2", Draft { prompt: "c".into(), ..Draft::default() }).unwrap();
+        let c = add(
+            "w2",
+            Draft {
+                prompt: "c".into(),
+                ..Draft::default()
+            },
+        )
+        .unwrap();
         let d = add(
             "w2",
-            Draft { prompt: "d".into(), depends_on: vec![c.id.clone()], ..Draft::default() },
+            Draft {
+                prompt: "d".into(),
+                depends_on: vec![c.id.clone()],
+                ..Draft::default()
+            },
         )
         .unwrap();
         claim("w2", &c.id, "r2").unwrap();
@@ -1604,7 +1676,11 @@ mod tests {
         assert_eq!(c[0].prompt, "past");
         assert!(add(
             "w3",
-            Draft { prompt: "tz".into(), scheduled_at: Some("2026-01-01T00:00:00+05:30".into()), ..Draft::default() }
+            Draft {
+                prompt: "tz".into(),
+                scheduled_at: Some("2026-01-01T00:00:00+05:30".into()),
+                ..Draft::default()
+            }
         )
         .is_err());
     }
@@ -1612,12 +1688,26 @@ mod tests {
     #[test]
     fn set_tasks_occ_and_protections() {
         let _dir = sandbox();
-        let t = add("w4", Draft { prompt: "keep me".into(), ..Draft::default() }).unwrap();
+        let t = add(
+            "w4",
+            Draft {
+                prompt: "keep me".into(),
+                ..Draft::default()
+            },
+        )
+        .unwrap();
         claim("w4", &t.id, "r").unwrap();
         let p = load("w4");
 
         // stale version rejected
-        assert!(set_tasks("w4", p.version + 1, p.tasks.clone(), vec![], &ctx("host-op", None)).is_err());
+        assert!(set_tasks(
+            "w4",
+            p.version + 1,
+            p.tasks.clone(),
+            vec![],
+            &ctx("host-op", None)
+        )
+        .is_err());
 
         // removing a claimed task rejected
         let err = set_tasks("w4", p.version, vec![], vec![], &ctx("host-op", None)).unwrap_err();
@@ -1657,10 +1747,21 @@ mod tests {
         tasks2.push(Task {
             prompt: "sneaky".into(),
             standing: "owner".into(),
-            ..tasks2.iter().find(|t| t.prompt == "new plan").unwrap().clone()
+            ..tasks2
+                .iter()
+                .find(|t| t.prompt == "new plan")
+                .unwrap()
+                .clone()
         });
         tasks2.last_mut().unwrap().id = String::new();
-        let next2 = set_tasks("w4", p2.version, tasks2, vec![], &ctx("untrusted", Some("ch"))).unwrap();
+        let next2 = set_tasks(
+            "w4",
+            p2.version,
+            tasks2,
+            vec![],
+            &ctx("untrusted", Some("ch")),
+        )
+        .unwrap();
         let sneaky = next2.tasks.iter().find(|t| t.prompt == "sneaky").unwrap();
         assert_eq!(sneaky.standing, "proactive");
 
@@ -1684,7 +1785,10 @@ mod tests {
         // first due(): template adopted, cursor set, nothing claimable yet
         assert!(due(&hb).is_empty());
         let p = load("w5");
-        assert!(p.recurring.iter().any(|r| r.id == "r-heartbeat" && r.system));
+        assert!(p
+            .recurring
+            .iter()
+            .any(|r| r.id == "r-heartbeat" && r.system));
 
         // agent cannot remove it
         let err = set_tasks("w5", p.version, vec![], vec![], &ctx("host-op", None)).unwrap_err();
@@ -1699,7 +1803,10 @@ mod tests {
         let due_now = due(&hb);
         assert_eq!(due_now.len(), 1);
         assert_eq!(due_now[0].claimable[0].created_by, "recurrence");
-        assert_eq!(due_now[0].claimable[0].recurring_id.as_deref(), Some("r-heartbeat"));
+        assert_eq!(
+            due_now[0].claimable[0].recurring_id.as_deref(),
+            Some("r-heartbeat")
+        );
 
         // skip-if-previous-open: rewinding again spawns nothing while the child is live
         let mut cursors = load_cursors();
@@ -1713,8 +1820,14 @@ mod tests {
 
     #[test]
     fn parses_cron_and_intervals() {
-        assert!(matches!(parse_schedule("every 4h"), Some(Schedule::Every(_))));
-        assert!(matches!(parse_schedule("0 9 * * 1-5"), Some(Schedule::Cron(_))));
+        assert!(matches!(
+            parse_schedule("every 4h"),
+            Some(Schedule::Every(_))
+        ));
+        assert!(matches!(
+            parse_schedule("0 9 * * 1-5"),
+            Some(Schedule::Cron(_))
+        ));
         assert!(parse_schedule("whenever").is_none());
 
         let daily = parse_cron("0 9 * * *").unwrap();

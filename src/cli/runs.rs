@@ -1,12 +1,12 @@
 //! `roster server runs` inspection — every execution, including warm Discord
 //! sessions that intentionally bypass the durable task queue.
 
-use crate::worker::context as context_compiler;
-use crate::worker::journal;
-use crate::worker::memory;
 use crate::run::runlog;
 use crate::util::BErr;
 use crate::work::tms;
+use crate::worker::context as context_compiler;
+use crate::worker::journal;
+use crate::worker::memory;
 
 pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
     if limit == 0 {

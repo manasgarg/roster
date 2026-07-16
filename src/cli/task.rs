@@ -126,10 +126,7 @@ pub fn show(id: &str) -> Result<(), BErr> {
     if let Some(error) = &t.error {
         println!("error    {}", crate::run::runlog::one_line(error, 300));
     }
-    println!(
-        "filed by {}  (standing: {})",
-        t.created_by, t.standing
-    );
+    println!("filed by {}  (standing: {})", t.created_by, t.standing);
     if let Some(ch) = &t.tags.channel {
         println!("channel  {ch}");
     }
@@ -150,9 +147,7 @@ pub fn show(id: &str) -> Result<(), BErr> {
     println!("ceiling  {} min", t.ceiling_min);
     println!("knowledge {}", t.knowledge_mode);
     if let Some(run) = &t.run_id {
-        println!(
-            "run      {run}   (details: roster server runs show {run})"
-        );
+        println!("run      {run}   (details: roster server runs show {run})");
     }
     if let Some(repo) = &t.repo {
         println!("repo     {repo} @ {}", t.base.as_deref().unwrap_or("main"));

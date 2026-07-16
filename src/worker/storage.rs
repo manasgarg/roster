@@ -98,7 +98,9 @@ pub fn validate_worker_overlay(base: &StoragePolicy, worker: &StoragePolicy) -> 
         return Err("worker knowledge limits cannot exceed org limits".into());
     }
     if worker.knowledge.write_from == "any-run" && base.knowledge.write_from == "clean-room" {
-        return Err("worker cannot relax the clean-room knowledge boundary set by org policy".into());
+        return Err(
+            "worker cannot relax the clean-room knowledge boundary set by org policy".into(),
+        );
     }
     Ok(())
 }

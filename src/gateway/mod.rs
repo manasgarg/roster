@@ -102,10 +102,7 @@ fn write_state(addrs: &[String]) {
         "config_root": crate::paths::config_root().display().to_string(),
         "pid": std::process::id(),
     });
-    let _ = std::fs::write(
-        crate::paths::gateway_state_file(),
-        format!("{state}\n"),
-    );
+    let _ = std::fs::write(crate::paths::gateway_state_file(), format!("{state}\n"));
 }
 
 /// Remove the binding record on graceful shutdown (best-effort; a killed

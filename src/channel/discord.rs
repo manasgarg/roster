@@ -34,12 +34,17 @@ pub async fn post_message(token: &str, channel_id: &str, text: &str) -> Result<S
         let status = res.status();
         if status.as_u16() == 429 {
             let body: Value = res.json().await.unwrap_or(Value::Null);
-            let wait = body.get("retry_after").and_then(|v| v.as_f64()).unwrap_or(1.0);
+            let wait = body
+                .get("retry_after")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1.0);
             if attempt < 4 {
                 tokio::time::sleep(Duration::from_secs_f64(wait.clamp(0.0, 60.0) + 0.05)).await;
                 continue;
             }
-            return Err(format!("discord rate limited; gave up after retries (retry_after {wait}s)"));
+            return Err(format!(
+                "discord rate limited; gave up after retries (retry_after {wait}s)"
+            ));
         }
         let body: Value = res.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
@@ -180,7 +185,10 @@ async fn connect_once(
     let mut guilds: HashMap<String, Guild> = HashMap::new();
     // Carried across a resume so a resumable drop can re-supply them; a fresh
     // READY overwrites them.
-    let mut session_id = resume.as_ref().map(|r| r.session_id.clone()).unwrap_or_default();
+    let mut session_id = resume
+        .as_ref()
+        .map(|r| r.session_id.clone())
+        .unwrap_or_default();
     let mut resume_url = resume.as_ref().map(|r| r.url.clone()).unwrap_or_default();
     let mut can_resume = true;
     // A live gateway always sends traffic (at least heartbeat ACKs) within a
@@ -193,7 +201,12 @@ async fn connect_once(
         let msg = match tokio::time::timeout(read_timeout, stream.next()).await {
             Ok(Some(m)) => m,
             Ok(None) => break Err(transient("stream ended".into())),
-            Err(_) => break Err(transient("no gateway traffic within the heartbeat window — connection is half-open".into())),
+            Err(_) => {
+                break Err(transient(
+                    "no gateway traffic within the heartbeat window — connection is half-open"
+                        .into(),
+                ))
+            }
         };
         let msg = match msg {
             Ok(m) => m,
@@ -587,7 +600,11 @@ async fn route_to_session(
         // fresh session instead of try_send-ing into a dead one.
         {
             let mut map = sessions().lock().unwrap();
-            if map.get(&session_map_key).map(|tx| tx.is_closed()).unwrap_or(false) {
+            if map
+                .get(&session_map_key)
+                .map(|tx| tx.is_closed())
+                .unwrap_or(false)
+            {
                 map.remove(&session_map_key);
             }
         }
@@ -745,7 +762,12 @@ fn interaction_role(d: &Value, guilds: &HashMap<String, Guild>) -> &'static str 
     }
 }
 
-async fn handle_interaction(worker: &str, d: &Value, guilds: &HashMap<String, Guild>, app_id: &str) {
+async fn handle_interaction(
+    worker: &str,
+    d: &Value,
+    guilds: &HashMap<String, Guild>,
+    app_id: &str,
+) {
     if d["type"].as_i64().unwrap_or(0) != 2 {
         return; // only APPLICATION_COMMAND
     }
@@ -828,7 +850,10 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
     }
     let call = super::slash::SlashCall {
         cmd: data["name"].as_str().unwrap_or("").to_string(),
-        sub: data["options"][0]["name"].as_str().unwrap_or("").to_string(),
+        sub: data["options"][0]["name"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
         args,
     };
     super::slash::run(
@@ -931,9 +956,7 @@ fn save_settings(map: &HashMap<String, ChannelSettings>) -> Result<(), String> {
 /// the atomic write keeps a concurrent reader from ever seeing a half-written
 /// file. The write error is returned so callers report a real failure instead
 /// of claiming a change that didn't land.
-fn mutate_settings(
-    f: impl FnOnce(&mut HashMap<String, ChannelSettings>),
-) -> Result<(), String> {
+fn mutate_settings(f: impl FnOnce(&mut HashMap<String, ChannelSettings>)) -> Result<(), String> {
     let _lock = crate::statefile::FileLock::acquire("channels")
         .map_err(|e| format!("channel settings lock: {e}"))?;
     let mut m = load_settings();
@@ -1032,7 +1055,10 @@ pub fn set_channel_memory_allowed_kinds(
     })
 }
 
-pub fn set_channel_memory_retention_days(channel_id: &str, days: Option<u64>) -> Result<(), String> {
+pub fn set_channel_memory_retention_days(
+    channel_id: &str,
+    days: Option<u64>,
+) -> Result<(), String> {
     mutate_settings(|m| {
         m.entry(channel_id.to_string())
             .or_default()

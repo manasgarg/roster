@@ -12,12 +12,12 @@ mod cli;
 mod config;
 mod credential;
 mod gateway;
-mod worker;
 mod paths;
 mod run;
 mod statefile;
 mod util;
 mod work;
+mod worker;
 
 use clap::{Parser, Subcommand};
 
@@ -543,9 +543,7 @@ async fn main() {
                 Some(ApprovalsCmd::Approve { id, note }) => {
                     cli::approvals::approve(&id, note.as_deref()).await
                 }
-                Some(ApprovalsCmd::Deny { id, note }) => {
-                    cli::approvals::deny(&id, note.as_deref())
-                }
+                Some(ApprovalsCmd::Deny { id, note }) => cli::approvals::deny(&id, note.as_deref()),
             },
             Some(ServerCmd::Channel { cmd }) => match cmd {
                 None => cli::channel::ls(false),
@@ -568,9 +566,11 @@ async fn main() {
             },
             Some(ServerCmd::Runs { cmd }) => match cmd {
                 None => cli::runs::ls(None, 20, false),
-                Some(RunsCmd::Ls { worker, limit, json }) => {
-                    cli::runs::ls(worker.as_deref(), limit, json)
-                }
+                Some(RunsCmd::Ls {
+                    worker,
+                    limit,
+                    json,
+                }) => cli::runs::ls(worker.as_deref(), limit, json),
                 Some(RunsCmd::Show { run }) => cli::runs::show(&run),
                 Some(RunsCmd::Context { run, all }) => cli::runs::context(&run, all),
                 Some(RunsCmd::Recall { run }) => cli::runs::recall(&run),
@@ -644,12 +644,7 @@ async fn main() {
         },
         Cmd::Completions { shell } => {
             use clap::CommandFactory;
-            clap_complete::generate(
-                shell,
-                &mut Cli::command(),
-                "roster",
-                &mut std::io::stdout(),
-            );
+            clap_complete::generate(shell, &mut Cli::command(), "roster", &mut std::io::stdout());
             Ok(())
         }
         Cmd::Worker { cmd } => match cmd {
@@ -684,9 +679,11 @@ async fn main() {
                     &base,
                     prompt.join(" "),
                 ),
-                Some(TaskCmd::Relay { worker, from, message }) => {
-                    channel::relay::run(&worker, from.as_deref(), message.join(" "))
-                }
+                Some(TaskCmd::Relay {
+                    worker,
+                    from,
+                    message,
+                }) => channel::relay::run(&worker, from.as_deref(), message.join(" ")),
                 Some(TaskCmd::Ls { json }) => cli::task::ls(json),
                 Some(TaskCmd::Show { id }) => cli::task::show(&id),
                 Some(TaskCmd::Requeue { id }) => cli::task::requeue(&id),

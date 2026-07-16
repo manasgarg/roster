@@ -26,7 +26,8 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("ROSTER_BUIL
 #[command(
     name = "roster",
     version = VERSION,
-    about = "roster — digital workers with owned governance"
+    about = "roster — digital workers with owned governance",
+    after_help = "quickstart: roster talk   (first run: creates a worker and opens a chat)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -79,6 +80,7 @@ enum ServerCmd {
     },
     /// Daemon health: components, queue, gates, compiled config
     Status {
+        /// Machine-readable JSON
         #[arg(long)]
         json: bool,
     },
@@ -100,6 +102,7 @@ enum ServerCmd {
 enum ApprovalsCmd {
     /// What is pending your approval
     Ls {
+        /// Machine-readable JSON
         #[arg(long)]
         json: bool,
     },
@@ -128,19 +131,32 @@ enum ApprovalsCmd {
 enum ChannelCmd {
     /// All configured channels
     Ls {
+        /// Machine-readable JSON
         #[arg(long)]
         json: bool,
     },
     /// One channel's settings, readable
-    Show { channel_id: String },
-    /// Trust a channel: its participants may administer; replies need no gate
-    Trust { channel_id: String },
-    /// Untrust a channel: participants are content-only
-    Untrust { channel_id: String },
-    /// Tune a setting (bare: list keys, allowed values, and current values)
-    Set {
+    Show {
+        /// Channel id (see: roster server channel ls)
         channel_id: String,
+    },
+    /// Trust a channel: its participants may administer; replies need no gate
+    Trust {
+        /// Channel id (see: roster server channel ls)
+        channel_id: String,
+    },
+    /// Untrust a channel: participants are content-only
+    Untrust {
+        /// Channel id (see: roster server channel ls)
+        channel_id: String,
+    },
+    /// Tune a setting (just the id: list keys, allowed values, current values)
+    Set {
+        /// Channel id (see: roster server channel ls)
+        channel_id: String,
+        /// A settings key (omit to list them all)
         key: Option<String>,
+        /// The new value (omit to list keys and values)
         value: Option<String>,
     },
 }
@@ -187,11 +203,15 @@ enum ConnectionCmd {
     },
     /// Every connection, its use(s) — capability, channel, model — and state
     Ls {
+        /// Machine-readable JSON
         #[arg(long)]
         json: bool,
     },
     /// Delete the secret from the vault; report every surviving reference
-    Rm { name: String },
+    Rm {
+        /// Connection name (see: roster connection ls)
+        name: String,
+    },
 }
 
 /// Retired: the one noun is `connection` (docs/connections.md). Each
@@ -210,35 +230,46 @@ enum CredentialCmd {
 #[derive(Subcommand)]
 enum WorkerCmd {
     /// Scaffold a worker: spec, identity, knowledge repo
-    Init { name: String },
+    Init {
+        /// The new worker's name (lowercase letters/numbers/hyphens)
+        name: String,
+    },
     /// List workers and their state
     Ls {
+        /// Machine-readable JSON
         #[arg(long)]
         json: bool,
     },
     /// One worker: spec, budgets and spend, queue, gates, memory, knowledge
     Show {
+        /// The worker's name
         name: String,
+        /// Machine-readable JSON
         #[arg(long)]
         json: bool,
     },
     /// Per-action trust: grants, earned history, promotion rules
     Trust {
+        /// The worker's name
         name: String,
+        /// Machine-readable JSON
         #[arg(long)]
         json: bool,
     },
     /// One governed session, now, bypassing the queue
     Run {
+        /// The worker to run
         name: String,
         /// Wall-clock ceiling in minutes
         #[arg(long, default_value_t = 30.0)]
         ceiling: f64,
+        /// The prompt (bare words are joined)
         #[arg(required = true, value_name = "PROMPT")]
         prompt: Vec<String>,
     },
-    /// Interactive warm session fed from stdin, one message per turn
+    /// Scripted stdin session, one message per turn (conversations: roster talk)
     Chat {
+        /// The worker to chat with
         name: String,
         /// End after this much quiet, in seconds
         #[arg(long, default_value_t = 20)]
@@ -251,21 +282,25 @@ enum WorkerCmd {
     #[command(subcommand)]
     Memory(MemoryCmd),
     /// Print the knowledge repo path (then use git)
-    Knowledge { name: String },
+    Knowledge {
+        /// The worker's name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
 enum TaskCmd {
     /// File a task for a worker
     Add {
+        /// The worker to file it for
         worker: String,
         /// Wall-clock ceiling in minutes
         #[arg(long, default_value_t = 30.0)]
         ceiling: f64,
-        /// Budget-gated at dispatch; admin-filed work always runs
+        /// File as proactive: waits out spent budget windows (owner-filed work always runs)
         #[arg(long)]
         proactive: bool,
-        /// Exclusive knowledge reorganization
+        /// An exclusive knowledge-reorganization session (no other work alongside it)
         #[arg(long, conflicts_with = "repo")]
         reorganize: bool,
         /// Code task in a worktree of this git repo
@@ -278,28 +313,31 @@ enum TaskCmd {
         #[arg(required = true, value_name = "PROMPT")]
         prompt: Vec<String>,
     },
-    /// File an inbound message as a task (untrusted-content framing)
+    /// File an inbound message as a task (framed as untrusted content)
     Relay {
+        /// The worker to relay it to
         worker: String,
         /// Sender label recorded with the task
         #[arg(long)]
         from: Option<String>,
+        /// The message (bare words are joined)
         #[arg(required = true, value_name = "MESSAGE")]
         message: Vec<String>,
     },
-    /// List tasks, newest first
+    /// List tasks — queued, recurring, and recent outcomes
     Ls {
+        /// Machine-readable JSON
         #[arg(long)]
         json: bool,
     },
     /// Inspect a task: state, gates, journal, prompt
     Show {
-        /// Task id (any unique prefix)
+        /// Task id (any unique prefix; journaled tasks need the exact id)
         id: String,
     },
-    /// Put a stuck or finished task back to waiting
+    /// Put a stuck, failed, or finished task back to waiting
     Requeue {
-        /// Task id (any unique prefix)
+        /// Task id (any unique prefix; journaled tasks need the exact id)
         id: String,
     },
 }
@@ -308,6 +346,7 @@ enum TaskCmd {
 enum MemoryCmd {
     /// List memory notes
     Ls {
+        /// The worker whose memory to list
         worker: String,
         /// Filter: worker | channel | user
         #[arg(long)]
@@ -318,39 +357,59 @@ enum MemoryCmd {
     },
     /// Print one note in full
     Show {
+        /// The worker whose note it is
         worker: String,
+        /// Note id (see: roster worker memory ls <worker>)
         id: String,
     },
     /// Replace a note's content (recorded, not a silent edit)
     Correct {
+        /// The worker whose note it is
         worker: String,
+        /// Note id (see: roster worker memory ls <worker>)
         id: String,
+        /// The replacement content (bare words are joined)
         #[arg(required = true, value_name = "REPLACEMENT")]
         replacement: Vec<String>,
     },
     /// Remove a note
     Rm {
+        /// The worker whose note it is
         worker: String,
+        /// Note id (see: roster worker memory ls <worker>)
         id: String,
     },
+    /// Include a note in every recall, until unpinned
     Pin {
+        /// The worker whose note it is
         worker: String,
+        /// Note id (see: roster worker memory ls <worker>)
         id: String,
     },
+    /// Stop force-including a pinned note
     Unpin {
+        /// The worker whose note it is
         worker: String,
+        /// Note id (see: roster worker memory ls <worker>)
         id: String,
     },
+    /// Keep a note but stop recalling it
     Disable {
+        /// The worker whose note it is
         worker: String,
+        /// Note id (see: roster worker memory ls <worker>)
         id: String,
     },
+    /// Recall a disabled note again
     Enable {
+        /// The worker whose note it is
         worker: String,
+        /// Note id (see: roster worker memory ls <worker>)
         id: String,
     },
-    /// Drop dead notes, keep live ones (finishes the notes/ → memory/ migration)
+    /// Drop dead notes, keep live ones
     Compact {
+        /// The worker whose memory to compact
         worker: String,
     },
 }
@@ -359,10 +418,13 @@ enum MemoryCmd {
 enum RunsCmd {
     /// List past sessions, whoever they were attributed to
     Ls {
+        /// Only sessions attributed to this worker
         #[arg(long)]
         worker: Option<String>,
+        /// Show at most this many
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Machine-readable JSON
         #[arg(long)]
         json: bool,
     },
@@ -407,10 +469,14 @@ async fn main() {
 
     let cli = Cli::parse();
     // No first-run ceremony: the deployment roots and a starter org.toml
-    // exist by the time any command needs them (idempotent, quiet).
-    if let Err(e) = cli::init::ensure() {
-        eprintln!("roster: could not initialize the deployment roots: {e}");
-        std::process::exit(1);
+    // exist by the time any command needs them (idempotent, quiet). The
+    // explicit `roster init` narrates its own work instead — pre-creating
+    // here would make it report "kept" for files it just wrote.
+    if !matches!(cli.command, Cmd::Init) {
+        if let Err(e) = cli::init::ensure() {
+            eprintln!("roster: could not initialize the deployment roots: {e}");
+            std::process::exit(1);
+        }
     }
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
         Cmd::Init => cli::init::run(),

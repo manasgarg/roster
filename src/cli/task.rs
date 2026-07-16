@@ -54,7 +54,22 @@ pub fn add(
     )
     .map_err(|e| e.to_string())?;
     println!("queued {} for {} ({kind})", t.id, t.worker);
+    if gateway_up_quick() {
+        println!("watch it: roster worker task show {}", t.id);
+    } else {
+        println!("note: the server isn't running — this task will wait (roster server start)");
+    }
     Ok(())
+}
+
+/// A synchronous daemon-liveness probe (the async one lives in cli::server) —
+/// cheap enough to answer "will this task actually run?" right after filing.
+fn gateway_up_quick() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], crate::gateway::PORT)),
+        std::time::Duration::from_millis(300),
+    )
+    .is_ok()
 }
 
 /// A live task by unique prefix, or a journaled one by exact id.
@@ -78,6 +93,9 @@ pub fn show(id: &str) -> Result<(), BErr> {
     println!("task     {}", t.id);
     println!("worker   {}", t.worker);
     println!("state    {}", t.state);
+    if let Some(error) = &t.error {
+        println!("error    {}", crate::run::runlog::one_line(error, 300));
+    }
     println!(
         "filed by {}  (standing: {})",
         t.created_by, t.standing
@@ -102,7 +120,9 @@ pub fn show(id: &str) -> Result<(), BErr> {
     println!("ceiling  {} min", t.ceiling_min);
     println!("knowledge {}", t.knowledge_mode);
     if let Some(run) = &t.run_id {
-        println!("run      {run}   (transcript: state/runs/{run}/stdout.jsonl)");
+        println!(
+            "run      {run}   (details: roster server runs show {run})"
+        );
     }
     if let Some(repo) = &t.repo {
         println!("repo     {repo} @ {}", t.base.as_deref().unwrap_or("main"));
@@ -155,18 +175,30 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             .then_with(|| b.created_at.cmp(&a.created_at))
     });
     let recurring = tms::list_recurring();
+    // Recently finished/failed work stays in view — a task must never simply
+    // vanish from the listing when its run ends. (Requeued ids are live again;
+    // skip their stale journal records.)
+    let recent: Vec<(String, tms::Task)> = tms::journal_recent(8)
+        .into_iter()
+        .filter(|(_, t)| !tasks.iter().any(|live| live.id == t.id))
+        .take(5)
+        .collect();
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "tasks": tasks,
                 "recurring": recurring,
+                "recent": recent
+                    .iter()
+                    .map(|(ts, t)| serde_json::json!({ "ts": ts, "task": t }))
+                    .collect::<Vec<_>>(),
             }))?
         );
         return Ok(());
     }
-    if tasks.is_empty() && recurring.is_empty() {
-        println!("no tasks");
+    if tasks.is_empty() && recurring.is_empty() && recent.is_empty() {
+        println!("no tasks — file one: roster worker task add <worker> \"<prompt>\"");
         return Ok(());
     }
     if !tasks.is_empty() {
@@ -212,7 +244,27 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             );
         }
     }
-    println!("\ncompleted and failed tasks live in each worker's journal: data/workers/<name>/tasks/journal.jsonl");
+    if !recent.is_empty() {
+        println!(
+            "\n{:<12}  {:<10}  {:<12}  {:<17}  PROMPT (failed: the error)",
+            "RECENT", "WORKER", "OUTCOME", "FINISHED (UTC)"
+        );
+        for (ts, t) in &recent {
+            let note = match (&t.state[..], &t.error) {
+                ("failed", Some(error)) => crate::run::runlog::one_line(error, 60),
+                _ => crate::run::runlog::one_line(&t.prompt, 60),
+            };
+            println!(
+                "{:<12}  {:<10}  {:<12}  {:<17}  {}",
+                t.id,
+                t.worker,
+                t.state,
+                short_time(ts),
+                note
+            );
+        }
+    }
+    println!("\nfull history: roster server runs ls   one task: roster worker task show <id>");
     Ok(())
 }
 

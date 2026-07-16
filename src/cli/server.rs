@@ -36,7 +36,17 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
 
     bootstrap_llm_credential().await?;
 
-    let gateway = crate::gateway::start(addr).await?;
+    let gateway = crate::gateway::start(addr).await.map_err(|e| -> BErr {
+        if e.to_string().contains("Address already in use") {
+            format!(
+                "something is already listening on {addr} — another roster server? \
+                 Check: roster server status  (or pick a different --addr)"
+            )
+            .into()
+        } else {
+            e
+        }
+    })?;
     eprintln!(
         "roster server {BUILD} — gateway on {addr}; dispatch cap {cap}{}{}",
         if once { "; once" } else { "" },
@@ -55,6 +65,11 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
             listeners.push(tokio::spawn(crate::channel::listen::supervised(
                 worker, platform, credential,
             )));
+        }
+        if let Ok(c) = crate::config::snapshot() {
+            if let Some(first) = c.workers.first() {
+                eprintln!("talk to a worker from another terminal: roster talk {first}");
+            }
         }
     }
 
@@ -109,7 +124,7 @@ async fn shutdown_signal() -> &'static str {
 /// Import-and-own: after import, roster's gateway owns the refresh and pi's
 /// copy may go stale — pi re-logs-in when it next needs to.
 async fn bootstrap_llm_credential() -> Result<(), BErr> {
-    const LLM_PROVIDERS: [&str; 2] = ["anthropic", "openai-codex"];
+    use crate::credential::LLM_PROVIDERS;
     if LLM_PROVIDERS
         .iter()
         .any(|n| crate::credential::vault::get_credential(n).is_some())
@@ -280,7 +295,14 @@ pub async fn status(json: bool) -> Result<(), BErr> {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    println!("queue      {queue_line}");
+    println!(
+        "queue      {queue_line}{}",
+        if !gateway_up && queue_by_state.get("pending").copied().unwrap_or(0) > 0 {
+            "   (waiting for the server: roster server start)"
+        } else {
+            ""
+        }
+    );
     println!(
         "gates      {}",
         if gates_pending == 0 {

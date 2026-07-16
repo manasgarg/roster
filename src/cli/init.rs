@@ -20,8 +20,9 @@ const STARTER_ORG: &str = r#"# Roster org config — ADMIN-ONLY. Applies to ever
 # verdict = "allow"
 
 # Actions workers may propose ([[action]]), the trust ladder ([[trust]]),
-# and budgets ([budget] + [[budget.limit]]) — see docs/configuration.md
-# for the full reference and worked examples.
+# and budgets ([budget] + [[budget.limit]]) — full reference and worked
+# examples: docs/configuration.md in the roster repo
+# (https://github.com/manasgarg/roster).
 "#;
 
 fn dirs() -> [(&'static str, std::path::PathBuf); 10] {
@@ -76,7 +77,7 @@ pub fn run() -> Result<(), BErr> {
         println!("created {:<15} {}", "org.toml", org.display());
     }
     println!(
-        "\nnext: edit {} (grants, actions, budgets), then\n  roster worker init <name>\n  roster server validate\n  roster server start",
+        "\nnext: edit {} (grants, actions, budgets), then\n  roster worker init <name>\n  roster connection add anthropic   (a model credential — workers need one)\n  roster server validate\n  roster server start",
         org.display()
     );
     println!(

@@ -26,6 +26,7 @@ pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
                     "state": run.state, "started_at": run.started_at,
                     "ended_at": run.ended_at, "task_id": run.task_id,
                     "channel_id": run.channel_id,
+                    "error": run.record.as_ref().and_then(|r| r.error.clone()),
                 })
             })
             .collect();
@@ -33,7 +34,10 @@ pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
         return Ok(());
     }
     if runs.is_empty() {
-        println!("no runs found");
+        println!(
+            "no runs yet — every session lands here once a worker runs \
+             (roster talk <worker>, roster worker run <worker> \"<prompt>\", or a dispatched task)"
+        );
         return Ok(());
     }
     println!(
@@ -85,6 +89,9 @@ pub fn show(id: &str) -> Result<(), BErr> {
         }
         if let Some(exit) = record.exit_code {
             println!("exit      {exit}");
+        }
+        if let Some(error) = &record.error {
+            println!("error     {}", runlog::one_line(error, 300));
         }
         if let Some(knowledge) = &record.knowledge {
             println!("knowledge {}", knowledge.state);

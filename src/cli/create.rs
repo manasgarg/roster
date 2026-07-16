@@ -50,5 +50,14 @@ pub fn run(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     })?;
     println!("initialized knowledge at {knowledge_commit}");
     println!("edit them anytime — config loads live (roster server validate checks it)");
+    println!(
+        "\nnext: roster talk {name}   (or file work: roster worker task add {name} \"<prompt>\")"
+    );
+    if !crate::run::boxed::model_credentials_available() {
+        println!(
+            "note: no model credential yet — {name} can't think until one is connected: \
+             roster connection add anthropic  (or openai-codex)"
+        );
+    }
     Ok(())
 }

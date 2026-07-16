@@ -36,7 +36,8 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         return Ok(());
     }
     if map.is_empty() {
-        println!("no channels configured (untrusted, mode=all by default)");
+        println!("no channels configured — channels appear when a worker binds one ([channels] in its worker.toml) or when you talk to a worker in the terminal (roster talk <name>)");
+        println!("until configured, every channel defaults to untrusted, mode=all");
         return Ok(());
     }
     println!(
@@ -116,6 +117,13 @@ pub fn show(channel_id: &str) -> Result<(), BErr> {
 }
 
 pub fn set_trust(channel_id: &str, trusted: bool) -> Result<(), BErr> {
+    // Trust is a standing grant; a typo'd id must not pass silently.
+    if !discord::channel_settings_all().contains_key(channel_id) && describe(channel_id) == "-" {
+        eprintln!(
+            "warning: no known channel matches \"{channel_id}\" — the designation is recorded \
+             and applies if such a channel appears (known channels: roster server channel ls)"
+        );
+    }
     discord::set_channel_trust(channel_id, trusted);
     println!(
         "channel {channel_id} → {}",

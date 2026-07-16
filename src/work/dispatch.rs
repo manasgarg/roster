@@ -27,6 +27,7 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
     // Tasks handed to boxes this tick-cycle but not yet joined, so a slow
     // journal write can't double-dispatch.
     let mut in_flight: HashSet<String> = HashSet::new();
+    let mut credential_warned = false;
 
     loop {
         // Broken config = no governance guarantees; pause dispatch until it
@@ -43,10 +44,38 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
             }
         };
 
+        // No model credential = every box would fail on arrival. Hold the
+        // queue (tasks stay pending) instead of burning each one to a failed
+        // run; resume the moment a credential appears.
+        let creds_ok = boxed::model_credentials_available();
+        if !creds_ok && !credential_warned {
+            eprintln!(
+                "dispatch holding — no model credential; tasks stay queued. \
+                 Connect one: roster connection add anthropic  (or openai-codex)"
+            );
+            credential_warned = true;
+        }
+        if creds_ok && credential_warned {
+            eprintln!("dispatch resuming — a model credential is available");
+            credential_warned = false;
+        }
+
+        if !creds_ok && once && set.is_empty() {
+            return Err(
+                "no model credential — tasks cannot run. Connect one: \
+                 roster connection add anthropic  (or openai-codex)"
+                    .into(),
+            );
+        }
+
         // The TMS keeps heartbeats honest and spawns due recurrences inside
-        // due(); what comes back is eligibility, owner standing first.
+        // due(); what comes back is eligibility, owner standing first. While
+        // holding, skip claiming only — in-flight boxes still join below.
         let mut idle = true;
         'workers: for due in tms::due(&config.heartbeats) {
+            if !creds_ok {
+                break;
+            }
             for task in due.claimable {
                 if set.len() >= cap {
                     break 'workers;
@@ -210,27 +239,40 @@ fn task_memory_context(task: &tms::Task) -> crate::worker::memory::RunContext {
 }
 
 /// Attest the outcome: a filed gate → needs-review (a human, then maybe a
-/// continuation); a clean exit → completed; anything else → failed.
+/// continuation); a clean exit → completed; anything else → failed. The
+/// failure reason rides along so `task show` can answer "why".
 fn finalize(task: tms::Task, outcome: Result<boxed::Outcome, String>) {
-    let next = match outcome {
+    let (next, error) = match outcome {
         Err(e) => {
             eprintln!("task {} failed to run: {e}", task.id);
-            "failed"
+            ("failed", Some(e))
         }
         Ok(o) => {
             if o.ended_by == "ceiling" {
-                "failed"
+                (
+                    "failed",
+                    Some(format!(
+                        "hit the {:.0}-minute wall-clock ceiling",
+                        task.ceiling_min
+                    )),
+                )
             } else if o.exit_code != Some(0) {
                 eprintln!("task {} box exited {:?}", task.id, o.exit_code);
-                "failed"
+                (
+                    "failed",
+                    Some(match o.exit_code {
+                        Some(code) => format!("the box exited with code {code}"),
+                        None => "the box was killed before it exited".to_string(),
+                    }),
+                )
             } else if !gate::pending_for_task(&task.id).is_empty() {
-                "needs-review"
+                ("needs-review", None)
             } else {
-                "completed"
+                ("completed", None)
             }
         }
     };
-    if let Err(e) = tms::finish(&task.worker, &task.id, next) {
+    if let Err(e) = tms::finish_with(&task.worker, &task.id, next, error) {
         eprintln!("supervise: could not update task {}: {e}", task.id);
     } else {
         eprintln!("task {} → {next}", task.id);

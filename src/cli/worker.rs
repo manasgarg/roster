@@ -228,6 +228,9 @@ pub fn trust(name: &str, json: bool) -> Result<(), BErr> {
     }
     if rows.is_empty() {
         println!("{name} has no action grants — it can propose nothing");
+        println!(
+            "grant actions in org.toml ([[action]] + [[trust]] rules), then check: roster server validate"
+        );
         return Ok(());
     }
     for row in rows {

@@ -67,7 +67,7 @@ pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<
     let compiled = match crate::worker::context::compile_and_trace(&request) {
         Ok(compiled) => compiled,
         Err(error) => {
-            crate::run::runlog::fail(&run_id);
+            crate::run::runlog::fail(&run_id, Some(&error.to_string()));
             return Err(error.into());
         }
     };
@@ -83,7 +83,7 @@ pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<
     let (run_id, run_dir, ended_by, exit_code) = match run_box(&compiled, &spec).await {
         Ok(outcome) => outcome,
         Err(error) => {
-            crate::run::runlog::fail(&run_id);
+            crate::run::runlog::fail(&run_id, Some(&error.to_string()));
             return Err(error);
         }
     };
@@ -175,14 +175,14 @@ pub async fn dispatch(
     let compiled = match crate::worker::context::compile_and_trace(&request) {
         Ok(compiled) => compiled,
         Err(error) => {
-            crate::run::runlog::fail(spec.run_id);
+            crate::run::runlog::fail(spec.run_id, Some(&error.to_string()));
             return Err(error.into());
         }
     };
     let (run_id, _run_dir, ended_by, exit_code) = match run_box(&compiled, &spec).await {
         Ok(outcome) => outcome,
         Err(error) => {
-            crate::run::runlog::fail(spec.run_id);
+            crate::run::runlog::fail(spec.run_id, Some(&error.to_string()));
             return Err(error);
         }
     };
@@ -197,6 +197,17 @@ pub async fn dispatch(
 /// tell whether a task marked `running` still has a live box.
 pub fn container_name(run_id: &str) -> String {
     format!("roster-box-{run_id}")
+}
+
+/// Can a box authenticate to a model right now? The vault first (roster-owned
+/// logins), then the host fallbacks provision_box honors. The dispatch loop
+/// holds the queue on false instead of burning every task to a failed run.
+pub fn model_credentials_available() -> bool {
+    crate::credential::LLM_PROVIDERS
+        .iter()
+        .any(|n| crate::credential::vault::get_credential(n).is_some())
+        || home_dir().join(".pi/agent/auth.json").exists()
+        || std::env::var("ANTHROPIC_API_KEY").is_ok()
 }
 
 /// Is the box container for this run still alive? (For reclaim/requeue safety.)
@@ -276,7 +287,7 @@ async fn run_box(
     {
         Ok(child) => child,
         Err(e) => {
-            crate::run::runlog::fail(run_id);
+            crate::run::runlog::fail(run_id, Some(&e.to_string()));
             return Err(e.into());
         }
     };
@@ -343,7 +354,7 @@ pub async fn run_session(
     let start = match crate::worker::context::compile_and_trace(&start_request) {
         Ok(compiled) => compiled,
         Err(error) => {
-            crate::run::runlog::fail(run_id);
+            crate::run::runlog::fail(run_id, Some(&error.to_string()));
             return Err(error.into());
         }
     };
@@ -359,7 +370,7 @@ pub async fn run_session(
     } = match provision_box(worker, run_id, "", None, &start_context, "append", None).await {
         Ok(provisioned) => provisioned,
         Err(error) => {
-            crate::run::runlog::fail(run_id);
+            crate::run::runlog::fail(run_id, Some(&error.to_string()));
             return Err(error);
         }
     };
@@ -386,7 +397,7 @@ pub async fn run_session(
     {
         Ok(child) => child,
         Err(e) => {
-            crate::run::runlog::fail(run_id);
+            crate::run::runlog::fail(run_id, Some(&e.to_string()));
             return Err(e.into());
         }
     };
@@ -661,7 +672,8 @@ async fn provision_box(
     let has_auth = prepare_pihome(&pihome, &home)?;
     if !has_auth && std::env::var("ANTHROPIC_API_KEY").is_err() {
         return Err(
-            "no model credentials: neither ~/.pi/agent/auth.json nor ANTHROPIC_API_KEY exists"
+            "no model credential — connect one: roster connection add anthropic  (or openai-codex). \
+             Also honored: a host pi login (~/.pi/agent/auth.json) or ANTHROPIC_API_KEY in the daemon's environment"
                 .into(),
         );
     }
@@ -1063,14 +1075,29 @@ async fn docker_kill(container: &str) {
 fn prepare_pihome(pihome: &Path, home: &Path) -> Result<bool, BErr> {
     let agent = pihome.join("agent");
     std::fs::create_dir_all(&agent)?;
+    // Sentinel logins for pi, shaped like real ones (pi reads the account id
+    // and expiry) but never containing a secret — the gateway injects the real
+    // credential in transit. A host pi login seeds the map; vault logins
+    // (`roster connection add anthropic`) fill in for hosts that never ran pi.
     let auth_src = home.join(".pi/agent/auth.json");
-    let has_auth = auth_src.exists();
-    if has_auth {
+    let mut sentinel: Map<String, Value> = Map::new();
+    if auth_src.exists() {
         let real: Map<String, Value> = serde_json::from_str(&std::fs::read_to_string(&auth_src)?)?;
-        let sentinel: Map<String, Value> = real
+        sentinel = real
             .iter()
             .map(|(k, v)| (k.clone(), sentinelize(v)))
             .collect();
+    }
+    for name in crate::credential::LLM_PROVIDERS {
+        if sentinel.contains_key(name) {
+            continue;
+        }
+        if let Some(cred) = crate::credential::vault::get_credential(name) {
+            sentinel.insert(name.to_string(), sentinelize_known_fields(&Value::Object(cred)));
+        }
+    }
+    let has_auth = !sentinel.is_empty();
+    if has_auth {
         std::fs::write(
             agent.join("auth.json"),
             format!("{}\n", serde_json::to_string_pretty(&sentinel)?),
@@ -1092,6 +1119,23 @@ fn prepare_pihome(pihome: &Path, home: &Path) -> Result<bool, BErr> {
         format!("{}\n", serde_json::to_string_pretty(&settings)?),
     )?;
     Ok(has_auth)
+}
+
+/// `sentinelize` for a vault credential: mask, then keep ONLY the fields pi
+/// reads. A vault entry may carry fields sentinelize doesn't know about (an
+/// api key, provider extras) — the whitelist guarantees none of them can ride
+/// into the box.
+fn sentinelize_known_fields(entry: &Value) -> Value {
+    let masked = sentinelize(entry);
+    let mut out = Map::new();
+    if let Some(o) = masked.as_object() {
+        for k in ["type", "access", "refresh", "accountId", "expires"] {
+            if let Some(v) = o.get(k) {
+                out.insert(k.into(), v.clone());
+            }
+        }
+    }
+    Value::Object(out)
 }
 
 fn sentinelize(entry: &Value) -> Value {

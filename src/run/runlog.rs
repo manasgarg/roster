@@ -36,6 +36,10 @@ pub struct RunRecord {
     pub ended_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    /// Why an error-ended run ended — the message the daemon logged, kept
+    /// where `runs show` can find it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge: Option<KnowledgeRunRecord>,
 }
@@ -70,6 +74,7 @@ pub fn start(run_id: &str, worker: &str, kind: &str, task_id: Option<&str>) -> R
         task_id: task_id.filter(|s| !s.is_empty()).map(String::from),
         ended_by: None,
         exit_code: None,
+        error: None,
         knowledge: None,
     };
     save(&record)
@@ -90,11 +95,12 @@ pub fn finish(run_id: &str, ended_by: &str, exit_code: Option<i32>) -> Result<()
     save(&record)
 }
 
-pub fn fail(run_id: &str) {
+pub fn fail(run_id: &str, error: Option<&str>) {
     if let Some(mut record) = load(run_id) {
         record.state = "failed".into();
         record.ended_at = Some(now_rfc3339());
         record.ended_by = Some("error".into());
+        record.error = error.map(String::from);
         let _ = save(&record);
     }
 }

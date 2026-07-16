@@ -80,6 +80,9 @@ pub struct Task {
     /// append | reorganization
     #[serde(default = "default_knowledge_mode")]
     pub knowledge_mode: String,
+    /// Why a failed task failed — attested with the outcome, journaled with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -251,6 +254,49 @@ fn journal_append(worker: &str, event: &str, record: Value) {
     }
 }
 
+/// The latest journaled outcomes across every worker — (event timestamp,
+/// record) pairs, newest first, one per task id. What `task ls` shows so a
+/// finished or failed task doesn't simply vanish from view.
+pub fn journal_recent(limit: usize) -> Vec<(String, Task)> {
+    let mut out: Vec<(String, Task)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for w in worker_names() {
+        let Ok(text) = std::fs::read_to_string(paths::worker_tasks_journal(&w)) else {
+            continue;
+        };
+        for v in text
+            .lines()
+            .rev()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        {
+            if !matches!(
+                v.get("event").and_then(|e| e.as_str()),
+                Some("completed" | "failed" | "canceled")
+            ) {
+                continue;
+            }
+            let Some(t) = v
+                .get("record")
+                .and_then(|r| serde_json::from_value::<Task>(r.clone()).ok())
+            else {
+                continue;
+            };
+            if !seen.insert(t.id.clone()) {
+                continue; // a requeued-and-refinished task: newest record wins
+            }
+            let ts = v
+                .get("ts")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            out.push((ts, t));
+        }
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.truncate(limit);
+    out
+}
+
 /// Search a worker's journal for a task by id (completed/failed tasks live
 /// there, pruned from the document).
 pub fn journal_find(worker: &str, task_id: &str) -> Option<Task> {
@@ -347,6 +393,7 @@ fn migrate_legacy_queue(worker: &str) {
             repo: l.repo,
             base: l.base,
             knowledge_mode: l.knowledge_mode,
+            error: None,
         };
         if t.live() {
             p.tasks.push(t);
@@ -455,6 +502,7 @@ pub fn add(worker: &str, draft: Draft) -> Result<Task, BErr> {
         repo: draft.repo,
         base: draft.base,
         knowledge_mode: draft.knowledge_mode,
+        error: None,
     };
     p.tasks.push(t.clone());
     check_acyclic(&p.tasks).map_err(|e| -> BErr { e.into() })?;
@@ -774,6 +822,16 @@ pub fn claim(worker: &str, task_id: &str, run_id: &str) -> Result<Task, BErr> {
 /// claimed → completed | failed | needs-review. Terminal states journal and
 /// prune; completion also releases the task's dependents (edges pruned).
 pub fn finish(worker: &str, task_id: &str, state: &str) -> Result<(), BErr> {
+    finish_with(worker, task_id, state, None)
+}
+
+/// `finish`, carrying the failure reason into the journaled record.
+pub fn finish_with(
+    worker: &str,
+    task_id: &str,
+    state: &str,
+    error: Option<String>,
+) -> Result<(), BErr> {
     if !matches!(state, "completed" | "failed" | "needs-review" | "pending") {
         return Err(format!("not an outcome state: {state}").into());
     }
@@ -783,8 +841,10 @@ pub fn finish(worker: &str, task_id: &str, state: &str) -> Result<(), BErr> {
         };
         p.tasks[pos].state = state.to_string();
         p.tasks[pos].updated_at = now_rfc3339();
+        p.tasks[pos].error = error;
         if state == "pending" {
             p.tasks[pos].run_id = None;
+            p.tasks[pos].error = None;
             return Ok(None);
         }
         if state == "needs-review" {
@@ -859,15 +919,29 @@ pub fn find(task_id: &str) -> Option<Task> {
     None
 }
 
-/// Admin repair: put a claimed (dead box) or needs-review task back to pending.
+/// Admin repair: put a claimed (dead box) or needs-review task back to
+/// pending, or re-file a journaled (failed/completed/canceled) task so a
+/// fixed environment — a credential connected, a bug patched — can retry it.
 pub fn requeue(task_id: &str) -> Result<String, BErr> {
     let t = find(task_id).ok_or_else(|| format!("no task {task_id}"))?;
     if !t.live() {
-        return Err(format!(
-            "task {task_id} is {} and journaled — file a new task instead",
-            t.state
-        )
-        .into());
+        let (worker, id, prev) = (t.worker.clone(), t.id.clone(), t.state.clone());
+        let _guard = LOCK.lock().unwrap();
+        let mut p = load(&worker);
+        if p.tasks.iter().any(|x| x.id == id) {
+            return Ok(format!("task {id} is already back in the queue"));
+        }
+        p.tasks.push(Task {
+            state: "pending".into(),
+            run_id: None,
+            error: None,
+            updated_at: now_rfc3339(),
+            ..t
+        });
+        save(&worker, &mut p)?;
+        return Ok(format!(
+            "requeued {id}: {prev} → pending (re-filed from the journal)"
+        ));
     }
     if t.state == "pending" {
         return Ok(format!("task {} is already pending", t.id));
@@ -1028,6 +1102,7 @@ fn run_recurrence(worker: &str, p: &mut Partition, now_str: &str, now: i64) -> b
             repo: None,
             base: None,
             knowledge_mode: "append".into(),
+            error: None,
         };
         eprintln!("tms: recurrence {} → task {} for {worker}", r.id, child.id);
         p.tasks.push(child);
@@ -1420,6 +1495,7 @@ mod tests {
             repo: None,
             base: None,
             knowledge_mode: "append".into(),
+            error: None,
         });
         let next = set_tasks("w4", p.version, tasks, vec![], &ctx("host-op", None)).unwrap();
         let added = next.tasks.iter().find(|t| t.prompt == "new plan").unwrap();

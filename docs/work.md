@@ -54,15 +54,20 @@ pending → claimed → completed | failed | needs-review → journal
 - Over-budget proactive work is simply **late**: it stays claimable and
   runs when the window clears — there is no parked state.
 - **`roster worker task requeue`** puts a claimed (dead-box) or
-  needs-review task back to `pending`. Completed and failed tasks are in
-  the journal; file a new task instead.
+  needs-review task back to `pending`. A completed, failed, or canceled
+  task lives in the journal; requeueing it re-files the same task as
+  `pending` — the natural retry after fixing what broke it (a missing
+  credential, a bad repo path).
 - Every state change is host-attested — the worker never marks its own
   work done.
 
 Dispatch polls every couple of seconds and runs up to `--cap` boxes at once
 (default 3). On startup it reclaims honestly: `claimed` tasks whose
 container actually died go back to pending; live ones are left alone.
-Restarting the daemon mid-flight loses nothing.
+Restarting the daemon mid-flight loses nothing. With no model credential in
+reach (the vault, a host pi login, or `ANTHROPIC_API_KEY`), dispatch holds —
+tasks stay `pending` instead of failing on arrival — and resumes on its own
+once a credential appears.
 
 Every run has a wall-clock ceiling — the container is killed when it
 expires. Defaults: 30 minutes for filed tasks and ad-hoc runs, 20 for

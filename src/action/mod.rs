@@ -770,6 +770,39 @@ async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, Strin
 
 /// Post a message to a Discord channel (the worker's reply). Trusted-side; the
 /// bot token comes from the vault, never the box.
+/// Post a system courtesy notice (e.g. "your task failed") to a chat channel
+/// using the worker's own bot credential — the trusted side speaking directly,
+/// not a gated action. Best-effort: a missing credential or send error is
+/// logged, since the notice is itself a courtesy and must never wedge dispatch.
+pub async fn deliver_notice(provider: &str, channel: &str, worker: &str, text: &str) {
+    let result = match provider {
+        "discord" => match crate::credential::vault::get_credential("discord")
+            .and_then(|c| c.get("token").and_then(|v| v.as_str()).map(String::from))
+        {
+            Some(token) => crate::channel::discord::post_chunked(&token, channel, text)
+                .await
+                .map(|_| ()),
+            None => Err("no discord credential".into()),
+        },
+        "slack" => {
+            let name = slack_credential_name(worker);
+            match crate::credential::vault::get_credential(&name)
+                .and_then(|c| c.get("bot_token").and_then(|v| v.as_str()).map(String::from))
+            {
+                Some(token) => crate::channel::slack::post_chunked(&token, channel, text, None)
+                    .await
+                    .map(|_| ()),
+                None => Err(format!("no \"{name}\" credential")),
+            }
+        }
+        // term/talk surfaces failures in the session itself; nothing to post.
+        _ => return,
+    };
+    if let Err(e) = result {
+        eprintln!("notice to {provider} channel {channel} not delivered: {e}");
+    }
+}
+
 async fn exec_discord(worker: &str, payload: &Value) -> Result<Value, String> {
     let channel = payload
         .get("channel_id")

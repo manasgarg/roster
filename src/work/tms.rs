@@ -494,6 +494,15 @@ impl Default for Draft {
     }
 }
 
+fn check_ceiling(ceiling_min: f64) -> Result<(), String> {
+    if !ceiling_min.is_finite() || ceiling_min <= 0.0 {
+        return Err(format!(
+            "ceiling_min must be a positive, finite number of minutes (got {ceiling_min})"
+        ));
+    }
+    Ok(())
+}
+
 fn check_scheduled_at(s: &Option<String>) -> Result<(), BErr> {
     if let Some(t) = s {
         if !t.ends_with('Z') || t.len() < 20 {
@@ -517,6 +526,7 @@ pub fn add(worker: &str, draft: Draft) -> Result<Task, BErr> {
         return Err("a knowledge reorganization cannot also be a code task".into());
     }
     check_scheduled_at(&draft.scheduled_at)?;
+    check_ceiling(draft.ceiling_min).map_err(|e| -> BErr { e.into() })?;
     let _guard = lock_worker(worker)?;
     let mut p = load(worker);
     if draft.knowledge_mode == "reorganization" {
@@ -671,6 +681,9 @@ pub fn set_tasks(
                 format!("task {}: standing must be owner or proactive", t.id),
                 &current,
             ));
+        }
+        if let Err(e) = check_ceiling(t.ceiling_min) {
+            return Err(reject(format!("task {}: {e}", t.id), &current));
         }
     }
 
@@ -1454,6 +1467,19 @@ mod tests {
             _guard: guard,
             _dir: dir,
         }
+    }
+
+    #[test]
+    fn add_rejects_nonsensical_ceiling() {
+        let _dir = sandbox();
+        for bad in [0.0, -5.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                add("wc", Draft { prompt: "x".into(), ceiling_min: bad, ..Draft::default() })
+                    .is_err(),
+                "ceiling {bad} should be rejected"
+            );
+        }
+        assert!(add("wc", Draft { prompt: "ok".into(), ceiling_min: 15.0, ..Draft::default() }).is_ok());
     }
 
     #[test]

@@ -17,25 +17,41 @@ fn base() -> String {
     std::env::var("DISCORD_API_BASE").unwrap_or_else(|_| "https://discord.com/api/v10".into())
 }
 
-/// Post a message to a channel. Returns the created message id.
+/// Post a message to a channel. Returns the created message id. Honors Discord's
+/// 429 rate limit (retry after the advised delay) so a long, chunked reply isn't
+/// abandoned half-delivered when it trips the per-channel bucket.
 pub async fn post_message(token: &str, channel_id: &str, text: &str) -> Result<String, String> {
-    let res = reqwest::Client::new()
-        .post(format!("{}/channels/{channel_id}/messages", base()))
-        .header("authorization", format!("Bot {token}"))
-        .json(&json!({ "content": text }))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let status = res.status();
-    let body: Value = res.json().await.unwrap_or(Value::Null);
-    if !status.is_success() {
-        return Err(format!("discord POST message {status}: {body}"));
+    let client = reqwest::Client::new();
+    let url = format!("{}/channels/{channel_id}/messages", base());
+    for attempt in 0..5 {
+        let res = client
+            .post(&url)
+            .header("authorization", format!("Bot {token}"))
+            .json(&json!({ "content": text }))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let status = res.status();
+        if status.as_u16() == 429 {
+            let body: Value = res.json().await.unwrap_or(Value::Null);
+            let wait = body.get("retry_after").and_then(|v| v.as_f64()).unwrap_or(1.0);
+            if attempt < 4 {
+                tokio::time::sleep(Duration::from_secs_f64(wait.clamp(0.0, 60.0) + 0.05)).await;
+                continue;
+            }
+            return Err(format!("discord rate limited; gave up after retries (retry_after {wait}s)"));
+        }
+        let body: Value = res.json().await.unwrap_or(Value::Null);
+        if !status.is_success() {
+            return Err(format!("discord POST message {status}: {body}"));
+        }
+        return Ok(body
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string());
     }
-    Ok(body
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string())
+    Err("discord POST message: exhausted rate-limit retries".into())
 }
 
 /// Post a message of any length: split at Discord's 2000-char limit on line

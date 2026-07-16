@@ -34,6 +34,22 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: Option<&str>) ->
         }
     }
 
+    // One dispatcher per deployment. A second daemon — even on a different
+    // --addr, which the port-bind check wouldn't catch — would run its own
+    // dispatch loop over the same tasks and double-execute them. Hold this lock
+    // for the daemon's whole lifetime; the OS releases it if the process dies.
+    let _daemon_lock = match crate::statefile::FileLock::try_acquire_path(&crate::paths::lock_file(
+        "daemon",
+    )) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => {
+            return Err("another roster server is already running for this deployment — \
+                        stop it first, or check: roster server status"
+                .into())
+        }
+        Err(e) => return Err(format!("could not take the daemon lock: {e}").into()),
+    };
+
     bootstrap_llm_credential().await?;
 
     let addrs = crate::gateway::resolve_bind_addrs(addr);

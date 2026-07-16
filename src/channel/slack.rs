@@ -22,24 +22,44 @@ fn base() -> String {
 }
 
 /// One Web API POST with the bot token. Slack signals failure inside a 200
-/// body (`ok: false`), so both layers are checked.
+/// body (`ok: false`), so both layers are checked. Honors a 429 (Retry-After)
+/// so a long, chunked reply isn't abandoned half-delivered under rate limiting.
 async fn api(token: &str, method: &str, body: Value) -> Result<Value, String> {
-    let res = reqwest::Client::new()
-        .post(format!("{}/{method}", base()))
-        .header("authorization", format!("Bearer {token}"))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let status = res.status();
-    let body: Value = res.json().await.unwrap_or(Value::Null);
-    if !status.is_success() || !body["ok"].as_bool().unwrap_or(false) {
-        return Err(format!(
-            "slack {method} {status}: {}",
-            body["error"].as_str().unwrap_or("?")
-        ));
+    let client = reqwest::Client::new();
+    let url = format!("{}/{method}", base());
+    for attempt in 0..5 {
+        let res = client
+            .post(&url)
+            .header("authorization", format!("Bearer {token}"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let status = res.status();
+        if status.as_u16() == 429 {
+            let wait = res
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(1.0);
+            if attempt < 4 {
+                tokio::time::sleep(std::time::Duration::from_secs_f64(wait.clamp(0.0, 60.0) + 0.05))
+                    .await;
+                continue;
+            }
+            return Err(format!("slack {method} rate limited; gave up after retries"));
+        }
+        let payload: Value = res.json().await.unwrap_or(Value::Null);
+        if !status.is_success() || !payload["ok"].as_bool().unwrap_or(false) {
+            return Err(format!(
+                "slack {method} {status}: {}",
+                payload["error"].as_str().unwrap_or("?")
+            ));
+        }
+        return Ok(payload);
     }
-    Ok(body)
+    Err(format!("slack {method}: exhausted rate-limit retries"))
 }
 
 /// Post a message. Returns the message ts (Slack's message id). `thread_ts`

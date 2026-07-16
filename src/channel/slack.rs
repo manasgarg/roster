@@ -202,6 +202,12 @@ async fn connect_once(worker: &str, bot_token: &str, app_token: &str) -> Result<
                 }
                 let event = &v["payload"]["event"];
                 if event["type"].as_str() == Some("message") {
+                    // Suppress a redelivered event (ack lost / socket dropped)
+                    // so the same message isn't handled — and answered — twice.
+                    let event_id = v["payload"]["event_id"].as_str().unwrap_or("");
+                    if !event_id.is_empty() && already_seen(event_id) {
+                        continue;
+                    }
                     handle_message(worker, event, &bot_user_id, bot_token, &mut admins).await;
                 }
             }
@@ -315,6 +321,27 @@ async fn handle_message(
     .await;
 }
 
+/// Have we already handled this Slack event id? Bounded and process-global, so it
+/// survives the reconnects that cause redelivery. Returns true (and does nothing)
+/// on a repeat; records and returns false on a first sighting.
+fn already_seen(event_id: &str) -> bool {
+    use std::collections::{HashSet, VecDeque};
+    static SEEN: OnceLock<Mutex<(HashSet<String>, VecDeque<String>)>> = OnceLock::new();
+    let m = SEEN.get_or_init(|| Mutex::new((HashSet::new(), VecDeque::new())));
+    let mut g = m.lock().unwrap();
+    if g.0.contains(event_id) {
+        return true;
+    }
+    g.0.insert(event_id.to_string());
+    g.1.push_back(event_id.to_string());
+    if g.1.len() > 2048 {
+        if let Some(old) = g.1.pop_front() {
+            g.0.remove(&old);
+        }
+    }
+    false
+}
+
 // ── conversation sessions: one warm box per active channel ────────────────────
 
 fn sessions(
@@ -339,6 +366,8 @@ async fn route_to_session(
     bot_token: &str,
 ) {
     let start_context = context.clone();
+    // Key by (worker, channel) so two workers sharing a channel don't collide.
+    let key = crate::channel::discord::session_key(worker, channel_id);
     let message = crate::run::boxed::SessionMessage {
         text,
         author_label,
@@ -346,7 +375,7 @@ async fn route_to_session(
     };
     let delivered = {
         let map = sessions().lock().unwrap();
-        match map.get(channel_id) {
+        match map.get(&key) {
             Some(tx) => tx
                 .try_send(crate::run::boxed::SessionMessage {
                     text: message.text.clone(),
@@ -362,12 +391,10 @@ async fn route_to_session(
     }
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::run::boxed::SessionMessage>(64);
     let _ = tx.try_send(message);
-    sessions()
-        .lock()
-        .unwrap()
-        .insert(channel_id.to_string(), tx);
+    sessions().lock().unwrap().insert(key.clone(), tx);
     let (w, run_id) = (worker.to_string(), crate::run::boxed::new_run_id());
     let (channel_owned, token_owned) = (channel_id.to_string(), bot_token.to_string());
+    let session_map_key = key;
     let thread = start_context.thread_ts.clone();
     tokio::spawn(async move {
         let failed = crate::run::boxed::run_session(
@@ -384,8 +411,8 @@ async fn route_to_session(
         .map(|e| e.to_string());
         {
             let mut map = sessions().lock().unwrap();
-            if map.get(&channel_owned).map(|tx| tx.is_closed()).unwrap_or(false) {
-                map.remove(&channel_owned);
+            if map.get(&session_map_key).map(|tx| tx.is_closed()).unwrap_or(false) {
+                map.remove(&session_map_key);
             }
         }
         if let Some(msg) = failed {

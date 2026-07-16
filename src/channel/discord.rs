@@ -440,6 +440,13 @@ fn sessions(
     S.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The live-session map key: a session belongs to a (worker, channel) pair, not
+/// a channel alone, so two workers in the same channel don't share one session.
+/// The unit separator can't occur in a worker name or platform channel id.
+pub fn session_key(worker: &str, channel_id: &str) -> String {
+    format!("{worker}\u{1f}{channel_id}")
+}
+
 const SESSION_IDLE_SECS: u64 = 90;
 
 /// Deliver a message to the channel's live session, or start a new one. A live
@@ -454,6 +461,9 @@ async fn route_to_session(
     token: &str,
 ) {
     let start_context = context.clone();
+    // Key sessions by (worker, channel): two workers can share a channel, and a
+    // channel-only key would route one worker's traffic into the other's box.
+    let key = session_key(worker, channel_id);
     let message = crate::run::boxed::SessionMessage {
         text,
         author_label,
@@ -461,7 +471,7 @@ async fn route_to_session(
     };
     let delivered = {
         let map = sessions().lock().unwrap();
-        match map.get(channel_id) {
+        match map.get(&key) {
             Some(tx) => tx
                 .try_send(crate::run::boxed::SessionMessage {
                     text: message.text.clone(),
@@ -479,12 +489,10 @@ async fn route_to_session(
     // Start a new session (clears any stale closed sender).
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::run::boxed::SessionMessage>(64);
     let _ = tx.try_send(message);
-    sessions()
-        .lock()
-        .unwrap()
-        .insert(channel_id.to_string(), tx);
+    sessions().lock().unwrap().insert(key.clone(), tx);
     let (w, run_id) = (worker.to_string(), crate::run::boxed::new_run_id());
     let (channel_owned, token_owned) = (channel_id.to_string(), token.to_string());
+    let session_map_key = key;
     tokio::spawn(async move {
         // Reduce the outcome to a Send-safe String before any await below.
         let failed = crate::run::boxed::run_session(
@@ -503,8 +511,8 @@ async fn route_to_session(
         // fresh session instead of try_send-ing into a dead one.
         {
             let mut map = sessions().lock().unwrap();
-            if map.get(&channel_owned).map(|tx| tx.is_closed()).unwrap_or(false) {
-                map.remove(&channel_owned);
+            if map.get(&session_map_key).map(|tx| tx.is_closed()).unwrap_or(false) {
+                map.remove(&session_map_key);
             }
         }
         if let Some(msg) = failed {

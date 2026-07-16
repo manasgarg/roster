@@ -57,7 +57,10 @@ pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<
     let run_id = new_run_id();
     let run_context = crate::worker::memory::RunContext::default();
     crate::run::runlog::start(&run_id, &worker, "box", None)?;
-    crate::worker::memory::save_run_context(&run_id, &run_context)?;
+    if let Err(error) = crate::worker::memory::save_run_context(&run_id, &run_context) {
+        crate::run::runlog::fail(&run_id, Some(&error));
+        return Err(error.into());
+    }
     let request = crate::worker::context::ContextRequest {
         run_id: run_id.clone(),
         phase: crate::worker::context::ContextPhase::Start,
@@ -273,7 +276,7 @@ pub fn new_run_id() -> String {
         .collect::<String>();
     format!(
         "{stamp}-{}",
-        &uuid::Uuid::new_v4().simple().to_string()[..4]
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
     )
 }
 
@@ -333,8 +336,20 @@ async fn run_box(
     let mut out = child.stdout.take().unwrap();
     let stdout_path = run_dir.join("stdout.jsonl");
     let stream = tokio::spawn(async move {
-        if let Ok(mut f) = tokio::fs::File::create(&stdout_path).await {
-            let _ = tokio::io::copy(&mut out, &mut f).await;
+        match tokio::fs::File::create(&stdout_path).await {
+            Ok(mut f) => {
+                let _ = tokio::io::copy(&mut out, &mut f).await;
+            }
+            Err(e) => {
+                // Don't just drop `out`: that shuts the pipe and the box may die
+                // with EPIPE mid-run, then be reported as a failure with no
+                // transcript explaining why. Log, and drain so the box runs on.
+                eprintln!(
+                    "run: could not open {} ({e}); transcript will be missing",
+                    stdout_path.display()
+                );
+                let _ = tokio::io::copy(&mut out, &mut tokio::io::sink()).await;
+            }
         }
     });
 
@@ -378,7 +393,10 @@ pub async fn run_session(
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
     crate::run::runlog::start(run_id, worker, "session", None)?;
-    crate::worker::memory::save_run_context(run_id, &start_context)?;
+    if let Err(error) = crate::worker::memory::save_run_context(run_id, &start_context) {
+        crate::run::runlog::fail(run_id, Some(&error));
+        return Err(error.into());
+    }
     let start_request = crate::worker::context::ContextRequest {
         run_id: run_id.to_string(),
         phase: crate::worker::context::ContextPhase::Start,
@@ -421,7 +439,13 @@ pub async fn run_session(
     let turn_ceiling = ceiling_duration(box_policy.turn_ceiling_min);
 
     args.insert(1, "-i".into()); // keep stdin open for the rpc protocol
-    args.extend(pi_prefix(&engine, "rpc", &session_dir)?);
+    match pi_prefix(&engine, "rpc", &session_dir) {
+        Ok(prefix) => args.extend(prefix),
+        Err(error) => {
+            crate::run::runlog::fail(run_id, Some(&error.to_string()));
+            return Err(error);
+        }
+    }
     append_cache_session_id(&mut args, &start.cache.route_key);
     args.extend(["--append-system-prompt".into(), start.system_prompt]);
 
@@ -1155,12 +1179,19 @@ fn docker_ok(args: &[&str]) -> bool {
 }
 
 async fn docker_kill(container: &str) {
-    let _ = tokio::process::Command::new("docker")
+    // A failed kill means the ceiling/signal wasn't actually enforced — surface
+    // it instead of silently waiting on a box that may run past its deadline.
+    match tokio::process::Command::new("docker")
         .args(["kill", container])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .await;
+        .await
+    {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!("run: docker kill {container} exited {s} — box may still be running"),
+        Err(e) => eprintln!("run: could not docker kill {container} ({e}) — box may still be running"),
+    }
 }
 
 // ── pihome (sentinel auth) ───────────────────────────────────────────────────

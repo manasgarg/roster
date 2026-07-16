@@ -22,7 +22,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The sentinel host the box POSTs action envelopes to. It never leaves the
 /// gateway: all box HTTPS is proxied, so this arrives as CONNECT + a
@@ -1125,10 +1124,10 @@ fn audit(
     gate_id: Option<&str>,
     result: Option<&Value>,
 ) {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    // A random id, not a per-process counter: a counter restarts at 0 every boot
+    // and collides with earlier ids in this append-only log.
     let rec = json!({
-        "decision_id": format!("act-{n:x}"),
+        "decision_id": format!("act-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
         "ts": now_rfc3339(),
         "kind": "action",
         "worker": worker,

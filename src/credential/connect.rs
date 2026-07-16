@@ -358,12 +358,17 @@ fn write_vault(name: &str, cred: &Value) -> Result<(), BErr> {
     let dir = crate::credential::vault::vault_dir();
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{name}.json"));
-    std::fs::write(&path, format!("{}\n", serde_json::to_string_pretty(cred)?))?;
+    // Write a temp file, tighten its mode to 0600, THEN rename over the target,
+    // so the secret never exists at the umask default (0644) and a crash can't
+    // leave a half-written credential — matching vault::write_credential.
+    let tmp = dir.join(format!("{name}.json.tmp"));
+    std::fs::write(&tmp, format!("{}\n", serde_json::to_string_pretty(cred)?))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
     }
+    std::fs::rename(&tmp, &path)?;
     Ok(())
 }
 

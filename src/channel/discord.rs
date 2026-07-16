@@ -183,10 +183,17 @@ async fn connect_once(
     let mut session_id = resume.as_ref().map(|r| r.session_id.clone()).unwrap_or_default();
     let mut resume_url = resume.as_ref().map(|r| r.url.clone()).unwrap_or_default();
     let mut can_resume = true;
+    // A live gateway always sends traffic (at least heartbeat ACKs) within a
+    // heartbeat interval; prolonged silence means a half-open connection that
+    // TCP alone wouldn't notice for ~15 min. Tightened once HELLO gives us the
+    // real interval.
+    let mut read_timeout = Duration::from_secs(90);
 
     let result: Result<(), GwError> = loop {
-        let Some(msg) = stream.next().await else {
-            break Err(transient("stream ended".into()));
+        let msg = match tokio::time::timeout(read_timeout, stream.next()).await {
+            Ok(Some(m)) => m,
+            Ok(None) => break Err(transient("stream ended".into())),
+            Err(_) => break Err(transient("no gateway traffic within the heartbeat window — connection is half-open".into())),
         };
         let msg = match msg {
             Ok(m) => m,
@@ -227,6 +234,8 @@ async fn connect_once(
                 // HELLO → start heartbeat, then RESUME (op 6) if we're
                 // reconnecting a live session, else IDENTIFY (op 2) fresh.
                 let interval = v["d"]["heartbeat_interval"].as_u64().unwrap_or(45_000);
+                // Expect traffic within ~2 heartbeats; else the link is dead.
+                read_timeout = Duration::from_millis(interval * 2 + 5_000);
                 let (tx2, seq2) = (tx.clone(), seq.clone());
                 heartbeat = Some(tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(interval / 2)).await; // jitter

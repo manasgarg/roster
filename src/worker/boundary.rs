@@ -112,6 +112,14 @@ fn find_email(text: &str) -> Option<String> {
             .take_while(|&j| is_part(bytes[j]))
             .last();
         if let (Some(s), Some(e)) = (start, end) {
+            // A sentence-final '.' is pulled into `end` (it's a valid local/domain
+            // char), which would make the domain end in '.' and be rejected —
+            // letting "email lead@example.com." slip past the scan. Trim trailing
+            // dots first so the common end-of-sentence case is still caught.
+            let mut e = e;
+            while e > i && bytes[e] == b'.' {
+                e -= 1;
+            }
             let candidate = &text[s..=e];
             let domain = &candidate[candidate.find('@').unwrap() + 1..];
             if domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.') {
@@ -125,6 +133,14 @@ fn find_email(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn email_at_end_of_sentence_is_caught() {
+        assert!(scan("Ask lead@example.com.", &[], true).is_some());
+        assert!(scan("Ask lead@example.com!", &[], true).is_some());
+        assert!(scan("Bare lead@example.com here", &[], true).is_some());
+        assert!(scan("no address at all.", &[], true).is_none());
+    }
 
     #[test]
     fn task_prompt_gate_denies_person_references_from_tainted_runs_only() {

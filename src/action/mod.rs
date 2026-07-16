@@ -316,7 +316,9 @@ async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Bod
                     json!({ "intent": env.intent, "auto": true, "error": e }),
                 );
                 audit(worker, &env.intent, "failed", None, None);
-                reply(StatusCode::OK, json!({ "status": "error", "error": e }))
+                // A failed side effect must not read as HTTP success: a caller
+                // keying off the status code would report an unsent email as sent.
+                reply(StatusCode::BAD_GATEWAY, json!({ "status": "error", "error": e }))
             }
         }
     } else {

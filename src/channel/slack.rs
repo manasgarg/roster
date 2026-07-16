@@ -243,9 +243,11 @@ async fn handle_message(
     bot_token: &str,
     admins: &mut HashMap<String, bool>,
 ) {
-    // Never react to bots (including ourselves) — avoids reply loops. Skip
-    // subtypes too (edits, joins, thread broadcasts): only fresh plain messages.
-    if event["bot_id"].as_str().is_some() || event["subtype"].as_str().is_some() {
+    // Never react to bots (including ourselves) — avoids reply loops. Skip noise
+    // subtypes (edits, joins, thread broadcasts) but keep file_share: a DM with
+    // a file and a caption is a real message the user expects an answer to.
+    let subtype = event["subtype"].as_str();
+    if event["bot_id"].as_str().is_some() || matches!(subtype, Some(s) if s != "file_share") {
         return;
     }
     let user_id = event["user"].as_str().unwrap_or("");

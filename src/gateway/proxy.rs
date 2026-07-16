@@ -534,7 +534,10 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
         HashMap::new()
     };
     if verdict == Verdict::Allow {
-        if let Some(refusal) = crate::gateway::ledger::check(subject, &spend, &budget.limits, now) {
+        // Reserve atomically: enforce and commit the spend in one lock hold so
+        // concurrent requests can't all pass a check before any of them debits.
+        if let Some(refusal) = crate::gateway::ledger::reserve(subject, &spend, &budget.limits, now)
+        {
             record(
                 gr,
                 Verdict::Deny,
@@ -568,7 +571,8 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
     if verdict != Verdict::Allow {
         return Gate::Deny(deny_response(verdict, rule.as_deref()));
     }
-    crate::gateway::ledger::debit(subject, &spend, &budget.limits, now);
+    // The spend was already reserved in the counters above; persist it durably.
+    crate::gateway::ledger::record_usage(subject, &spend, now);
     Gate::Allow(inject)
 }
 

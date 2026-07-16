@@ -41,16 +41,15 @@ pub struct Refusal {
     pub retry_after_secs: i64,
 }
 
-/// Would this call breach any limit? Checks the CURRENT balance (semantics: the
-/// call that crosses the line completes; the next one is refused). Returns the
-/// first breached limit's refusal, or None.
-pub fn check(
+/// First limit this spend would breach at the current balance, if any. Semantics:
+/// the call that crosses the line completes; the next one is refused.
+fn breach(
+    c: &HashMap<String, Counter>,
     subject: &str,
     spend: &HashMap<String, f64>,
     limits: &[Limit],
     now: i64,
 ) -> Option<Refusal> {
-    let c = counters().lock().unwrap();
     for limit in limits {
         if !scope_applies(&limit.scope, subject) || !spend.contains_key(&limit.currency) {
             continue;
@@ -73,6 +72,55 @@ pub fn check(
             });
         }
     }
+    None
+}
+
+/// Bump the in-memory counters for every window that limits a drawn currency.
+fn commit_counters(
+    c: &mut HashMap<String, Counter>,
+    subject: &str,
+    spend: &HashMap<String, f64>,
+    limits: &[Limit],
+    now: i64,
+) {
+    for (currency, amount) in spend {
+        for limit in limits
+            .iter()
+            .filter(|l| scope_applies(&l.scope, subject) && &l.currency == currency)
+        {
+            let ws = limit.window.start(now);
+            let ct = c
+                .entry(key(&limit.scope, currency, limit.window))
+                .or_insert(Counter {
+                    window_start: ws,
+                    used: 0.0,
+                });
+            if ct.window_start != ws {
+                ct.window_start = ws;
+                ct.used = 0.0;
+            }
+            ct.used += amount;
+        }
+    }
+}
+
+/// Atomically enforce and reserve budget in one lock hold: if no limit is
+/// breached at the current balance, commit the spend to the counters and return
+/// None; otherwise commit nothing and return the refusal. This closes the
+/// check-then-debit gap — without it, N concurrent requests at used=max-1 all
+/// pass a separate check before any debit lands, blowing the cap by N-1. The
+/// caller persists the reserved spend with `record_usage` afterward.
+pub fn reserve(
+    subject: &str,
+    spend: &HashMap<String, f64>,
+    limits: &[Limit],
+    now: i64,
+) -> Option<Refusal> {
+    let mut c = counters().lock().unwrap();
+    if let Some(refusal) = breach(&c, subject, spend, limits, now) {
+        return Some(refusal);
+    }
+    commit_counters(&mut c, subject, spend, limits, now);
     None
 }
 
@@ -105,30 +153,10 @@ pub fn over_any_limit(subject: &str, limits: &[Limit], now: i64) -> Option<Strin
 /// Record spend: bump the in-memory counters (per window that limits the
 /// currency) and append every drawn currency to usage.jsonl (audit + rehydrate
 /// source, incl. unlimited currencies).
-pub fn debit(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now: i64) {
-    {
-        let mut c = counters().lock().unwrap();
-        for (currency, amount) in spend {
-            for limit in limits
-                .iter()
-                .filter(|l| scope_applies(&l.scope, subject) && &l.currency == currency)
-            {
-                let ws = limit.window.start(now);
-                let ct = c
-                    .entry(key(&limit.scope, currency, limit.window))
-                    .or_insert(Counter {
-                        window_start: ws,
-                        used: 0.0,
-                    });
-                if ct.window_start != ws {
-                    ct.window_start = ws;
-                    ct.used = 0.0;
-                }
-                ct.used += amount;
-            }
-        }
-    }
-    // Serialize the append across processes: without it, two concurrent debits
+/// Append the drawn currencies to usage.jsonl — the durable audit + rehydrate
+/// source — after the spend has been reserved/committed in memory.
+pub fn record_usage(subject: &str, spend: &HashMap<String, f64>, now: i64) {
+    // Serialize the append across processes: without it, two concurrent writers
     // interleave their bytes into a corrupt line that rehydrate() silently drops
     // on the next boot — losing spend the worker already made.
     let path = usage_path();
@@ -221,24 +249,51 @@ mod tests {
     }
 
     #[test]
-    fn check_denies_only_after_the_cap_is_reached() {
+    fn reserve_does_not_overshoot_under_contention() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        // Unique currency so this counter is isolated from other tests.
+        let limits = Arc::new(vec![limit("reserve_race_cur", Window::Hour, 100.0)]);
+        let spend: HashMap<String, f64> = [("reserve_race_cur".to_string(), 1.0)].into();
+        let now = now_ms();
+        let allowed = Arc::new(AtomicUsize::new(0));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let limits = limits.clone();
+                let spend = spend.clone();
+                let allowed = allowed.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..50 {
+                        // 400 attempts, cap 100: a separate check/debit would
+                        // let many extra through; reserve must not.
+                        if reserve("org", &spend, &limits, now).is_none() {
+                            allowed.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(allowed.load(Ordering::SeqCst), 100, "reserve overshot the cap");
+    }
+
+    #[test]
+    fn reserve_denies_only_after_the_cap_is_reached() {
         let limits = vec![limit("calls_test", Window::Hour, 2.0)];
         let spend: HashMap<String, f64> = [("calls_test".to_string(), 1.0)].into();
         let now = now_ms();
-        // fresh: under cap → allowed
-        assert!(check("org", &spend, &limits, now).is_none());
-        debit("org", &spend, &limits, now); // used = 1
-        assert!(check("org", &spend, &limits, now).is_none());
-        debit("org", &spend, &limits, now); // used = 2 (this call still went; it crossed)
-                                            // now at cap → next call refused
-        assert!(check("org", &spend, &limits, now).is_some());
+        assert!(reserve("org", &spend, &limits, now).is_none()); // used = 1
+        assert!(reserve("org", &spend, &limits, now).is_none()); // used = 2 (crossed)
+        assert!(reserve("org", &spend, &limits, now).is_some()); // now refused
     }
 
     #[test]
     fn unlimited_currency_never_denies() {
         let limits = vec![limit("calls_test", Window::Hour, 1.0)];
         let spend: HashMap<String, f64> = [("other_cur".to_string(), 5.0)].into();
-        assert!(check("org", &spend, &limits, now_ms()).is_none());
+        assert!(reserve("org", &spend, &limits, now_ms()).is_none());
     }
 
     #[test]
@@ -257,9 +312,9 @@ mod tests {
         let limits = vec![limit("rollup_cur", Window::Hour, 2.0)];
         let spend: HashMap<String, f64> = [("rollup_cur".to_string(), 1.0)].into();
         let now = now_ms();
-        debit("org/w1", &spend, &limits, now); // org counter = 1
-        debit("org/w2", &spend, &limits, now); // org counter = 2 (crossed)
-                                               // a third call from any subject under org is now refused
-        assert!(check("org/w3", &spend, &limits, now).is_some());
+        assert!(reserve("org/w1", &spend, &limits, now).is_none()); // org counter = 1
+        assert!(reserve("org/w2", &spend, &limits, now).is_none()); // org counter = 2 (crossed)
+                                                                    // a third call under org is now refused
+        assert!(reserve("org/w3", &spend, &limits, now).is_some());
     }
 }

@@ -484,8 +484,10 @@ async fn route_to_session(
         .unwrap()
         .insert(channel_id.to_string(), tx);
     let (w, run_id) = (worker.to_string(), crate::run::boxed::new_run_id());
+    let (channel_owned, token_owned) = (channel_id.to_string(), token.to_string());
     tokio::spawn(async move {
-        if let Err(e) = crate::run::boxed::run_session(
+        // Reduce the outcome to a Send-safe String before any await below.
+        let failed = crate::run::boxed::run_session(
             &w,
             &run_id,
             crate::worker::context::RunSurface::DiscordSession,
@@ -495,10 +497,27 @@ async fn route_to_session(
             None,
         )
         .await
+        .err()
+        .map(|e| e.to_string());
+        // Drop our now-closed sender from the map so the next message starts a
+        // fresh session instead of try_send-ing into a dead one.
         {
-            eprintln!("discord session error: {e}");
+            let mut map = sessions().lock().unwrap();
+            if map.get(&channel_owned).map(|tx| tx.is_closed()).unwrap_or(false) {
+                map.remove(&channel_owned);
+            }
         }
-        // On exit, the map's sender is now closed; the next message replaces it.
+        if let Some(msg) = failed {
+            eprintln!("discord session error: {msg}");
+            // Don't leave the user staring at a typing indicator that never
+            // resolves — say the run failed.
+            let _ = post_chunked(
+                &token_owned,
+                &channel_owned,
+                "⚠️ I couldn't finish that just now — my box failed to start or exited early. Nothing unsaved was kept; please try again in a moment.",
+            )
+            .await;
+        }
     });
 }
 

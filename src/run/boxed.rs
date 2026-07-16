@@ -563,7 +563,14 @@ pub async fn run_session(
     if announce {
         eprintln!("session {run_id} [{worker}] ended");
     }
-    Ok(())
+    // A clean idle wind-down (or a clean bound between turns) is success; the box
+    // dying mid-turn or a stdin write failure is not — report it so the caller
+    // can tell the user rather than claim the conversation just "wound down".
+    if clean_exit {
+        Ok(())
+    } else {
+        Err("the session box exited before completing the turn".into())
+    }
 }
 
 // ── shared box provisioning ──────────────────────────────────────────────────

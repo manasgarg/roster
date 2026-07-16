@@ -13,7 +13,7 @@ use std::time::Duration;
 
 const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("ROSTER_BUILD"), ")");
 
-pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<(), BErr> {
+pub async fn run(cap: usize, once: bool, no_listen: bool, addr: Option<&str>) -> Result<(), BErr> {
     // Refuse to boot on broken config — better loud at start than silently
     // denying everything. Mid-flight breakage fails closed instead (the
     // gateway denies, dispatch pauses) so a bad edit never kills the daemon.
@@ -36,11 +36,13 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
 
     bootstrap_llm_credential().await?;
 
-    let gateway = crate::gateway::start(addr).await.map_err(|e| -> BErr {
+    let addrs = crate::gateway::resolve_bind_addrs(addr);
+    let gateways = crate::gateway::start(&addrs).await.map_err(|e| -> BErr {
         if e.to_string().contains("Address already in use") {
             format!(
-                "something is already listening on {addr} — another roster server? \
-                 Check: roster server status  (or pick a different --addr)"
+                "something is already listening on {} — another roster server? \
+                 Check: roster server status  (or pick a different --addr)",
+                addrs.join(", ")
             )
             .into()
         } else {
@@ -48,7 +50,8 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
         }
     })?;
     eprintln!(
-        "roster server {BUILD} — gateway on {addr}; dispatch cap {cap}{}{}",
+        "roster server {BUILD} — gateway on {}; dispatch cap {cap}{}{}",
+        addrs.join(", "),
         if once { "; once" } else { "" },
         if no_listen { "; listeners off" } else { "" }
     );
@@ -88,10 +91,13 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
             Ok(())
         }
     };
-    gateway.abort();
+    for g in gateways {
+        g.abort();
+    }
     for l in listeners {
         l.abort();
     }
+    crate::gateway::clear_state();
     result
 }
 
@@ -229,20 +235,52 @@ pub fn validate() -> Result<(), BErr> {
     }
 }
 
-/// Is a gateway answering on the well-known port? The daemon-liveness probe
-/// shared by `server status` and anything that needs the server up (talk).
+/// What a /healthz probe on the recorded port found.
+pub enum GatewayHealth {
+    Down,
+    /// This deployment's daemon answers.
+    Up,
+    /// Something answers, but it serves another deployment (its config root).
+    Foreign(String),
+}
+
+/// Probe the gateway on the port the daemon recorded (default :7300) and
+/// verify it is OURS via the deployment identity in /healthz — a port is
+/// shared machine-wide; the config root is not.
+pub async fn gateway_health() -> (u16, GatewayHealth) {
+    let port = crate::gateway::recorded_port();
+    let resp = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{port}/healthz"))
+        .timeout(Duration::from_millis(700))
+        .send()
+        .await;
+    let health = match resp {
+        Ok(r) if r.status().is_success() => {
+            let v: serde_json::Value = r.json().await.unwrap_or_default();
+            match v.get("config_root").and_then(|s| s.as_str()) {
+                Some(root) if root == crate::paths::config_root().display().to_string() => {
+                    GatewayHealth::Up
+                }
+                Some(root) => GatewayHealth::Foreign(root.to_string()),
+                // A daemon from before deployment identity: assume ours.
+                None => GatewayHealth::Up,
+            }
+        }
+        _ => GatewayHealth::Down,
+    };
+    (port, health)
+}
+
+/// The daemon-liveness probe shared by `server status` and anything that
+/// needs OUR server up (talk, chat) — a foreign deployment's daemon on the
+/// port counts as down.
 pub async fn gateway_up() -> bool {
-    tokio::time::timeout(
-        Duration::from_millis(500),
-        tokio::net::TcpStream::connect(("127.0.0.1", crate::gateway::PORT)),
-    )
-    .await
-    .map(|r| r.is_ok())
-    .unwrap_or(false)
+    matches!(gateway_health().await.1, GatewayHealth::Up)
 }
 
 pub async fn status(json: bool) -> Result<(), BErr> {
-    let gateway_up = gateway_up().await;
+    let (port, health) = gateway_health().await;
+    let gateway_up = matches!(health, GatewayHealth::Up);
 
     // Config parses? (It loads live — no staleness concept.)
     let config = match crate::config::load() {
@@ -263,7 +301,14 @@ pub async fn status(json: bool) -> Result<(), BErr> {
     if json {
         let out = serde_json::json!({
             "build": BUILD,
-            "gateway": { "port": crate::gateway::PORT, "up": gateway_up },
+            "gateway": {
+                "port": port,
+                "up": gateway_up,
+                "foreign_deployment": match &health {
+                    GatewayHealth::Foreign(root) => Some(root.clone()),
+                    _ => None,
+                },
+            },
             "config": config,
             "queue": queue_by_state,
             "gates_pending": gates_pending,
@@ -275,14 +320,16 @@ pub async fn status(json: bool) -> Result<(), BErr> {
         return Ok(());
     }
 
-    let port = crate::gateway::PORT;
     println!("roster {BUILD}");
     println!(
         "gateway    {}",
-        if gateway_up {
-            format!("up on :{port}")
-        } else {
-            format!("DOWN (nothing on :{port}) — run: roster server start")
+        match &health {
+            GatewayHealth::Up => format!("up on :{port}"),
+            GatewayHealth::Down => format!("DOWN (nothing on :{port}) — run: roster server start"),
+            GatewayHealth::Foreign(root) => format!(
+                "DOWN for this deployment — :{port} is serving another deployment \
+                 (config {root}); start this one on a free port: roster server start --addr 127.0.0.1:<port>"
+            ),
         }
     );
     println!("config     {config}");

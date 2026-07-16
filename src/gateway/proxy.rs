@@ -387,7 +387,14 @@ async fn outer(
         });
         Ok(Response::new(empty()))
     } else if req.uri().path() == "/healthz" {
-        let mut resp = Response::new(full("{\"ok\":true}"));
+        // Deployment identity rides along so a probe can tell OUR daemon from
+        // another deployment's daemon squatting on the same port.
+        let body = serde_json::json!({
+            "ok": true,
+            "config_root": crate::paths::config_root().display().to_string(),
+        })
+        .to_string();
+        let mut resp = Response::new(full(&body));
         resp.headers_mut().insert(
             hyper::header::CONTENT_TYPE,
             "application/json".parse().unwrap(),

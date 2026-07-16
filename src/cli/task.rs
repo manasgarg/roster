@@ -64,12 +64,36 @@ pub fn add(
 
 /// A synchronous daemon-liveness probe (the async one lives in cli::server) —
 /// cheap enough to answer "will this task actually run?" right after filing.
+/// One plain-HTTP /healthz round trip; the config root in the reply keeps a
+/// foreign deployment's daemon from counting as ours.
 fn gateway_up_quick() -> bool {
-    std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], crate::gateway::PORT)),
+    use std::io::{Read, Write};
+    let port = crate::gateway::recorded_port();
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         std::time::Duration::from_millis(300),
-    )
-    .is_ok()
+    ) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+    if stream
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut body = String::new();
+    let _ = stream.read_to_string(&mut body);
+    if !body.contains("\"ok\":true") {
+        return false;
+    }
+    match body.find("\"config_root\":\"") {
+        None => true, // a daemon from before deployment identity: assume ours
+        Some(_) => body.contains(&format!(
+            "\"config_root\":{}",
+            serde_json::json!(crate::paths::config_root().display().to_string())
+        )),
+    }
 }
 
 /// A live task by unique prefix, or a journaled one by exact id.

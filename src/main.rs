@@ -38,17 +38,36 @@ struct Cli {
 enum Cmd {
     /// Initialize the deployment: config, data, and state roots (XDG)
     Init,
-    /// The owned machinery: daemon, config, approval desk, channels, run log
-    #[command(subcommand)]
-    Server(ServerCmd),
-    /// Connections to external services: catalog, add, inspect, remove
-    #[command(subcommand)]
-    Connection(ConnectionCmd),
+    /// The owned machinery: daemon, config, approval desk, channels, run log (bare: status)
+    #[command(
+        after_help = "glossary: a box is the sandboxed container one session runs in; a gate is a \
+                      proposed action awaiting your approval; a grant is an egress rule in org.toml; \
+                      an exposure is a credential env var a grant injects; a listener connects a \
+                      worker to a chat platform; the heartbeat is the built-in recurring task that \
+                      keeps each worker checking its queue"
+    )]
+    Server {
+        #[command(subcommand)]
+        cmd: Option<ServerCmd>,
+    },
+    /// Connections to external services: catalog, add, inspect, remove (bare: ls)
+    Connection {
+        #[command(subcommand)]
+        cmd: Option<ConnectionCmd>,
+    },
     #[command(subcommand, hide = true)]
     Credential(CredentialCmd),
-    /// The governed identities: lifecycle, trust, memory, knowledge, work
-    #[command(subcommand)]
-    Worker(WorkerCmd),
+    /// The governed identities: lifecycle, trust, memory, knowledge, work (bare: ls)
+    #[command(
+        after_help = "glossary: standing marks whose work a task is (owner: always runs; proactive: \
+                      paced by budgets); a box is the sandboxed container one session runs in; a \
+                      gate is a proposed action awaiting your approval; knowledge is the worker's \
+                      git-backed notes repo; memory is what it recalls about people and channels"
+    )]
+    Worker {
+        #[command(subcommand)]
+        cmd: Option<WorkerCmd>,
+    },
     /// Talk with a worker right here in the terminal — a trusted chat channel
     Talk {
         /// The worker to talk to (omit: list workers, or create "elf" on first run)
@@ -57,6 +76,11 @@ enum Cmd {
         /// conversation stays open; your next message wakes a fresh one)
         #[arg(long, default_value_t = 300)]
         idle: u64,
+    },
+    /// Generate shell completions (bash, zsh, fish, …) to stdout
+    Completions {
+        /// The shell to generate for
+        shell: clap_complete::Shell,
     },
 }
 
@@ -74,9 +98,10 @@ enum ServerCmd {
         /// Fire due triggers, drain due tasks, then exit
         #[arg(long)]
         once: bool,
-        /// Gateway listen address
-        #[arg(long, default_value = "0.0.0.0:7300")]
-        addr: String,
+        /// Gateway listen address (default: loopback + the docker bridge;
+        /// pass 0.0.0.0:7300 to listen on every interface)
+        #[arg(long)]
+        addr: Option<String>,
     },
     /// Daemon health: components, queue, gates, compiled config
     Status {
@@ -87,15 +112,22 @@ enum ServerCmd {
     /// Parse and check all config; print every error (config loads live)
     #[command(alias = "deploy")]
     Validate,
-    /// The approval desk: what is pending your approval; inspect, approve, deny
-    #[command(subcommand, alias = "gates")]
-    Approvals(ApprovalsCmd),
-    /// Channel edges: trust designation, response mode, memory settings
-    #[command(subcommand)]
-    Channel(ChannelCmd),
-    /// The run log: every session, whoever it was attributed to
-    #[command(subcommand)]
-    Runs(RunsCmd),
+    /// The approval desk: what is pending your approval; inspect, approve, deny (bare: ls)
+    #[command(alias = "gates")]
+    Approvals {
+        #[command(subcommand)]
+        cmd: Option<ApprovalsCmd>,
+    },
+    /// Channel edges: trust designation, response mode, memory settings (bare: ls)
+    Channel {
+        #[command(subcommand)]
+        cmd: Option<ChannelCmd>,
+    },
+    /// The run log: every session, whoever it was attributed to (bare: ls)
+    Runs {
+        #[command(subcommand)]
+        cmd: Option<RunsCmd>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -200,6 +232,9 @@ enum ConnectionCmd {
         /// Interview for an unknown service; OAuth knowledge lands in providers.toml
         #[arg(long)]
         declare: bool,
+        /// Test the stored credential against the live service before finishing
+        #[arg(long)]
+        verify: bool,
     },
     /// Every connection, its use(s) — capability, channel, model — and state
     Ls {
@@ -267,6 +302,14 @@ enum WorkerCmd {
         #[arg(required = true, value_name = "PROMPT")]
         prompt: Vec<String>,
     },
+    /// Retire a worker: archive its spec, memory, knowledge, and history (never deletes)
+    Rm {
+        /// The worker to retire
+        name: String,
+        /// Skip the typed-name confirmation
+        #[arg(long)]
+        yes: bool,
+    },
     /// Scripted stdin session, one message per turn (conversations: roster talk)
     Chat {
         /// The worker to chat with
@@ -275,9 +318,11 @@ enum WorkerCmd {
         #[arg(long, default_value_t = 20)]
         idle: u64,
     },
-    /// Its durable work: add, relay, ls, show, requeue
-    #[command(subcommand)]
-    Task(TaskCmd),
+    /// Its durable work: add, relay, ls, show, requeue (bare: ls)
+    Task {
+        #[command(subcommand)]
+        cmd: Option<TaskCmd>,
+    },
     /// Inspect and repair interaction memory
     #[command(subcommand)]
     Memory(MemoryCmd),
@@ -480,47 +525,60 @@ async fn main() {
     }
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
         Cmd::Init => cli::init::run(),
-        Cmd::Server(cmd) => match cmd {
-            ServerCmd::Start {
+        Cmd::Server { cmd } => match cmd {
+            None => cli::server::status(false).await,
+            Some(ServerCmd::Start {
                 cap,
                 no_listen,
                 once,
                 addr,
-            } => cli::server::run(cap, once, no_listen, &addr).await,
-            ServerCmd::Status { json } => cli::server::status(json).await,
-            ServerCmd::Validate => cli::server::validate(),
-            ServerCmd::Approvals(cmd) => match cmd {
-                ApprovalsCmd::Ls { json } => cli::approvals::ls(json),
-                ApprovalsCmd::Show { id } => cli::approvals::show(&id),
-                ApprovalsCmd::Approve { id, note } => {
+            }) => cli::server::run(cap, once, no_listen, addr.as_deref()).await,
+            Some(ServerCmd::Status { json }) => cli::server::status(json).await,
+            Some(ServerCmd::Validate) => cli::server::validate(),
+            Some(ServerCmd::Approvals { cmd }) => match cmd {
+                None => cli::approvals::ls(false),
+                Some(ApprovalsCmd::Ls { json }) => cli::approvals::ls(json),
+                Some(ApprovalsCmd::Show { id }) => cli::approvals::show(&id),
+                Some(ApprovalsCmd::Approve { id, note }) => {
                     cli::approvals::approve(&id, note.as_deref()).await
                 }
-                ApprovalsCmd::Deny { id, note } => cli::approvals::deny(&id, note.as_deref()),
+                Some(ApprovalsCmd::Deny { id, note }) => {
+                    cli::approvals::deny(&id, note.as_deref())
+                }
             },
-            ServerCmd::Channel(cmd) => match cmd {
-                ChannelCmd::Ls { json } => cli::channel::ls(json),
-                ChannelCmd::Show { channel_id } => cli::channel::show(&channel_id),
-                ChannelCmd::Trust { channel_id } => cli::channel::set_trust(&channel_id, true),
-                ChannelCmd::Untrust { channel_id } => cli::channel::set_trust(&channel_id, false),
-                ChannelCmd::Set {
+            Some(ServerCmd::Channel { cmd }) => match cmd {
+                None => cli::channel::ls(false),
+                Some(ChannelCmd::Ls { json }) => cli::channel::ls(json),
+                Some(ChannelCmd::Show { channel_id }) => cli::channel::show(&channel_id),
+                Some(ChannelCmd::Trust { channel_id }) => {
+                    cli::channel::set_trust(&channel_id, true)
+                }
+                Some(ChannelCmd::Untrust { channel_id }) => {
+                    cli::channel::set_trust(&channel_id, false)
+                }
+                Some(ChannelCmd::Set {
                     channel_id,
                     key,
                     value,
-                } => match (key, value) {
+                }) => match (key, value) {
                     (Some(key), Some(value)) => cli::channel::set(&channel_id, &key, &value),
                     _ => cli::channel::set_help(&channel_id),
                 },
             },
-            ServerCmd::Runs(cmd) => match cmd {
-                RunsCmd::Ls { worker, limit, json } => cli::runs::ls(worker.as_deref(), limit, json),
-                RunsCmd::Show { run } => cli::runs::show(&run),
-                RunsCmd::Context { run, all } => cli::runs::context(&run, all),
-                RunsCmd::Recall { run } => cli::runs::recall(&run),
+            Some(ServerCmd::Runs { cmd }) => match cmd {
+                None => cli::runs::ls(None, 20, false),
+                Some(RunsCmd::Ls { worker, limit, json }) => {
+                    cli::runs::ls(worker.as_deref(), limit, json)
+                }
+                Some(RunsCmd::Show { run }) => cli::runs::show(&run),
+                Some(RunsCmd::Context { run, all }) => cli::runs::context(&run, all),
+                Some(RunsCmd::Recall { run }) => cli::runs::recall(&run),
             },
         },
-        Cmd::Connection(cmd) => match cmd {
-            ConnectionCmd::Catalog => cli::connections::catalog(),
-            ConnectionCmd::Add {
+        Cmd::Connection { cmd } => match cmd {
+            None => cli::connections::ls(false),
+            Some(ConnectionCmd::Catalog) => cli::connections::catalog(),
+            Some(ConnectionCmd::Add {
                 service,
                 worker,
                 org,
@@ -532,7 +590,8 @@ async fn main() {
                 uses,
                 auth,
                 declare,
-            } => match service {
+                verify,
+            }) => match service {
                 Some(service) => {
                     cli::connections::connect(
                         service,
@@ -547,6 +606,7 @@ async fn main() {
                             uses,
                             auth,
                             declare,
+                            verify,
                         },
                     )
                     .await
@@ -565,8 +625,8 @@ async fn main() {
                 }
                 None => cli::connections::guided().await,
             },
-            ConnectionCmd::Ls { json } => cli::connections::ls(json),
-            ConnectionCmd::Rm { name } => cli::connections::rm(&name),
+            Some(ConnectionCmd::Ls { json }) => cli::connections::ls(json),
+            Some(ConnectionCmd::Rm { name }) => cli::connections::rm(&name),
         },
         Cmd::Credential(cmd) => match cmd {
             CredentialCmd::Add { provider } => Err(format!(
@@ -581,19 +641,32 @@ async fn main() {
             Some(name) => run::session::talk(&name, idle).await,
             None => talk_bare(idle).await,
         },
-        Cmd::Worker(cmd) => match cmd {
-            WorkerCmd::Init { name } => cli::create::run(&name),
-            WorkerCmd::Ls { json } => cli::worker::ls(json),
-            WorkerCmd::Show { name, json } => cli::worker::show(&name, json),
-            WorkerCmd::Trust { name, json } => cli::worker::trust(&name, json),
-            WorkerCmd::Run {
+        Cmd::Completions { shell } => {
+            use clap::CommandFactory;
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "roster",
+                &mut std::io::stdout(),
+            );
+            Ok(())
+        }
+        Cmd::Worker { cmd } => match cmd {
+            None => cli::worker::ls(false),
+            Some(WorkerCmd::Init { name }) => cli::create::run(&name),
+            Some(WorkerCmd::Ls { json }) => cli::worker::ls(json),
+            Some(WorkerCmd::Show { name, json }) => cli::worker::show(&name, json),
+            Some(WorkerCmd::Trust { name, json }) => cli::worker::trust(&name, json),
+            Some(WorkerCmd::Run {
                 name,
                 ceiling,
                 prompt,
-            } => run::boxed::run_once(&name, ceiling, prompt.join(" ")).await,
-            WorkerCmd::Chat { name, idle } => run::session::chat(&name, idle).await,
-            WorkerCmd::Task(cmd) => match cmd {
-                TaskCmd::Add {
+            }) => run::boxed::run_once(&name, ceiling, prompt.join(" ")).await,
+            Some(WorkerCmd::Rm { name, yes }) => cli::worker::rm(&name, yes),
+            Some(WorkerCmd::Chat { name, idle }) => run::session::chat(&name, idle).await,
+            Some(WorkerCmd::Task { cmd }) => match cmd {
+                None => cli::task::ls(false),
+                Some(TaskCmd::Add {
                     worker,
                     ceiling,
                     proactive,
@@ -601,7 +674,7 @@ async fn main() {
                     repo,
                     base,
                     prompt,
-                } => cli::task::add(
+                }) => cli::task::add(
                     &worker,
                     ceiling,
                     proactive,
@@ -610,14 +683,14 @@ async fn main() {
                     &base,
                     prompt.join(" "),
                 ),
-                TaskCmd::Relay { worker, from, message } => {
+                Some(TaskCmd::Relay { worker, from, message }) => {
                     channel::relay::run(&worker, from.as_deref(), message.join(" "))
                 }
-                TaskCmd::Ls { json } => cli::task::ls(json),
-                TaskCmd::Show { id } => cli::task::show(&id),
-                TaskCmd::Requeue { id } => cli::task::requeue(&id),
+                Some(TaskCmd::Ls { json }) => cli::task::ls(json),
+                Some(TaskCmd::Show { id }) => cli::task::show(&id),
+                Some(TaskCmd::Requeue { id }) => cli::task::requeue(&id),
             },
-            WorkerCmd::Memory(cmd) => match cmd {
+            Some(WorkerCmd::Memory(cmd)) => match cmd {
                 MemoryCmd::Ls {
                     worker,
                     scope,
@@ -636,7 +709,7 @@ async fn main() {
                 MemoryCmd::Enable { worker, id } => cli::memory::mutate("enable", &worker, &id),
                 MemoryCmd::Compact { worker } => cli::memory::compact(&worker),
             },
-            WorkerCmd::Knowledge { name } => cli::knowledge::run(&name),
+            Some(WorkerCmd::Knowledge { name }) => cli::knowledge::run(&name),
         },
     };
 

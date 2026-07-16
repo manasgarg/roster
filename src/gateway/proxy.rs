@@ -163,6 +163,10 @@ fn lift_mcp(headers: &HashMap<String, String>, body: &[u8]) -> Option<Mcp> {
         return None;
     }
     let v: Value = serde_json::from_slice(body).ok()?;
+    // A single-element array is fully characterized by element 0 (the whole body
+    // is that one call), so it's safe; a multi-element batch is not — element 0
+    // is judged but the other calls would ride along unjudged.
+    let batch = v.as_array().map(|a| a.len() > 1).unwrap_or(false);
     let msg = if v.is_array() { v.get(0)?.clone() } else { v };
     let method = msg.get("method")?.as_str()?.to_string();
     let is_rpc = msg.get("jsonrpc").and_then(|j| j.as_str()) == Some("2.0") || method.contains('/');
@@ -177,7 +181,7 @@ fn lift_mcp(headers: &HashMap<String, String>, body: &[u8]) -> Option<Mcp> {
     } else {
         None
     };
-    Some(Mcp { method, tool })
+    Some(Mcp { method, tool, batch })
 }
 
 // ── body helpers ────────────────────────────────────────────────────────────
@@ -477,6 +481,27 @@ enum Gate {
 async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
     let policy = load_policy();
     let (verdict, rule) = judge(gr, &policy);
+
+    // A multi-call JSON-RPC batch can't be judged as one call — only element 0
+    // was characterized — so refuse it rather than forward the whole array,
+    // where the unjudged calls would ride along with the injected credential.
+    if gr.mcp.as_ref().map(|m| m.batch).unwrap_or(false) {
+        record(
+            gr,
+            Verdict::Deny,
+            rule.as_deref(),
+            None,
+            &HashMap::new(),
+            Some("JSON-RPC batch refused — send one call per request"),
+        );
+        let mut resp = Response::new(full(
+            "{\"error\":\"JSON-RPC batches are not permitted through the gateway\",\"hint\":\"send one MCP call per request so each can be judged\"}",
+        ));
+        *resp.status_mut() = StatusCode::BAD_REQUEST;
+        resp.headers_mut()
+            .insert("x-roster-verdict", "deny".parse().unwrap());
+        return Gate::Deny(resp);
+    }
 
     // Injection: resolve the rule's credential now (refresh if expired) so we
     // fail closed — deny rather than forward the sentinel — when it's missing.

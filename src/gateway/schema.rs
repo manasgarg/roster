@@ -105,6 +105,9 @@ impl Policy {
 pub struct Mcp {
     pub method: String,
     pub tool: Option<String>,
+    /// The body was a multi-call JSON-RPC batch. Only element 0 is characterized
+    /// here, so the batch as a whole can't be judged and must be refused.
+    pub batch: bool,
 }
 
 /// What the gateway saw, phrased as the judge's question.

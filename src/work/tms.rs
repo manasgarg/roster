@@ -716,6 +716,26 @@ pub fn set_tasks(
                 &current,
             ));
         }
+        if !matches!(r.standing.as_str(), "owner" | "proactive") {
+            // Else a child would carry an unknown standing and skip budget
+            // pacing (dispatch only gates when standing == "proactive").
+            return Err(reject(
+                format!("recurring {}: standing must be owner or proactive", r.id),
+                &current,
+            ));
+        }
+        if !matches!(r.spawn_policy.as_str(), "skip-if-previous-open" | "always") {
+            return Err(reject(
+                format!(
+                    "recurring {}: spawn_policy must be skip-if-previous-open or always",
+                    r.id
+                ),
+                &current,
+            ));
+        }
+        if let Err(e) = check_ceiling(r.ceiling_min) {
+            return Err(reject(format!("recurring {}: {e}", r.id), &current));
+        }
     }
 
     // Standing follows the room: owner standing on a new or upgraded entry
@@ -1295,6 +1315,11 @@ pub fn parse_interval(s: &str) -> Option<i64> {
     let s = s.trim().strip_prefix("every").unwrap_or(s).trim();
     let (num, unit) = s.split_at(s.find(|c: char| c.is_alphabetic())?);
     let n: i64 = num.trim().parse().ok()?;
+    if n <= 0 {
+        // A zero or negative interval would make a recurrence "due" on every
+        // tick (now - last >= 0), flooding the partition.
+        return None;
+    }
     let mult = match unit.trim() {
         "s" | "sec" | "secs" => 1_000,
         "m" | "min" | "mins" => 60_000,

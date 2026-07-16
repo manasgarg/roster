@@ -1,11 +1,19 @@
-//! `roster connection add <service>` — the whole connection choreography in
-//! one command: catalog lookup, login flow, vault store, and a scaffolded
-//! `connections/<name>.toml` the admin owns from then on. And
-//! `roster connection ls` — the inventory.
+//! `roster connection …` — the one noun (docs/connections.md). A
+//! connection is roster's relationship with an external service: an identity
+//! (a secret in the vault) plus one or more uses — capability (a box acts on
+//! the service), channel (the worker speaks through it), model (grants inject
+//! it). Uses are derived from the binding surfaces, never stored.
+//!
+//! `add` runs the whole choreography for any provider: registry lookup (or
+//! the unknown-service interview), login flow, vault store, per-use
+//! follow-through. `ls` merges every surface into one inventory. `rm` deletes
+//! the secret and reports every surviving reference.
 
 use crate::util::BErr;
 use serde_json::Value;
+use std::path::PathBuf;
 
+#[derive(Default)]
 pub struct ConnectOptions {
     pub workers: Vec<String>,
     pub org: bool,
@@ -14,6 +22,13 @@ pub struct ConnectOptions {
     pub header: Option<String>,
     pub env: Option<String>,
     pub methods: Vec<String>,
+    /// Which uses to set up (`--use`); empty = all the provider supports
+    /// (asked interactively when there are several).
+    pub uses: Vec<String>,
+    /// Auth method when the provider offers several (`--auth`).
+    pub auth: Option<String>,
+    /// Interview for an unknown service first (`--declare`).
+    pub declare: bool,
 }
 
 pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BErr> {
@@ -21,49 +36,121 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
         workers,
         org,
         alias,
-        hosts: host_overrides,
-        header: header_override,
-        env: env_override,
-        methods: method_overrides,
+        hosts: mut host_overrides,
+        header: mut header_override,
+        env: mut env_override,
+        methods: mut method_overrides,
+        uses: use_flags,
+        auth: auth_override,
+        declare,
     } = options;
-    let registry = crate::credential::registry::registry_json();
+
+    let mut registry = crate::credential::registry::registry_json();
+
+    // The retired half of the old slack split: hidden alias, loud pointer.
+    if service == "slack-api" {
+        return Err(
+            "\"slack-api\" merged into \"slack\" — run: roster connection add slack --use capability"
+                .into(),
+        );
+    }
+
+    if declare {
+        if registry.contains_key(&service) {
+            return Err(format!(
+                "\"{service}\" is already in the registry — edit {} to change it",
+                crate::paths::providers_file().display()
+            )
+            .into());
+        }
+        match interview_unknown(&service)? {
+            Declared::Inline {
+                hosts,
+                header,
+                env,
+                methods,
+            } => {
+                if host_overrides.is_empty() {
+                    host_overrides = hosts;
+                }
+                if header_override.is_none() {
+                    header_override = header;
+                }
+                if env_override.is_none() {
+                    env_override = env;
+                }
+                if method_overrides.is_empty() {
+                    method_overrides = methods;
+                }
+            }
+            // The interview wrote a providers.toml entry — read it back.
+            Declared::Registered => registry = crate::credential::registry::registry_json(),
+        }
+    }
+
     let name = alias.unwrap_or_else(|| service.clone());
     let path = crate::paths::connections_dir().join(format!("{name}.toml"));
     let existing: Option<toml::Value> = std::fs::read_to_string(&path)
         .ok()
         .and_then(|text| toml::from_str(&text).ok());
     let registered = registry.get(&service).cloned();
-    let catalog_meta = registered.as_ref().and_then(|p| p.get("connection"));
-    let generic = catalog_meta.is_none() && (!host_overrides.is_empty() || existing.is_some());
+    let generic = registered.is_none() && (!host_overrides.is_empty() || existing.is_some());
     if registered.is_none() && !generic {
         print_catalog(&registry)?;
         return Err(format!(
-            "\"{service}\" is not in the catalog — add --host <hostname> to create it"
-        )
-        .into());
-    }
-    if let Some(p) = registered
-        .as_ref()
-        .filter(|_| catalog_meta.is_none() && !generic)
-    {
-        let auth = p.get("auth").and_then(Value::as_str).unwrap_or("");
-        if matches!(auth, "discord" | "smtp" | "slack") {
-            return Err(format!(
-                "\"{service}\" is host-side infrastructure, not a worker service connection — run: roster credential add {service}"
-            )
-            .into());
-        }
-        return Err(format!(
-            "\"{service}\" supplies authentication but is not a worker service connection — run: roster credential add {service}"
+            "\"{service}\" is not in the catalog — add --host <hostname> for a token API, or --declare for OAuth"
         )
         .into());
     }
 
-    let login_provider = registered
-        .clone()
-        .unwrap_or_else(|| serde_json::json!({ "auth": "api_key" }));
+    // Which uses? Flags win; one supported use goes without asking; several ask.
+    let supported: Vec<String> = registered
+        .as_ref()
+        .map(crate::credential::registry::provider_uses)
+        .unwrap_or_else(|| vec!["capability".into()]);
+    let uses: Vec<String> = if use_flags.is_empty() {
+        if supported.len() <= 1 {
+            supported.clone()
+        } else {
+            ask_uses(&service, &supported)?
+        }
+    } else {
+        let mut chosen = Vec::new();
+        for u in use_flags {
+            if !supported.contains(&u) {
+                return Err(format!(
+                    "\"{service}\" does not support the \"{u}\" use (supports: {})",
+                    supported.join(", ")
+                )
+                .into());
+            }
+            if !chosen.contains(&u) {
+                chosen.push(u);
+            }
+        }
+        chosen
+    };
+    let capability = uses.iter().any(|u| u == "capability");
+    let channel = uses.iter().any(|u| u == "channel");
+    let model = uses.iter().any(|u| u == "model");
+
+    // --auth: today every entry carries one method; the flag validates it.
+    // Multi-method entries arrive with the provider-catalog import.
+    if let Some(want) = &auth_override {
+        let have = registered
+            .as_ref()
+            .and_then(|p| p.get("auth"))
+            .and_then(Value::as_str)
+            .unwrap_or("api_key");
+        if want != have {
+            return Err(format!("\"{service}\" offers only \"{have}\" auth").into());
+        }
+    }
+
+    // Capability fields: catalog defaults ← existing file ← flags.
+    let catalog_meta = registered.as_ref().and_then(|p| p.get("connection")).cloned();
     let hosts = if host_overrides.is_empty() {
-        if let Some(hosts) = catalog_meta.and_then(|meta| meta["hosts"].as_array()) {
+        if let Some(hosts) = catalog_meta.as_ref().and_then(|meta| meta["hosts"].as_array()) {
             hosts
                 .iter()
                 .filter_map(Value::as_str)
@@ -90,6 +177,7 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
     };
     let env = env_override.unwrap_or_else(|| {
         catalog_meta
+            .as_ref()
             .and_then(|meta| meta["env"].as_str())
             .map(str::to_string)
             .or_else(|| {
@@ -115,16 +203,17 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
         None => None,
     };
 
-    // Scope: flags win; otherwise ask. Per-worker is the default posture —
-    // a connection is a capability granted to an identity, not to the fleet.
+    // Scope: flags win; otherwise ask — but only when a capability file will
+    // be scaffolded. Per-worker is the default posture: a connection is a
+    // capability granted to an identity, not to the fleet.
     let known = match crate::config::snapshot() {
         Ok(c) => c.workers.clone(),
         Err(e) => return Err(format!("config must load before connecting a service:\n{e}").into()),
     };
-    let scope_workers: Option<Vec<String>> = if org {
+    let scope_workers: Option<Vec<String>> = if !capability || path.exists() || org {
         None
     } else if !workers.is_empty() {
-        Some(workers)
+        Some(workers.clone())
     } else {
         let answer = crate::credential::connect::ask(&format!(
             "for which worker(s)? ({}, comma-separated, or \"org\" for org-wide): ",
@@ -142,101 +231,86 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
             )
         }
     };
-    if let Some(list) = &scope_workers {
-        if list.is_empty() {
-            return Err("no workers named — nothing to grant".into());
-        }
-        for w in list {
-            if !known.contains(w) {
-                return Err(format!("no such worker \"{w}\" (have: {})", known.join(", ")).into());
+    if capability && !path.exists() {
+        if let Some(list) = &scope_workers {
+            if list.is_empty() {
+                return Err("no workers named — nothing to grant".into());
+            }
+            for w in list {
+                if !known.contains(w) {
+                    return Err(
+                        format!("no such worker \"{w}\" (have: {})", known.join(", ")).into(),
+                    );
+                }
             }
         }
     }
 
-    // The secret. Re-connecting an existing connection rotates it in place.
+    // The secret. Re-connecting rotates it in place; a credential that a
+    // channel listener already consumes keeps its channel-only fields even
+    // when this add is for another use (rotation must not break the bot).
+    let channel_bound = !channel_binding_refs(&name).is_empty();
     let rotating = crate::credential::vault::get_credential(&name).is_some();
-    let cred = crate::credential::connect::login(&service, &login_provider).await?;
+    let login_provider = registered
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({ "auth": "api_key" }));
+    let cred =
+        crate::credential::connect::login(&service, &login_provider, channel || channel_bound)
+            .await?;
     crate::credential::connect::store(&name, &cred)?;
     println!(
         "\n{} credential \"{name}\" in the vault",
         if rotating { "rotated" } else { "stored" }
     );
 
-    // The connection file: scaffolded once, human-owned after. A rotation
-    // never overwrites the admin's edits.
-    let dir = crate::paths::connections_dir();
-    if path.exists() {
-        println!("kept    {} (edit it to change hosts/scope)", path.display());
-    } else {
-        std::fs::create_dir_all(&dir)?;
-        let scope_line = match &scope_workers {
-            None => "scope = \"org\"".to_string(),
-            Some(list) => format!(
-                "workers = [{}]",
-                list.iter()
-                    .map(|w| format!("\"{w}\""))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        };
-        let hosts_line = hosts
-            .iter()
-            .map(|h| format!("\"{h}\""))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let methods_line = methods
-            .iter()
-            .map(|method| format!("\"{method}\""))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let inject_lines = inline_header
-            .as_ref()
-            .map(|(header, value)| {
-                format!(
-                    "inject_header = \"{}\"\ninject_value = \"{}\"\n",
-                    toml_escape(header),
-                    toml_escape(value)
-                )
-            })
-            .unwrap_or_default();
-        std::fs::write(
+    // Per-use follow-through.
+    if capability {
+        scaffold_connection(
             &path,
-            format!(
-                "# Connection \"{name}\" — scaffolded by `roster connection add`, yours to edit.\n\
-                 # Compiles live into: an egress grant for these hosts/methods (evaluated\n\
-                 # before hand-written grants), credential injection in transit, and the env\n\
-                 # var below set in the box (to a sentinel; the secret never enters the box).\n\
-                 provider = \"{service}\"\n\
-                 {scope_line}\n\
-                 hosts = [{hosts_line}]\n\
-                 methods = [{methods_line}]\n\
-                 env = \"{}\"\n\
-                 {inject_lines}",
-                toml_escape(&env)
-            ),
+            &name,
+            &service,
+            &scope_workers,
+            &hosts,
+            &methods,
+            &env,
+            &inline_header,
         )?;
-        println!("created {}", path.display());
+    }
+    if channel {
+        bind_channel(&service, &name, &workers)?;
     }
 
-    // Show the compiled result (or every error, if the admin's config is off).
+    // The compiled result (or every error, if the admin's config is off).
     match crate::config::load() {
         Ok(c) => {
             for w in &c.warnings {
                 println!("warning: {w}");
             }
-            if let Some(conn) = c.connections.iter().find(|c| c.name == name) {
-                let scope = match &conn.workers {
-                    None => "org-wide".to_string(),
-                    Some(l) => l.join(", "),
-                };
-                println!(
-                    "active: {} → {} [{}] as {} for {}",
-                    conn.name,
-                    conn.hosts.join(", "),
-                    conn.methods.join(", "),
-                    conn.env,
-                    scope
-                );
+            if capability {
+                if let Some(conn) = c.connections.iter().find(|c| c.name == name) {
+                    let scope = match &conn.workers {
+                        None => "org-wide".to_string(),
+                        Some(l) => l.join(", "),
+                    };
+                    println!(
+                        "active: {} → {} [{}] as {} for {}",
+                        conn.name,
+                        conn.hosts.join(", "),
+                        conn.methods.join(", "),
+                        conn.env,
+                        scope
+                    );
+                }
+            }
+            if channel {
+                for (worker, platform, credential) in &c.listeners {
+                    if credential == &name {
+                        println!("listening: {platform} for {worker} with \"{name}\"");
+                    }
+                }
+            }
+            if model {
+                report_model(&c, &name, registered.as_ref());
             }
         }
         Err(errors) => {
@@ -251,6 +325,721 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
         }
     }
     Ok(())
+}
+
+/// The connection file: scaffolded once, human-owned after. A rotation never
+/// overwrites the admin's edits.
+#[allow(clippy::too_many_arguments)]
+fn scaffold_connection(
+    path: &std::path::Path,
+    name: &str,
+    service: &str,
+    scope_workers: &Option<Vec<String>>,
+    hosts: &[String],
+    methods: &[String],
+    env: &str,
+    inline_header: &Option<(String, String)>,
+) -> Result<(), BErr> {
+    if path.exists() {
+        println!("kept    {} (edit it to change hosts/scope)", path.display());
+        return Ok(());
+    }
+    std::fs::create_dir_all(crate::paths::connections_dir())?;
+    let scope_line = match scope_workers {
+        None => "scope = \"org\"".to_string(),
+        Some(list) => format!(
+            "workers = [{}]",
+            list.iter()
+                .map(|w| format!("\"{w}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let hosts_line = hosts
+        .iter()
+        .map(|h| format!("\"{h}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let methods_line = methods
+        .iter()
+        .map(|method| format!("\"{method}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let inject_lines = inline_header
+        .as_ref()
+        .map(|(header, value)| {
+            format!(
+                "inject_header = \"{}\"\ninject_value = \"{}\"\n",
+                toml_escape(header),
+                toml_escape(value)
+            )
+        })
+        .unwrap_or_default();
+    std::fs::write(
+        path,
+        format!(
+            "# Connection \"{name}\" — scaffolded by `roster connection add`, yours to edit.\n\
+             # Compiles live into: an egress grant for these hosts/methods (evaluated\n\
+             # before hand-written grants), credential injection in transit, and the env\n\
+             # var below set in the box (to a sentinel; the secret never enters the box).\n\
+             provider = \"{service}\"\n\
+             {scope_line}\n\
+             hosts = [{hosts_line}]\n\
+             methods = [{methods_line}]\n\
+             env = \"{}\"\n\
+             {inject_lines}",
+            toml_escape(env)
+        ),
+    )?;
+    println!("created {}", path.display());
+    Ok(())
+}
+
+/// Channel follow-through: offer the `[channels]` binding and write it
+/// (offer-and-write: a hand-carried snippet is exactly the two-step the
+/// one-noun surface exists to kill). One credential serves one listener.
+fn bind_channel(platform: &str, credential: &str, worker_flags: &[String]) -> Result<(), BErr> {
+    if platform == "smtp" {
+        println!("smtp is consumed host-side by the email executor — no worker binding needed");
+        return Ok(());
+    }
+    let snippet = format!("  [channels]\n  {platform} = \"{credential}\"");
+    let known = crate::worker::names();
+    if known.is_empty() {
+        println!(
+            "no workers yet — after `roster worker init <name>`, bind it in the worker's spec:\n{snippet}"
+        );
+        return Ok(());
+    }
+    let worker = if worker_flags.len() == 1 {
+        worker_flags[0].clone()
+    } else if worker_flags.len() > 1 {
+        println!(
+            "a channel binding takes one worker (one bot cannot serve two listeners) — \
+             bind by hand, with --name for a second credential:\n{snippet}"
+        );
+        return Ok(());
+    } else {
+        let answer = crate::credential::connect::ask(&format!(
+            "bind the {platform} listener to which worker? ({}, or Enter to skip): ",
+            known.join(", ")
+        ))?;
+        let answer = answer.trim().to_string();
+        if answer.is_empty() {
+            println!("skipped — bind it later in the worker's spec:\n{snippet}");
+            return Ok(());
+        }
+        answer
+    };
+    if !known.contains(&worker) {
+        return Err(format!("no such worker \"{worker}\" (have: {})", known.join(", ")).into());
+    }
+    let spec = crate::paths::workers_dir().join(&worker).join("worker.toml");
+    let text = std::fs::read_to_string(&spec)?;
+    match upsert_channel_binding(&text, platform, credential) {
+        Ok(Some(new_text)) => {
+            std::fs::write(&spec, new_text)?;
+            println!("bound   {platform} = \"{credential}\" in {}", spec.display());
+        }
+        Ok(None) => println!("kept    \"{worker}\" already binds {platform} = \"{credential}\""),
+        Err(e) => return Err(format!("worker \"{worker}\": {e}").into()),
+    }
+    Ok(())
+}
+
+/// Set `platform = "credential"` in a worker.toml's `[channels]` table,
+/// textually, preserving the admin's comments and layout. `Ok(None)` = the
+/// exact binding is already there; `Err` = a conflicting binding (edits to a
+/// human-owned file are the human's).
+fn upsert_channel_binding(
+    text: &str,
+    platform: &str,
+    credential: &str,
+) -> Result<Option<String>, String> {
+    let parsed: toml::Value =
+        toml::from_str(text).map_err(|e| format!("worker.toml is invalid: {e}"))?;
+    if let Some(current) = parsed
+        .get("channels")
+        .and_then(|c| c.get(platform))
+        .and_then(|v| v.as_str())
+    {
+        if current == credential {
+            return Ok(None);
+        }
+        return Err(format!(
+            "already binds {platform} = \"{current}\" — edit worker.toml to change it"
+        ));
+    }
+    let line = format!("{platform} = \"{credential}\"");
+    let mut out = String::new();
+    let mut inserted = false;
+    for l in text.lines() {
+        out.push_str(l);
+        out.push('\n');
+        if inserted {
+            continue;
+        }
+        let t = l.trim();
+        let is_header = t == "[channels]"
+            || t.strip_prefix("[channels]")
+                .is_some_and(|rest| rest.trim_start().starts_with('#'));
+        if is_header {
+            out.push_str(&line);
+            out.push('\n');
+            inserted = true;
+        }
+    }
+    if !inserted {
+        if parsed.get("channels").is_some() {
+            // e.g. an inline `channels = { … }` table — not ours to rewrite.
+            return Err(format!(
+                "has a [channels] table this tool cannot edit — add {line} by hand"
+            ));
+        }
+        if !out.is_empty() && !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        out.push_str("[channels]\n");
+        out.push_str(&line);
+        out.push('\n');
+    }
+    Ok(Some(out))
+}
+
+/// Model follow-through: report the grants that inject this credential, or
+/// print a starter block. Grants stay deliberate, hand-written policy — the
+/// wizard never writes them.
+fn report_model(c: &crate::config::Loaded, name: &str, provider: Option<&Value>) {
+    let grants: Vec<String> = c
+        .policy
+        .rules
+        .iter()
+        .filter(|r| !r.name.starts_with("connection:"))
+        .filter(|r| r.inject.as_ref().is_some_and(|i| i.credential == name))
+        .map(|r| format!("\"{}\" ({})", r.name, r.scope))
+        .collect();
+    if grants.is_empty() {
+        let hosts = provider
+            .and_then(|p| p.get("model_hosts"))
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(|h| format!("\"{h}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_else(|| "\"<the provider's API host>\"".into());
+        println!(
+            "\nno grant injects \"{name}\" yet — grants are yours to write; a starter for org.toml:\n\n\
+             [[grant]]\n\
+             name    = \"model-api\"\n\
+             match   = {{ host = [{hosts}], port = 443 }}\n\
+             verdict = \"allow\"\n\
+             inject  = {{ credential = \"{name}\" }}"
+        );
+    } else {
+        println!("active: injected by grant {}", grants.join(", "));
+    }
+}
+
+// ── the guided session and the unknown-service interview ────────────────────
+
+/// Bare `roster connection add`: open on the catalog, pick or interview.
+pub async fn guided() -> Result<(), BErr> {
+    let registry = crate::credential::registry::registry_json();
+    print_catalog(&registry)?;
+    let service = crate::credential::connect::ask(
+        "\nservice to connect (a name above, or a new one; Enter to quit): ",
+    )?
+    .trim()
+    .to_string();
+    if service.is_empty() {
+        return Ok(());
+    }
+    let mut options = ConnectOptions::default();
+    let known = registry
+        .get(&service)
+        .is_some_and(|p| !crate::credential::registry::is_hidden(p))
+        || service == "slack-api";
+    if !known {
+        match interview_unknown(&service)? {
+            Declared::Inline {
+                hosts,
+                header,
+                env,
+                methods,
+            } => {
+                options.hosts = hosts;
+                options.header = header;
+                options.env = env;
+                options.methods = methods;
+            }
+            Declared::Registered => {}
+        }
+    }
+    connect(service, options).await
+}
+
+/// What the interview produced: an inline (key-shaped) definition that lives
+/// in the connection file, or a providers.toml entry already written
+/// (kind-shaped OAuth knowledge shared by every connection to the service).
+enum Declared {
+    Inline {
+        hosts: Vec<String>,
+        header: Option<String>,
+        env: Option<String>,
+        methods: Vec<String>,
+    },
+    Registered,
+}
+
+fn interview_unknown(service: &str) -> Result<Declared, BErr> {
+    println!("\"{service}\" is not in the catalog — a few questions.");
+    let kind = ask_default(
+        "auth: [1] paste an API key/token  [2] OAuth (PKCE; needs your own app registration)",
+        "1",
+    )?;
+    if kind == "2" {
+        declare_oauth(service)?;
+        return Ok(Declared::Registered);
+    }
+    let host = crate::credential::connect::ask(&format!("API host (e.g. api.{service}.com): "))?
+        .trim()
+        .to_string();
+    if host.is_empty() {
+        return Err("an API host is required".into());
+    }
+    let header = ask_default("header template", "Authorization: Bearer {token}")?;
+    let env = ask_default("env var the box sees", &default_env(service))?;
+    let methods: Vec<String> = ask_default("allowed methods (comma-separated)", "GET")?
+        .split(',')
+        .map(|s| s.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    Ok(Declared::Inline {
+        hosts: vec![host],
+        header: Some(header),
+        env: Some(env),
+        methods,
+    })
+}
+
+/// Interview for an OAuth provider and append the entry to providers.toml —
+/// kind-knowledge lands in the registry, where every connection to the
+/// service shares it and the gateway finds the refresh endpoint.
+fn declare_oauth(name: &str) -> Result<(), BErr> {
+    let file = crate::paths::providers_file();
+    println!(
+        "declaring \"{name}\" (PKCE — register an app with the service first; roster ships no client ids):"
+    );
+    let ask = crate::credential::connect::ask;
+    let must = |q: &str| -> Result<String, BErr> {
+        let v = ask(q)?.trim().to_string();
+        if v.is_empty() {
+            return Err(format!("{} is required", q.trim_end_matches(": ")).into());
+        }
+        Ok(v)
+    };
+    let authorize_url = must("authorize URL: ")?;
+    let token_url = must("token URL: ")?;
+    let client_id = must("client id (from your app registration): ")?;
+    let redirect_uri = ask_default("redirect URI", "http://localhost:1455/callback")?;
+    let scope = ask("scopes (space-separated; Enter for none): ")?.trim().to_string();
+    let token_encoding = ask_default("token request encoding (json/form)", "json")?;
+    if token_encoding != "json" && token_encoding != "form" {
+        return Err("token encoding must be \"json\" or \"form\"".into());
+    }
+    let inject_header = ask_default("inject header", "authorization")?;
+    let inject_value = ask_default("inject template", "Bearer {access}")?;
+    let hosts_answer =
+        ask("API hosts the box may call, comma-separated (Enter for none — model-style): ")?;
+    let hosts: Vec<String> = hosts_answer
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let connection_line = if hosts.is_empty() {
+        String::new()
+    } else {
+        let env = ask_default("env var the box sees", &default_env(name))?;
+        format!(
+            "connection = {{ hosts = [{}], env = \"{}\" }}\n",
+            hosts
+                .iter()
+                .map(|h| format!("\"{}\"", toml_escape(h)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            toml_escape(&env)
+        )
+    };
+
+    let entry = format!(
+        "\n# \"{name}\" — declared by `roster connection add`, yours to edit.\n\
+         [{name}]\n\
+         auth = \"oauth\"\n\
+         client_id = \"{}\"\n\
+         token_url = \"{}\"\n\
+         token_encoding = \"{token_encoding}\"\n\
+         inject = [{{ header = \"{}\", value = \"{}\" }}]\n\
+         {connection_line}\
+         \n\
+         [{name}.login]\n\
+         flow = \"pkce\"\n\
+         authorize_url = \"{}\"\n\
+         redirect_uri = \"{}\"\n\
+         scope = \"{}\"\n",
+        toml_escape(&client_id),
+        toml_escape(&token_url),
+        toml_escape(&inject_header),
+        toml_escape(&inject_value),
+        toml_escape(&authorize_url),
+        toml_escape(&redirect_uri),
+        toml_escape(&scope),
+    );
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut text = std::fs::read_to_string(&file).unwrap_or_default();
+    text.push_str(&entry);
+    std::fs::write(&file, text)?;
+    println!("declared \"{name}\" in {}", file.display());
+    Ok(())
+}
+
+// ── inventory ────────────────────────────────────────────────────────────────
+
+/// `roster connection ls` — every connection, its use(s), and its state.
+/// Uses are derived from what references the secret: a connection file
+/// (capability), a `[channels]` binding (channel), a grant's inject (model).
+/// A secret nothing references is `unbound`, not an error.
+pub fn ls(json: bool) -> Result<(), BErr> {
+    let c = crate::config::snapshot().map_err(|e| format!("config invalid:\n{e}"))?;
+    let secret = |name: &str| crate::credential::vault::get_credential(name).is_some();
+    let mut rows: Vec<Value> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = Default::default();
+
+    for conn in &c.connections {
+        seen.insert(conn.name.clone());
+        let scope = match &conn.workers {
+            None => "org".to_string(),
+            Some(l) => l.join(","),
+        };
+        rows.push(serde_json::json!({
+            "name": conn.name, "use": "capability", "provider": conn.provider,
+            "workers": conn.workers, "hosts": conn.hosts, "methods": conn.methods,
+            "env": conn.env,
+            "state": if conn.enabled { "active" } else { "DISABLED (no secret)" },
+            "detail": format!("{scope}: {} [{}] → {}",
+                conn.hosts.join(","), conn.methods.join(","), conn.env),
+        }));
+    }
+    for (worker, platform, credential) in &c.listeners {
+        seen.insert(credential.clone());
+        rows.push(serde_json::json!({
+            "name": credential, "use": "channel", "platform": platform, "worker": worker,
+            "state": if secret(credential) { "active" } else { "DISABLED (no secret)" },
+            "detail": format!("{platform} listener for {worker}"),
+        }));
+    }
+    let mut model: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for r in &c.policy.rules {
+        if r.name.starts_with("connection:") {
+            continue;
+        }
+        if let Some(inject) = &r.inject {
+            model
+                .entry(inject.credential.clone())
+                .or_default()
+                .push(format!("\"{}\" ({})", r.name, r.scope));
+        }
+    }
+    for (credential, grants) in model {
+        seen.insert(credential.clone());
+        rows.push(serde_json::json!({
+            "name": credential, "use": "model", "grants": grants,
+            "state": if secret(&credential) { "active" } else { "DISABLED (no secret)" },
+            "detail": format!("injected by grant {}", grants.join(", ")),
+        }));
+    }
+    for (name, kind) in vault_entries() {
+        if !seen.contains(&name) {
+            rows.push(serde_json::json!({
+                "name": name, "use": Value::Null, "type": kind, "state": "unbound",
+                "detail": format!("{kind} secret — nothing references it"),
+            }));
+        }
+    }
+    rows.sort_by(|a, b| {
+        (a["name"].as_str(), a["use"].as_str()).cmp(&(b["name"].as_str(), b["use"].as_str()))
+    });
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        println!("no connections — see the catalog: roster connection catalog");
+        return Ok(());
+    }
+    println!(
+        "{:<16} {:<11} {:<44} STATE",
+        "CONNECTION", "USE", "DETAIL"
+    );
+    for row in &rows {
+        println!(
+            "{:<16} {:<11} {:<44} {}",
+            row["name"].as_str().unwrap_or("?"),
+            row["use"].as_str().unwrap_or("—"),
+            row["detail"].as_str().unwrap_or(""),
+            row["state"].as_str().unwrap_or("?"),
+        );
+    }
+    Ok(())
+}
+
+/// Vault names and types — never values.
+fn vault_entries() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(crate::credential::vault::vault_dir()) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let kind = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(String::from))
+                .unwrap_or_else(|| "?".into());
+            out.push((name, kind));
+        }
+    }
+    out.sort();
+    out
+}
+
+// ── removal ──────────────────────────────────────────────────────────────────
+
+/// `roster connection rm <name>` — delete the secret; report every surviving
+/// reference. The references are the admin's files: rm never edits config.
+pub fn rm(name: &str) -> Result<(), BErr> {
+    let secret = crate::credential::vault::vault_dir().join(format!("{name}.json"));
+    let refs = references(name);
+    if !secret.exists() && refs.is_empty() {
+        return Err(format!(
+            "no connection \"{name}\" — nothing in the vault, nothing referencing it"
+        )
+        .into());
+    }
+    if secret.exists() {
+        let answer = crate::credential::connect::ask(&format!(
+            "delete the \"{name}\" secret from the vault? [y/N] "
+        ))?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            println!("kept");
+            return Ok(());
+        }
+        std::fs::remove_file(&secret)?;
+        println!("deleted vault secret \"{name}\"");
+    } else {
+        println!("no \"{name}\" secret in the vault (already gone)");
+    }
+    if refs.is_empty() {
+        println!("nothing references it — removal complete");
+    } else {
+        println!("still referencing it — removal is complete only when these are gone:");
+        for r in refs {
+            println!("  - {r}");
+        }
+    }
+    Ok(())
+}
+
+/// Every config surface that references a connection name, read raw (rm and
+/// rotation guards must work even when config as a whole is invalid).
+fn references(name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let conn = crate::paths::connections_dir().join(format!("{name}.toml"));
+    if conn.exists() {
+        out.push(format!(
+            "connection file {} — now DISABLED; delete it to drop the grant and exposure",
+            conn.display()
+        ));
+    }
+    for (worker, platform, path) in channel_binding_refs(name) {
+        out.push(format!(
+            "worker \"{worker}\" binds it as its {platform} channel ({})",
+            path.display()
+        ));
+    }
+    let scan_grants = |v: &toml::Value, source: &str, out: &mut Vec<String>| {
+        for key in ["grant", "expose"] {
+            for entry in v.get(key).and_then(|x| x.as_array()).into_iter().flatten() {
+                let credential = match key {
+                    "grant" => entry.get("inject").and_then(|i| i.get("credential")),
+                    _ => entry.get("credential"),
+                }
+                .and_then(|x| x.as_str());
+                if credential == Some(name) {
+                    let label = entry
+                        .get("name")
+                        .and_then(|x| x.as_str())
+                        .map(|n| format!(" \"{n}\""))
+                        .unwrap_or_default();
+                    out.push(format!("[[{key}]]{label} in {source} references it"));
+                }
+            }
+        }
+    };
+    if let Some(org) = read_toml(&crate::paths::org_file()) {
+        scan_grants(&org, "org.toml", &mut out);
+    }
+    for worker in crate::worker::names() {
+        let spec = crate::paths::workers_dir().join(&worker).join("worker.toml");
+        if let Some(w) = read_toml(&spec) {
+            scan_grants(&w, &format!("workers/{worker}/worker.toml"), &mut out);
+        }
+    }
+    out
+}
+
+/// (worker, platform, worker.toml path) for every `[channels]` binding that
+/// names this credential.
+fn channel_binding_refs(name: &str) -> Vec<(String, String, PathBuf)> {
+    let mut out = Vec::new();
+    for worker in crate::worker::names() {
+        let spec = crate::paths::workers_dir().join(&worker).join("worker.toml");
+        let Some(w) = read_toml(&spec) else { continue };
+        let Some(channels) = w.get("channels").and_then(|c| c.as_table()) else {
+            continue;
+        };
+        for (platform, v) in channels {
+            if v.as_str() == Some(name) {
+                out.push((worker.clone(), platform.clone(), spec.clone()));
+            }
+        }
+    }
+    out
+}
+
+fn read_toml(path: &std::path::Path) -> Option<toml::Value> {
+    toml::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+// ── the catalog ──────────────────────────────────────────────────────────────
+
+/// The registry, grouped by what connecting gives you.
+fn print_catalog(registry: &serde_json::Map<String, Value>) -> Result<(), BErr> {
+    let mut groups: [(&str, &str, Vec<String>); 3] = [
+        ("capability", "Capabilities — a worker's box may act on the service", vec![]),
+        ("channel", "Channels — the worker talks there (bound in worker.toml)", vec![]),
+        ("model", "Models — grants inject them into model-API calls", vec![]),
+    ];
+    let mut names: Vec<&String> = registry
+        .iter()
+        .filter(|(_, p)| !crate::credential::registry::is_hidden(p))
+        .map(|(name, _)| name)
+        .collect();
+    names.sort();
+    let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
+    for n in &names {
+        let p = &registry[n.as_str()];
+        let uses = crate::credential::registry::provider_uses(p);
+        for (key, _, lines) in groups.iter_mut() {
+            if !uses.iter().any(|u| u == key) {
+                continue;
+            }
+            let what = match *key {
+                "capability" => {
+                    let meta = &p["connection"];
+                    let hosts: Vec<&str> = meta["hosts"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(Value::as_str).collect())
+                        .unwrap_or_default();
+                    format!(
+                        "{} → {} ({})",
+                        hosts.join(", "),
+                        meta["env"].as_str().unwrap_or("?"),
+                        auth_label(p)
+                    )
+                }
+                _ => auth_label(p).to_string(),
+            };
+            lines.push(format!("  {n:width$}  {what}"));
+        }
+    }
+    for (i, (_, title, lines)) in groups.iter().enumerate() {
+        if lines.is_empty() {
+            continue;
+        }
+        if i > 0 {
+            println!();
+        }
+        println!("{title}:");
+        for line in lines {
+            println!("{line}");
+        }
+    }
+    println!("\nConnect one: roster connection add <name> [--worker W].. [--org] [--use U]..");
+    println!("Anything else: roster connection add <name> --host <hostname>   (--declare for OAuth)");
+    Ok(())
+}
+
+fn auth_label(p: &Value) -> &'static str {
+    match p.get("auth").and_then(Value::as_str) {
+        Some("api_key") => "paste a key",
+        Some("oauth") => "OAuth login",
+        Some("slack") => "paste bot (+ app) tokens",
+        Some("discord") => "paste a bot token",
+        Some("smtp") => "SMTP details",
+        _ => "?",
+    }
+}
+
+pub fn catalog() -> Result<(), BErr> {
+    print_catalog(&crate::credential::registry::registry_json())
+}
+
+// ── small helpers ────────────────────────────────────────────────────────────
+
+fn ask_uses(service: &str, supported: &[String]) -> Result<Vec<String>, BErr> {
+    let answer = crate::credential::connect::ask(&format!(
+        "\"{service}\" supports: {}. set up which? (comma-separated, or \"all\") [all]: ",
+        supported.join(", ")
+    ))?;
+    let answer = answer.trim();
+    if answer.is_empty() || answer == "all" {
+        return Ok(supported.to_vec());
+    }
+    let mut chosen = Vec::new();
+    for u in answer.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if !supported.iter().any(|s| s == u) {
+            return Err(format!(
+                "\"{u}\" is not a use of \"{service}\" (supports: {})",
+                supported.join(", ")
+            )
+            .into());
+        }
+        if !chosen.iter().any(|c| c == u) {
+            chosen.push(u.to_string());
+        }
+    }
+    if chosen.is_empty() {
+        return Err("no uses chosen".into());
+    }
+    Ok(chosen)
+}
+
+/// Ask with a default used when the reply is empty.
+fn ask_default(question: &str, default: &str) -> Result<String, BErr> {
+    let v = crate::credential::connect::ask(&format!("{question} [{default}]: "))?;
+    let v = v.trim().to_string();
+    Ok(if v.is_empty() { default.to_string() } else { v })
 }
 
 fn default_env(name: &str) -> String {
@@ -306,87 +1095,6 @@ fn toml_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// The services `connection add` can set up in one step, from the registry.
-fn print_catalog(registry: &serde_json::Map<String, Value>) -> Result<(), BErr> {
-    let mut names: Vec<&String> = registry
-        .iter()
-        .filter(|(_, p)| p.get("connection").is_some())
-        .map(|(name, _)| name)
-        .collect();
-    names.sort();
-    println!(
-        "Services (roster connection add <service> [--worker <name>].. [--org] [--name <name>]):"
-    );
-    let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
-    for n in names {
-        let meta = &registry[n.as_str()]["connection"];
-        let hosts: Vec<&str> = meta["hosts"]
-            .as_array()
-            .map(|a| a.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
-        println!(
-            "  {n:width$}  {} → {}",
-            hosts.join(", "),
-            meta["env"].as_str().unwrap_or("?")
-        );
-    }
-    println!("\nModel and channel credentials: roster credential add <provider>");
-    println!("Any other service: roster connection add <name> --host <hostname>");
-    Ok(())
-}
-
-pub fn catalog() -> Result<(), BErr> {
-    print_catalog(&crate::credential::registry::registry_json())
-}
-
-/// `roster connection ls` — every connection, its scope, and its state.
-pub fn ls(json: bool) -> Result<(), BErr> {
-    let c = crate::config::snapshot().map_err(|e| format!("config invalid:\n{e}"))?;
-    if json {
-        let out: Vec<Value> = c
-            .connections
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "name": c.name, "provider": c.provider,
-                    "workers": c.workers, "hosts": c.hosts,
-                    "methods": c.methods, "env": c.env, "enabled": c.enabled,
-                })
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
-    }
-    if c.connections.is_empty() {
-        println!("no connections — see the catalog: roster connection catalog");
-        return Ok(());
-    }
-    println!(
-        "{:<14} {:<10} {:<18} {:<24} {:<14} STATE",
-        "CONNECTION", "PROVIDER", "SCOPE", "HOSTS", "ENV"
-    );
-    for conn in &c.connections {
-        let scope = match &conn.workers {
-            None => "org".to_string(),
-            Some(l) => l.join(","),
-        };
-        println!(
-            "{:<14} {:<10} {:<18} {:<24} {:<14} {}",
-            conn.name,
-            conn.provider,
-            scope,
-            conn.hosts.join(","),
-            conn.env,
-            if conn.enabled {
-                "active"
-            } else {
-                "DISABLED (no secret)"
-            }
-        );
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +1108,49 @@ mod tests {
             ("authorization".into(), "Bearer {key}".into())
         );
         assert!(parse_header("Authorization: literal-secret").is_err());
+    }
+
+    #[test]
+    fn binding_inserts_under_an_existing_channels_table() {
+        let text = "name = \"yuko\"\n\n[channels]\ndiscord = \"discord\"\n";
+        let out = upsert_channel_binding(text, "slack", "slack").unwrap().unwrap();
+        assert_eq!(
+            out,
+            "name = \"yuko\"\n\n[channels]\nslack = \"slack\"\ndiscord = \"discord\"\n"
+        );
+    }
+
+    #[test]
+    fn binding_appends_the_table_when_absent() {
+        let text = "name = \"yuko\"\nheartbeat = \"30m\"\n";
+        let out = upsert_channel_binding(text, "discord", "disc-yuko")
+            .unwrap()
+            .unwrap();
+        assert!(out.ends_with("[channels]\ndiscord = \"disc-yuko\"\n"));
+        assert!(toml::from_str::<toml::Value>(&out).is_ok());
+    }
+
+    #[test]
+    fn binding_is_idempotent_and_refuses_conflicts() {
+        let text = "[channels]\ndiscord = \"discord\"\n";
+        assert!(upsert_channel_binding(text, "discord", "discord")
+            .unwrap()
+            .is_none());
+        let err = upsert_channel_binding(text, "discord", "other").unwrap_err();
+        assert!(err.contains("already binds"));
+    }
+
+    #[test]
+    fn binding_never_lands_in_a_later_table() {
+        // The insert goes under [channels], not into a table that follows it.
+        let text = "[channels]\n\n[memory]\nrecall = 4\n";
+        let out = upsert_channel_binding(text, "slack", "s").unwrap().unwrap();
+        let parsed: toml::Value = toml::from_str(&out).unwrap();
+        assert_eq!(
+            parsed["channels"]["slack"].as_str(),
+            Some("s"),
+            "{out}"
+        );
+        assert!(parsed["memory"].get("slack").is_none());
     }
 }

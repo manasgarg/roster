@@ -62,3 +62,49 @@ pub fn provider(name: &str) -> Option<Provider> {
         .get(name)
         .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
+
+/// The uses a provider supports — "capability" (a box acts on the service
+/// through a connection file), "channel" (a host-side listener or executor
+/// speaks through it), "model" (grants inject it into model-API calls).
+/// An explicit `use` array wins; otherwise inferred, so existing
+/// providers.toml overlays keep working (docs/connections.md §1).
+pub fn provider_uses(p: &Value) -> Vec<String> {
+    if let Some(uses) = p.get("use").and_then(Value::as_array) {
+        return uses
+            .iter()
+            .filter_map(Value::as_str)
+            .map(String::from)
+            .collect();
+    }
+    if p.get("connection").is_some() {
+        return vec!["capability".into()];
+    }
+    match p.get("auth").and_then(Value::as_str) {
+        Some("discord") | Some("slack") | Some("smtp") => vec!["channel".into()],
+        _ => vec!["model".into()],
+    }
+}
+
+/// Hidden entries keep old connection files compiling (e.g. the retired
+/// `slack-api` alias) without appearing in the catalog.
+pub fn is_hidden(p: &Value) -> bool {
+    p.get("hidden").and_then(Value::as_bool).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn uses_are_explicit_or_inferred() {
+        let explicit = json!({ "auth": "slack", "use": ["channel", "capability"] });
+        assert_eq!(provider_uses(&explicit), vec!["channel", "capability"]);
+        let capability = json!({ "auth": "api_key", "connection": { "hosts": ["x"] } });
+        assert_eq!(provider_uses(&capability), vec!["capability"]);
+        let channel = json!({ "auth": "discord" });
+        assert_eq!(provider_uses(&channel), vec!["channel"]);
+        let model = json!({ "auth": "oauth" });
+        assert_eq!(provider_uses(&model), vec!["model"]);
+    }
+}

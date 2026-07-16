@@ -21,6 +21,50 @@ Trusted: the `roster` binary, the three deployment roots on the host, and
 Docker itself. The humans with a shell on the host are the ultimate
 authority.
 
+## Principles
+
+The mechanisms below follow five principles; specs and design reviews
+reference them as P1–P5.
+
+**P1 — The worker is the confidentiality boundary.** A worker is one mind:
+everything it ever ingests may influence everything it later does. Its
+stores (memory, knowledge, queue, journal) are one accumulating state,
+shared across every channel it serves. Roster therefore promises isolation
+*between* workers — separate stores, separate boxes, separate identity,
+grants, and budgets — and refuses to fake walls *inside* one. If two
+contexts must never mix (two clients; a public community and private ops),
+deploy two workers. Workers are cheap; partitions inside a mind are
+theater.
+
+**P2 — Inside a worker, govern acts, not thoughts.** Information flows
+freely within the mind; enforcement lives where consequences happen: the
+gateway for every byte of egress, gates for consequential actions, budgets
+for pace. Nothing anyone says to a worker can *make* it do anything — it
+can only make it want to, and wanting meets the same grants and gates
+regardless of where the want came from.
+
+**P3 — Facts about people have one home: memory.** Not because information
+flow can be fully policed — it can't — but because memory is the only
+surface with the right shape for person-data: scoped at recall (user notes
+surface only around that user, channel notes in that channel) and governed
+by the subject (inspect, correct, forget, retention). Worker-global
+surfaces — knowledge, the queue — are read by every run, so a person-fact
+written there is de facto cross-channel. The participant scans police this
+norm as tripwires; they are hygiene, not walls.
+
+**P4 — Provenance is recorded, never trusted away.** Every durable write
+names the run that made it and who was in the room: journal events, git
+commits, task origins, audit logs. Mixing inside a worker cannot be
+prevented, so the promise is traceability and repair — memory corrected,
+records reverted, tasks requeued. Structural enforcement is reserved for
+what repair cannot undo: an email cannot be unsent (P2), and a mixed mind
+cannot be unmixed (P1).
+
+**P5 — Source trust attaches at ingestion and travels as framing.** Every
+turn is labeled with its speaker and role; relayed and inbound content
+arrives framed as content, never command. The worker weighs; the host
+enforces.
+
 ## The mechanisms
 
 **No route out.** The box joins a Docker bridge network with NAT disabled —

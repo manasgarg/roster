@@ -3,9 +3,8 @@
 //! grammar is the product thesis — rented intelligence, owned governance:
 //!
 //!   roster server …       the owned machinery: daemon, config, desk, channels, run log
-//!   roster connection …   service capabilities granted to workers
-//!   roster credential …   host-held provider credentials
-//!   roster worker …          the governed identities: lifecycle, trust, memory, work, sessions
+//!   roster connection …   the org's relationships with external services
+//!   roster worker …       the governed identities: lifecycle, trust, memory, work, sessions
 
 mod action;
 mod channel;
@@ -41,20 +40,20 @@ enum Cmd {
     /// The owned machinery: daemon, config, approval desk, channels, run log
     #[command(subcommand)]
     Server(ServerCmd),
-    /// Service capabilities: discover, add, and inspect connections
+    /// Connections to external services: catalog, add, inspect, remove
     #[command(subcommand)]
     Connection(ConnectionCmd),
-    /// Host-held credentials: authenticate providers and inspect what is stored
-    #[command(subcommand)]
+    #[command(subcommand, hide = true)]
     Credential(CredentialCmd),
     /// The governed identities: lifecycle, trust, memory, knowledge, work
     #[command(subcommand)]
     Worker(WorkerCmd),
     /// Talk with a worker right here in the terminal — a trusted chat channel
     Talk {
-        /// The worker to talk to
-        name: String,
-        /// End after this much quiet, in seconds
+        /// The worker to talk to (omit: list workers, or create "elf" on first run)
+        name: Option<String>,
+        /// Wind a quiet session down after this many seconds (the
+        /// conversation stays open; your next message wakes a fresh one)
         #[arg(long, default_value_t = 300)]
         idle: u64,
     },
@@ -86,9 +85,9 @@ enum ServerCmd {
     /// Parse and check all config; print every error (config loads live)
     #[command(alias = "deploy")]
     Validate,
-    /// The approval desk: list, inspect, approve, deny
-    #[command(subcommand)]
-    Gates(GatesCmd),
+    /// The approval desk: what is pending your approval; inspect, approve, deny
+    #[command(subcommand, alias = "gates")]
+    Approvals(ApprovalsCmd),
     /// Channel edges: trust designation, response mode, memory settings
     #[command(subcommand)]
     Channel(ChannelCmd),
@@ -98,8 +97,8 @@ enum ServerCmd {
 }
 
 #[derive(Subcommand)]
-enum GatesCmd {
-    /// Pending gates
+enum ApprovalsCmd {
+    /// What is pending your approval
     Ls {
         #[arg(long)]
         json: bool,
@@ -138,22 +137,21 @@ enum ChannelCmd {
     Trust { channel_id: String },
     /// Untrust a channel: participants are content-only
     Untrust { channel_id: String },
-    /// Tune a setting: mode, memory, memory-inferred, memory-kinds,
-    /// memory-retention, memory-notes, memory-chars
+    /// Tune a setting (bare: list keys, allowed values, and current values)
     Set {
         channel_id: String,
-        key: String,
-        value: String,
+        key: Option<String>,
+        value: Option<String>,
     },
 }
 
 #[derive(Subcommand)]
 enum ConnectionCmd {
-    /// List services available to connect
+    /// List services available to connect, grouped by what connecting gives you
     Catalog,
-    /// Connect a service (bare: show the catalog)
+    /// Connect a service (bare: guided session — pick from the catalog or declare)
     Add {
-        /// Service from the connection catalog (omit to show the catalog)
+        /// Service from the connection catalog (omit for the guided session)
         #[arg(value_name = "SERVICE")]
         service: Option<String>,
         /// Grant to this worker (repeatable); default is to ask
@@ -162,7 +160,7 @@ enum ConnectionCmd {
         /// Org-wide: every current and future worker (the explicit escalation)
         #[arg(long)]
         org: bool,
-        /// Connection and credential name when it differs from the service
+        /// Connection and secret name when it differs from the service
         #[arg(long)]
         name: Option<String>,
         /// Allowed hostname (repeatable; required for services outside the catalog)
@@ -177,20 +175,32 @@ enum ConnectionCmd {
         /// Allowed HTTP method (repeatable; default: GET)
         #[arg(long)]
         method: Vec<String>,
+        /// Which use(s) to set up on a multi-use provider (channel, capability)
+        #[arg(long = "use", value_name = "USE")]
+        uses: Vec<String>,
+        /// Auth method when the provider offers several (api_key, oauth)
+        #[arg(long)]
+        auth: Option<String>,
+        /// Interview for an unknown service; OAuth knowledge lands in providers.toml
+        #[arg(long)]
+        declare: bool,
     },
-    /// List connections, their scope, and whether they are active
+    /// Every connection, its use(s) — capability, channel, model — and state
     Ls {
         #[arg(long)]
         json: bool,
     },
+    /// Delete the secret from the vault; report every surviving reference
+    Rm { name: String },
 }
 
+/// Retired: the one noun is `connection` (docs/connections.md). Each
+/// arm points at its replacement and exits nonzero.
 #[derive(Subcommand)]
 enum CredentialCmd {
-    /// Create or replace a credential via a provider's login flow
-    #[command(after_help = credential::connect::provider_help())]
+    #[command(hide = true)]
     Add { provider: String },
-    /// Credential names and types (never values)
+    #[command(hide = true)]
     Ls {
         #[arg(long)]
         json: bool,
@@ -396,6 +406,12 @@ async fn main() {
     }
 
     let cli = Cli::parse();
+    // No first-run ceremony: the deployment roots and a starter org.toml
+    // exist by the time any command needs them (idempotent, quiet).
+    if let Err(e) = cli::init::ensure() {
+        eprintln!("roster: could not initialize the deployment roots: {e}");
+        std::process::exit(1);
+    }
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
         Cmd::Init => cli::init::run(),
         Cmd::Server(cmd) => match cmd {
@@ -407,11 +423,13 @@ async fn main() {
             } => cli::server::run(cap, once, no_listen, &addr).await,
             ServerCmd::Status { json } => cli::server::status(json).await,
             ServerCmd::Validate => cli::server::validate(),
-            ServerCmd::Gates(cmd) => match cmd {
-                GatesCmd::Ls { json } => cli::gates::ls(json),
-                GatesCmd::Show { id } => cli::gates::show(&id),
-                GatesCmd::Approve { id, note } => cli::gates::approve(&id, note.as_deref()).await,
-                GatesCmd::Deny { id, note } => cli::gates::deny(&id, note.as_deref()),
+            ServerCmd::Approvals(cmd) => match cmd {
+                ApprovalsCmd::Ls { json } => cli::approvals::ls(json),
+                ApprovalsCmd::Show { id } => cli::approvals::show(&id),
+                ApprovalsCmd::Approve { id, note } => {
+                    cli::approvals::approve(&id, note.as_deref()).await
+                }
+                ApprovalsCmd::Deny { id, note } => cli::approvals::deny(&id, note.as_deref()),
             },
             ServerCmd::Channel(cmd) => match cmd {
                 ChannelCmd::Ls { json } => cli::channel::ls(json),
@@ -422,7 +440,10 @@ async fn main() {
                     channel_id,
                     key,
                     value,
-                } => cli::channel::set(&channel_id, &key, &value),
+                } => match (key, value) {
+                    (Some(key), Some(value)) => cli::channel::set(&channel_id, &key, &value),
+                    _ => cli::channel::set_help(&channel_id),
+                },
             },
             ServerCmd::Runs(cmd) => match cmd {
                 RunsCmd::Ls { worker, limit, json } => cli::runs::ls(worker.as_deref(), limit, json),
@@ -442,6 +463,9 @@ async fn main() {
                 header,
                 env,
                 method,
+                uses,
+                auth,
+                declare,
             } => match service {
                 Some(service) => {
                     cli::connections::connect(
@@ -454,6 +478,9 @@ async fn main() {
                             header,
                             env,
                             methods: method,
+                            uses,
+                            auth,
+                            declare,
                         },
                     )
                     .await
@@ -464,19 +491,30 @@ async fn main() {
                     || !host.is_empty()
                     || header.is_some()
                     || env.is_some()
-                    || !method.is_empty() =>
+                    || !method.is_empty()
+                    || !uses.is_empty()
+                    || auth.is_some() =>
                 {
                     Err("connection options require a service name".into())
                 }
-                None => cli::connections::catalog(),
+                None => cli::connections::guided().await,
             },
             ConnectionCmd::Ls { json } => cli::connections::ls(json),
+            ConnectionCmd::Rm { name } => cli::connections::rm(&name),
         },
         Cmd::Credential(cmd) => match cmd {
-            CredentialCmd::Add { provider } => credential::connect::run(&provider).await,
-            CredentialCmd::Ls { json } => cli::vault::ls(json),
+            CredentialCmd::Add { provider } => Err(format!(
+                "`roster credential add` has retired — run: roster connection add {provider}"
+            )
+            .into()),
+            CredentialCmd::Ls { .. } => {
+                Err("`roster credential ls` has retired — run: roster connection ls".into())
+            }
         },
-        Cmd::Talk { name, idle } => run::session::talk(&name, idle).await,
+        Cmd::Talk { name, idle } => match name {
+            Some(name) => run::session::talk(&name, idle).await,
+            None => talk_bare(idle).await,
+        },
         Cmd::Worker(cmd) => match cmd {
             WorkerCmd::Init { name } => cli::create::run(&name),
             WorkerCmd::Ls { json } => cli::worker::ls(json),
@@ -542,6 +580,30 @@ async fn main() {
     }
 }
 
+/// `roster talk` with no worker named: on a fresh deployment scaffold "elf"
+/// and start talking — the zero-config first conversation. Otherwise show the
+/// talk help and who is available.
+async fn talk_bare(idle: u64) -> Result<(), Box<dyn std::error::Error>> {
+    let workers = worker::names();
+    if workers.is_empty() {
+        eprintln!("no workers yet — creating one named \"elf\"");
+        cli::create::run("elf")?;
+        return run::session::talk("elf", idle).await;
+    }
+    use clap::CommandFactory;
+    Cli::command()
+        .find_subcommand("talk")
+        .expect("talk subcommand exists")
+        .clone()
+        .bin_name("roster talk")
+        .print_help()?;
+    println!("\nworkers:");
+    for name in workers {
+        println!("  {name}");
+    }
+    Ok(())
+}
+
 /// Where each pre-clap command lives now. Kept until the muscle memory fades.
 fn legacy_pointer(first: &str) -> Option<&'static str> {
     Some(match first {
@@ -550,9 +612,9 @@ fn legacy_pointer(first: &str) -> Option<&'static str> {
         "supervise" => "roster server start  (the daemons merged; --cap and --once moved there)",
         "listen" => "roster server start  (listeners start for every worker with a [channels] entry)",
         "deploy" => "roster server validate  (config now loads live — there is no deploy step)",
-        "gates" => "roster server gates <ls|show|approve|deny>",
+        "gates" => "roster server approvals <ls|show|approve|deny>",
         "channel" => "roster server channel <ls|show|trust|untrust|set>",
-        "connect" => "roster credential add <provider>",
+        "connect" => "roster connection add <provider>",
         "create" => "roster worker init <name>",
         "queue" => "roster worker task <add|relay|ls|show|requeue>",
         "relay" => "roster worker task relay <worker> \"<message>\"",

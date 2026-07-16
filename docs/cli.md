@@ -7,9 +7,8 @@ the product thesis — *rented intelligence, owned governance*:
 - **`roster server …`** — the owned machinery: the daemon, config validation,
   the approval desk, channel edges, and the run log (every session, whoever
   ran it).
-- **`roster connection …`** — service capabilities and the workers allowed to
-  use them.
-- **`roster credential …`** — provider authentication held on the host.
+- **`roster connection …`** — the org's relationships with external
+  services: one noun for capabilities, channels, and model providers.
 - **`roster worker …`** — the governed identities: lifecycle, trust, memory,
   knowledge, each worker's durable task queue — and running sessions as one,
   directly or interactively.
@@ -32,7 +31,7 @@ talk              <worker> [--idle SECS]  chat with a worker, right here
 server start      [--cap N] [--once] [--no-listen] [--addr HOST:PORT]
 server status     [--json]
 server validate   parse + check all config, print every error
-server gates      ls [--json] | show <id> | approve <id> [note] | deny <id> [note]
+server approvals  ls [--json] | show <id> | approve <id> [note] | deny <id> [note]
 server channel    ls [--json] | show <id> | trust <id> | untrust <id>
                   | set <id> <key> <value>
                     keys: mode, memory, memory-inferred, memory-kinds,
@@ -43,10 +42,9 @@ server runs       ls [--worker W] [--limit N] [--json]
 connection catalog
 connection add    [<service>] [--worker W].. [--org] [--name NAME]
                   [--host H].. [--header TEMPLATE] [--env VAR] [--method M]..
+                  [--use U].. [--auth A] [--declare]
 connection ls     [--json]
-
-credential add    <provider>
-credential ls     [--json]
+connection rm     <name>
 
 worker init       <name>
 worker ls         [--json]
@@ -103,7 +101,7 @@ validate is how you check an edit before the next read picks it up.
 **`server status`** reports daemon health: components, queue depth, pending
 gates, and the compiled config.
 
-**`server gates`** is the approval desk. `ls` shows what's waiting; `show`
+**`server approvals`** is the approval desk. `ls` shows what's waiting; `show`
 prints the exact action that would execute (identity and code gates render a
 diff); `approve` executes it idempotently; `deny` records the refusal. Both
 accept an optional note. See [actions-and-trust.md](actions-and-trust.md).
@@ -121,21 +119,20 @@ for every turn of a warm session); `recall` prints the memory-recall trace.
 
 ## `roster connection`
 
-A connection is one intent — "this worker may act on that service" — expressed
-as a single object: login flow, credential, egress grant with injection, and
-the env var the box sees. `catalog` lists the built-in presets; `add` runs
-the wizard (login → vault → scaffold → validate); `ls` shows the inventory
-with scope, hosts, and active/disabled state. Any token-authenticated API
-can be connected by naming its host with `--host`. See
-[connections.md](connections.md).
+A connection is roster's relationship with an external service: an
+identity (a secret in the vault) plus one or more uses — **capability**
+(egress grant with injection and a sentinel env var), **channel** (a
+listener binding in worker.toml), **model** (grants inject it into
+model-API calls). `catalog` lists the presets grouped by use; `add` runs
+the whole choreography for any provider (login → vault → per-use
+follow-through → validate; run it again to rotate the secret); `ls` shows
+every connection with its derived use(s) and state (active / DISABLED /
+unbound); `rm` deletes the secret and reports every surviving reference.
 
-## `roster credential`
-
-Host-held provider authentication. `credential add <provider>` runs the
-provider's login flow (device code, PKCE, or API-key prompt) and stores the
-result in the vault; run it again to rotate. `credential ls` shows names and
-types — never values. Channel credentials (Discord, Slack) are added here
-and then bound in a worker's `[channels]` table; they never enter a box.
+Bare `add` opens a guided session; any token API connects with `--host`;
+`--declare` interviews for an unknown OAuth service and writes the
+`providers.toml` entry. Multi-use providers take `--use`, multi-method
+auth takes `--auth`. See [connections.md](connections.md).
 
 ## `roster worker`
 

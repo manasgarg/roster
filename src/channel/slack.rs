@@ -44,6 +44,21 @@ async fn api(token: &str, method: &str, body: Value) -> Result<Value, String> {
 
 /// Post a message. Returns the message ts (Slack's message id). `thread_ts`
 /// replies inside a thread.
+/// Post a message of any length: split at Slack's practical 4000-char
+/// display limit on natural boundaries and send the chunks in order.
+pub async fn post_chunked(
+    token: &str,
+    channel_id: &str,
+    text: &str,
+    thread_ts: Option<&str>,
+) -> Result<String, String> {
+    let mut last = String::new();
+    for chunk in crate::util::chunk_message(text, 4000) {
+        last = post_message(token, channel_id, &chunk, thread_ts).await?;
+    }
+    Ok(last)
+}
+
 pub async fn post_message(
     token: &str,
     channel_id: &str,

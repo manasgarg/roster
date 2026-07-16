@@ -5,7 +5,7 @@
 //! the remaining wiring; this is the trust-safe hand-off it feeds.
 
 use crate::util::BErr;
-use crate::work::queue;
+use crate::work::tms;
 
 pub fn run(worker: &str, from: Option<&str>, message: String) -> Result<(), BErr> {
     crate::worker::require_worker(worker)?;
@@ -22,8 +22,16 @@ pub fn run(worker: &str, from: Option<&str>, message: String) -> Result<(), BErr
          it through your tools — every action stays governed.\n\n--- message ---\n{message}"
     );
     let context = serde_json::json!({ "inbound": { "from": from, "message": message } });
-    let t = queue::create(
-        worker, &prompt, "event", false, 15.0, "append", context, None, None,
+    let t = tms::add(
+        worker,
+        tms::Draft {
+            prompt,
+            created_by: "relay".into(),
+            standing: "owner".into(),
+            ceiling_min: 15.0,
+            context,
+            ..Default::default()
+        },
     )
     .map_err(|e| e.to_string())?;
     println!(

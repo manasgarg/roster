@@ -42,7 +42,7 @@ pub async fn listen_worker(worker: &str, platform: &str, credential: &str) -> Re
 
     let cred = crate::credential::vault::get_credential(credential).ok_or_else(|| {
         format!(
-            "no \"{credential}\" credential in the vault — run: roster credential add {platform}"
+            "no \"{credential}\" credential in the vault — run: roster connection add {platform}"
         )
     })?;
     let field = |name: &str| -> Result<String, BErr> {

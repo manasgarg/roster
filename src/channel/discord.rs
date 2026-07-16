@@ -38,6 +38,16 @@ pub async fn post_message(token: &str, channel_id: &str, text: &str) -> Result<S
         .to_string())
 }
 
+/// Post a message of any length: split at Discord's 2000-char limit on line
+/// boundaries and send the chunks in order. Returns the last message id.
+pub async fn post_chunked(token: &str, channel_id: &str, text: &str) -> Result<String, String> {
+    let mut last = String::new();
+    for chunk in crate::util::chunk_message(text, 2000) {
+        last = post_message(token, channel_id, &chunk).await?;
+    }
+    Ok(last)
+}
+
 /// Open (or fetch) a DM channel with a user. Returns the DM channel id.
 pub async fn open_dm(token: &str, user_id: &str) -> Result<String, String> {
     let res = reqwest::Client::new()
@@ -233,6 +243,21 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
     result
 }
 
+/// Remember a channel's human identity so the CLI never shows a bare id.
+pub(crate) fn write_channel_meta(channel_id: &str, meta: &Value) {
+    let path = crate::paths::channel_meta_file(channel_id);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, format!("{meta}\n"));
+}
+
+/// The channel's human identity, if a listener has learned it.
+pub fn channel_meta(channel_id: &str) -> Option<Value> {
+    let text = std::fs::read_to_string(crate::paths::channel_meta_file(channel_id)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 fn ingest_guild(d: &Value) -> Guild {
     let mut role_perms = HashMap::new();
     let mut everyone_perms = 0;
@@ -250,8 +275,27 @@ fn ingest_guild(d: &Value) -> Guild {
             role_perms.insert(id.to_string(), perms);
         }
     }
+    // GUILD_CREATE carries every channel's name — persist them so `channel
+    // ls/show` can say "#general @ rototo" instead of a snowflake id.
+    let guild_name = d["name"].as_str().unwrap_or("");
+    if let Some(channels) = d["channels"].as_array() {
+        for c in channels {
+            let (Some(id), Some(name)) = (c["id"].as_str(), c["name"].as_str()) else {
+                continue;
+            };
+            write_channel_meta(
+                id,
+                &serde_json::json!({
+                    "platform": "discord",
+                    "server": guild_name,
+                    "name": name,
+                }),
+            );
+        }
+    }
+
     Guild {
-        name: d["name"].as_str().unwrap_or("").to_string(),
+        name: guild_name.to_string(),
         owner_id: d["owner_id"].as_str().unwrap_or("").to_string(),
         everyone_perms,
         role_perms,
@@ -309,6 +353,13 @@ async fn handle_message(
     let is_dm = d["guild_id"].as_str().is_none();
     if is_dm {
         set_channel_trust(channel_id, true); // DMs are always trusted (1:1, sought-out)
+        write_channel_meta(
+            channel_id,
+            &json!({
+                "platform": "discord",
+                "name": format!("DM with {}", d["author"]["username"].as_str().unwrap_or("?")),
+            }),
+        );
     }
     let role = resolve_role(d, guilds);
     let author = d["author"]["username"].as_str().unwrap_or("?");
@@ -455,15 +506,28 @@ async fn trigger_typing(channel_id: &str, token: &str) {
 /// what's safe: the approval desk, the queue, and channel trust.
 fn command_defs() -> Value {
     json!([
-        { "name": "gates", "description": "Roster approval desk", "options": [
-            { "type": 1, "name": "ls", "description": "List pending gates" },
+        { "name": "approvals", "description": "Roster approval desk", "options": [
+            { "type": 1, "name": "ls", "description": "What is pending your approval" },
+            { "type": 1, "name": "show", "description": "The exact action a gate would run", "options": [{ "type": 3, "name": "id", "description": "Gate id", "required": true }] },
             { "type": 1, "name": "approve", "description": "Approve a gate", "options": [{ "type": 3, "name": "id", "description": "Gate id", "required": true }] },
             { "type": 1, "name": "deny", "description": "Deny a gate", "options": [{ "type": 3, "name": "id", "description": "Gate id", "required": true }] }
         ]},
-        { "name": "queue", "description": "Roster task queue", "options": [
-            { "type": 1, "name": "ls", "description": "List tasks" }
+        { "name": "task", "description": "The worker's tasks", "options": [
+            { "type": 1, "name": "ls", "description": "List tasks" },
+            { "type": 1, "name": "add", "description": "File a task for this worker", "options": [{ "type": 3, "name": "prompt", "description": "The task prompt", "required": true }] },
+            { "type": 1, "name": "show", "description": "One task: state, gates, prompt", "options": [{ "type": 3, "name": "id", "description": "Task id", "required": true }] },
+            { "type": 1, "name": "requeue", "description": "Put a stuck task back to waiting", "options": [{ "type": 3, "name": "id", "description": "Task id", "required": true }] }
+        ]},
+        { "name": "runs", "description": "The worker's session log", "options": [
+            { "type": 1, "name": "ls", "description": "Recent sessions" },
+            { "type": 1, "name": "show", "description": "One session's record", "options": [{ "type": 3, "name": "run", "description": "Run id", "required": true }] }
+        ]},
+        { "name": "worker", "description": "The worker itself", "options": [
+            { "type": 1, "name": "show", "description": "Queue, gates, memory at a glance" },
+            { "type": 1, "name": "trust", "description": "Per-action trust and earned history" }
         ]},
         { "name": "channel", "description": "Channel settings", "options": [
+            { "type": 1, "name": "show", "description": "This channel's settings" },
             { "type": 1, "name": "trust", "description": "Mark this channel's participants trusted" },
             { "type": 1, "name": "untrust", "description": "Mark this channel's participants untrusted" },
             { "type": 1, "name": "mode", "description": "How the worker wakes here", "options": [
@@ -487,6 +551,10 @@ fn command_defs() -> Value {
         ]},
         { "name": "memory", "description": "Inspect or correct scoped memory", "options": [
             { "type": 1, "name": "show", "description": "Show your and this channel's visible memories" },
+            { "type": 1, "name": "ls", "description": "Notes by scope (admin)", "options": [
+                { "type": 3, "name": "scope", "description": "worker, channel, or user", "required": true,
+                  "choices": [{ "name": "worker", "value": "worker" }, { "name": "channel", "value": "channel" }, { "name": "user", "value": "user" }] }
+            ]},
             { "type": 1, "name": "forget", "description": "Forget a memory", "options": [
                 { "type": 3, "name": "id", "description": "Memory id", "required": true }
             ]},
@@ -525,14 +593,6 @@ async fn register_commands(app_id: &str, guild_id: &str, token: &str) {
             r.status()
         ),
         Err(e) => eprintln!("discord: register commands failed: {e}"),
-    }
-}
-
-fn role_rank(role: &str) -> u8 {
-    match role {
-        "host-op" | "admin" => 2,
-        "trusted" => 1,
-        _ => 0,
     }
 }
 
@@ -595,10 +655,10 @@ async fn handle_interaction(worker: &str, d: &Value, guilds: &HashMap<String, Gu
         .await;
 }
 
+/// Adapt a Discord interaction into the shared slash surface (channel::slash)
+/// and run it there — the command bodies live in one place for every channel.
 async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> String {
     let data = &d["data"];
-    let cmd = data["name"].as_str().unwrap_or("");
-    let sub = data["options"][0]["name"].as_str().unwrap_or("");
     let channel_id = d["channel_id"].as_str().unwrap_or("");
     let caller_id = d["member"]["user"]["id"]
         .as_str()
@@ -613,257 +673,28 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
         is_dm: d["guild_id"].as_str().is_none(),
         inbound: false,
     };
-    let arg = |name: &str| -> String {
-        data["options"][0]["options"]
-            .as_array()
-            .and_then(|a| a.iter().find(|o| o["name"].as_str() == Some(name)))
-            .and_then(|o| o["value"].as_str())
-            .unwrap_or("")
-            .to_string()
+    let mut args = std::collections::HashMap::new();
+    if let Some(opts) = data["options"][0]["options"].as_array() {
+        for o in opts {
+            if let (Some(n), Some(v)) = (o["name"].as_str(), o["value"].as_str()) {
+                args.insert(n.to_string(), v.to_string());
+            }
+        }
+    }
+    let call = super::slash::SlashCall {
+        cmd: data["name"].as_str().unwrap_or("").to_string(),
+        sub: data["options"][0]["name"].as_str().unwrap_or("").to_string(),
+        args,
     };
-    let rank = role_rank(role);
-    let denied = |need: &str| format!("Not permitted — {need} only (you are {role}).");
-
-    match (cmd, sub) {
-        ("gates", "ls") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let g = crate::action::gate::list_pending();
-            if g.is_empty() {
-                "No pending gates.".into()
-            } else {
-                let lines: Vec<String> = g
-                    .iter()
-                    .map(|x| format!("• `{}` {} ({})", x.id, x.intent, x.worker))
-                    .collect();
-                format!("Pending gates:\n{}", lines.join("\n"))
-            }
-        }
-        ("gates", "approve") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let id = arg("id");
-            match crate::action::execute_gate(&id, &format!("discord:{caller}"), None).await {
-                Ok(g) => format!("Approved `{}` ({}).", g.id, g.intent),
-                Err(e) => format!("Could not approve `{id}`: {e}"),
-            }
-        }
-        ("gates", "deny") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let id = arg("id");
-            match crate::action::deny_gate(&id, &format!("discord:{caller}"), None) {
-                Ok(g) => format!("Denied `{}` ({}).", g.id, g.intent),
-                Err(e) => format!("Could not deny `{id}`: {e}"),
-            }
-        }
-        ("queue", "ls") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let tasks = crate::work::queue::list_all();
-            if tasks.is_empty() {
-                "Queue is empty.".into()
-            } else {
-                let lines: Vec<String> = tasks
-                    .iter()
-                    .map(|t| format!("• `{}` [{}] {}", t.id, t.state, first_words(&t.prompt)))
-                    .collect();
-                format!("Tasks:\n{}", lines.join("\n"))
-            }
-        }
-        ("channel", "trust") => {
-            if rank < 2 {
-                return denied("server admins");
-            }
-            set_channel_trust(channel_id, true);
-            "This channel's participants are now **trusted** — they can administer, and I'll reply here without a gate.".into()
-        }
-        ("channel", "untrust") => {
-            if rank < 2 {
-                return denied("server admins");
-            }
-            set_channel_trust(channel_id, false);
-            "This channel's participants are now **untrusted** — they can talk to me, but not administer, and my replies here will be gated.".into()
-        }
-        ("channel", "mode") => {
-            if rank < 2 {
-                return denied("server admins");
-            }
-            let mode = arg("mode");
-            if mode != "all" && mode != "mention" {
-                return "Mode must be `all` or `mention`.".into();
-            }
-            set_channel_mode(channel_id, &mode);
-            if mode == "all" {
-                "I'll now read **every** message here and decide whether to respond.".into()
-            } else {
-                "I'll now respond here **only when @mentioned**.".into()
-            }
-        }
-        ("channel", "memory") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let state = arg("state");
-            let enabled = match state.as_str() {
-                "on" => true,
-                "off" => false,
-                _ => return "Memory state must be `on` or `off`.".into(),
-            };
-            set_channel_memory(channel_id, enabled);
-            format!(
-                "Memory is now **{}** in this channel.",
-                if enabled { "on" } else { "off" }
-            )
-        }
-        ("channel", "memory-inferred") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let state = arg("state");
-            let enabled = match state.as_str() {
-                "auto" => true,
-                "review" => false,
-                _ => return "Inferred memory must be `auto` or `review`.".into(),
-            };
-            set_channel_memory_inferred_auto(channel_id, enabled);
-            format!(
-                "Inferred channel memories now require **{}**.",
-                if enabled { "no review" } else { "review" }
-            )
-        }
-        ("channel", "memory-kinds") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let value = arg("kinds");
-            match crate::cli::channel::parse_memory_kinds(&value) {
-                Ok(kinds) => {
-                    set_channel_memory_allowed_kinds(channel_id, kinds.clone());
-                    format!(
-                        "Channel memory kinds: **{}**.",
-                        kinds
-                            .map(|v| v.join(", "))
-                            .unwrap_or_else(|| "default".into())
-                    )
-                }
-                Err(e) => format!("Could not set memory kinds: {e}"),
-            }
-        }
-        ("channel", "memory-retention") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let value = arg("days");
-            let days = if value == "default" {
-                None
-            } else {
-                match value.parse::<u64>().ok().filter(|n| *n > 0) {
-                    Some(days) => Some(days),
-                    None => {
-                        return "Retention must be `default` or a positive number of days.".into()
-                    }
-                }
-            };
-            set_channel_memory_retention_days(channel_id, days);
-            format!(
-                "Channel memory retention: **{}**.",
-                days.map(|n| format!("{n} days"))
-                    .unwrap_or_else(|| "default".into())
-            )
-        }
-        ("memory", "show") => {
-            let notes = crate::worker::memory::visible_in_context(worker, &memory_context);
-            if notes.is_empty() {
-                "No visible memories about you or this channel.".into()
-            } else {
-                let lines: Vec<String> = notes
-                    .iter()
-                    .take(20)
-                    .map(|n| {
-                        format!(
-                            "• `{}` [{} / {}] {}",
-                            n.id,
-                            n.scope.as_str(),
-                            n.status(),
-                            n.note
-                        )
-                    })
-                    .collect();
-                format!("Visible memories:\n{}", lines.join("\n"))
-            }
-        }
-        ("memory", "forget") => {
-            let id = arg("id");
-            match crate::worker::memory::participant_mutate(worker, "forget", &id, None, &memory_context)
-            {
-                Ok(()) => format!("Forgot `{id}`."),
-                Err(e) => format!("Could not forget `{id}`: {e}"),
-            }
-        }
-        ("memory", "correct") => {
-            let id = arg("id");
-            let text = arg("text");
-            match crate::worker::memory::participant_mutate(
-                worker,
-                "correct",
-                &id,
-                Some(&text),
-                &memory_context,
-            ) {
-                Ok(()) => format!("Corrected `{id}`."),
-                Err(e) => format!("Could not correct `{id}`: {e}"),
-            }
-        }
-        ("purpose", "show") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            match std::fs::read_to_string(purpose_path(channel_id)) {
-                Ok(p) if !p.trim().is_empty() => {
-                    format!("This channel's purpose:\n```\n{}\n```", p.trim())
-                }
-                _ => "This channel has no purpose set yet. Set one with `/purpose set`.".into(),
-            }
-        }
-        ("purpose", "set") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let text = arg("text");
-            let path = purpose_path(channel_id);
-            let _ = std::fs::create_dir_all(path.parent().unwrap());
-            match std::fs::write(&path, format!("{}\n", text.trim())) {
-                Ok(()) => "This channel's purpose is updated. It'll shape how I act here from your next message.".into(),
-                Err(e) => format!("Could not set purpose: {e}"),
-            }
-        }
-        ("identity", "show") => {
-            if rank < 2 {
-                return denied("server admins");
-            }
-            match std::fs::read_to_string(crate::run::boxed::identity_path(worker)) {
-                Ok(p) if !p.trim().is_empty() => {
-                    format!("{worker}'s identity:\n```\n{}\n```", p.trim())
-                }
-                _ => format!("{worker} has no identity.md set."),
-            }
-        }
-        _ => "Unknown command.".into(),
-    }
-}
-
-fn first_words(s: &str) -> String {
-    let s = s.replace('\n', " ");
-    if s.len() > 60 {
-        format!("{}…", &s[..60])
-    } else {
-        s
-    }
+    super::slash::run(
+        worker,
+        &call,
+        channel_id,
+        &memory_context,
+        role,
+        &format!("discord:{caller}"),
+    )
+    .await
 }
 
 // ── channel settings (trust designation + response mode) ──────────────────────
@@ -1103,7 +934,7 @@ pub(crate) fn distinct_human_authors(channel_id: &str) -> usize {
         .len()
 }
 
-fn recent_messages(channel_id: &str, n: usize) -> Vec<Value> {
+pub(crate) fn recent_messages(channel_id: &str, n: usize) -> Vec<Value> {
     let text =
         std::fs::read_to_string(channel_dir(channel_id).join("messages.jsonl")).unwrap_or_default();
     let mut evs: Vec<Value> = text

@@ -37,7 +37,7 @@ process:
   also serves the internal action host where workers propose consequential
   actions. See [gateway.md](gateway.md).
 - **The dispatch loop** — watches every worker's durable task queue, fires
-  scheduled triggers, and runs due tasks in boxes, up to a concurrency cap.
+  heartbeats and recurring templates, and runs due tasks in boxes, up to a concurrency cap.
   Proactive work is budget-gated at dispatch; work you file always runs. See
   [work.md](work.md).
 - **Channel listeners** — one per worker with a `[channels]` binding: a Discord
@@ -63,12 +63,32 @@ your deployment lives in three XDG roots (full tree in
   credential vault, the CA, each worker's queue/journal/gates/memory/knowledge,
   channel history, and the append-only audit logs.
 - **State** (`~/.local/state/roster`) — reconstructible: run directories,
-  per-run identity tokens, listener locks, trigger cursors.
+  per-run identity tokens, listener locks, recurrence cursors, task views.
+
+### What is scoped where
+
+Per-worker surfaces are one mind (P1 in [security.md](security.md)); the
+narrower scopes are about the room and the person, never partitions of the
+mind:
+
+| Surface | Scope |
+|---|---|
+| Channel history, purpose, trust/mode/memory settings | per channel |
+| Memory notes | one store per worker; each note scoped `worker` / `channel` / `user`, recalled by context |
+| Knowledge repository | per worker |
+| Queue, journal, gates, identity, trust, budgets | per worker |
+
+Channel surfaces describe the room. User-scoped memory follows the person
+across rooms and is governed by them ([memory.md](memory.md)). Everything
+per-worker is the mind itself: what it knows (knowledge), what it has been
+asked to do (queue), what it did (journal). If some context's affairs must
+be invisible to another's participants, that is two workers, not a
+partition within one.
 
 ## The life of a task
 
 1. **It gets filed.** By you (`roster worker task add`), by a schedule
-   (`[[trigger]]` in the worker's spec), by an inbound chat message (relayed as
+   (the heartbeat or a recurring template in its task partition), by an inbound chat message (relayed as
    content, never as a command), by the worker itself (`file_task`), or as a
    continuation when a gate resolves.
 2. **Dispatch picks it up.** If it's proactive and the worker is over budget,
@@ -103,7 +123,7 @@ src/
   gateway/     the one door: TLS termination, judge, ledger, budgets, proxy
   credential/  vault, provider registry, login flows, OAuth refresh
   action/      envelopes, gates, trust, executors, SMTP
-  work/        the durable queue, dispatch loop, triggers
+  work/        the task management system (TMS) and dispatch loop
   run/         box provisioning, warm sessions, run records
   worker/         identity, context compiler, memory, knowledge, boundary
   channel/     Discord, Slack, listener supervision, relay

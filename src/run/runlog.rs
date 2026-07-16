@@ -2,7 +2,7 @@
 
 use crate::paths;
 use crate::util::now_rfc3339;
-use crate::work::queue;
+use crate::work::tms;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -140,8 +140,8 @@ pub fn load(run_id: &str) -> Option<RunRecord> {
 }
 
 pub fn list() -> Vec<RunSummary> {
-    let tasks = queue::list_all();
-    let by_run: HashMap<String, queue::Task> = tasks
+    let tasks = tms::list_all();
+    let by_run: HashMap<String, tms::Task> = tasks
         .iter()
         .filter_map(|task| task.run_id.as_ref().map(|id| (id.clone(), task.clone())))
         .collect();
@@ -179,7 +179,7 @@ pub fn list() -> Vec<RunSummary> {
 
 fn summarize(
     path: &Path,
-    task: Option<&queue::Task>,
+    task: Option<&tms::Task>,
     journal_worker: Option<&String>,
 ) -> Option<RunSummary> {
     let id = path.file_name()?.to_string_lossy().to_string();

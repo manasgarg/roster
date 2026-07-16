@@ -1,6 +1,6 @@
 # Roster
 
-**Rent the intelligence. Own the governance.**
+**A Control Plane for Digital Workers**
 
 [![ci](https://github.com/manasgarg/roster/actions/workflows/ci.yml/badge.svg)](https://github.com/manasgarg/roster/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/digital-roster.svg)](https://crates.io/crates/digital-roster)
@@ -10,8 +10,9 @@
 
 Roster runs **workers**: software colleagues that keep working when you're not
 watching. A worker researches things, keeps an eye on topics you care about,
-drafts messages, tidies what it has learned. It talks to you in Discord or
-Slack, and it picks up jobs from a queue.
+drafts messages, tidies what it has learned. It talks to you in your terminal,
+Discord, or Slack — and it manages its own task list, on its own schedule,
+inside a budget you set.
 
 The model doing the thinking is rented — today's best one, swapped out
 whenever a better one shows up. Everything that decides what a worker is
@@ -55,18 +56,32 @@ Two other things worth knowing:
 You need Rust and Docker.
 
 ```bash
-cargo install digital-roster                      # installs the `roster` binary
+cargo install digital-roster                     # installs the `roster` binary
 docker build -t roster-box -f box/Dockerfile .   # the container workers run in
-                                                  # (clone the repo for box/)
+                                                 # (clone the repo for box/)
 
-roster init                     # create your config, data, and state folders
-roster worker init yuko            # scaffold a worker
-roster server validate          # check your config; it's read live, no deploy step
-roster server start &           # the one daemon: gateway + queue + chat listeners
+roster server start             # the one daemon; first run walks you through
+                                # a model login. No init step — folders and a
+                                # starter config appear on their own.
+```
 
-roster worker run yuko "find three recent papers on X and summarize them"
-roster worker ls                   # your workers, at a glance
-roster server gates ls          # anything waiting for your approval
+Then, in another terminal:
+
+```bash
+roster talk                     # a conversation with a worker, right here
+                                # (creates one called elf if you have none)
+```
+
+Talk is a real channel: your messages and the worker's replies are recorded,
+results from background tasks land back in it, and `/help` lists the admin
+commands — approve actions, file tasks, inspect runs — without leaving the
+conversation. The same works from Discord and Slack. A few more, from the
+shell:
+
+```bash
+roster worker task add yuko "find three recent papers on X and summarize them"
+roster worker ls                # your workers, at a glance
+roster server approvals ls      # anything waiting for your approval
 roster server runs ls           # everything that has run, ever
 ```
 
@@ -78,7 +93,7 @@ roster connection add github --worker yuko   # log in once; that's the whole set
 roster connection add acme --host api.acme.com --worker yuko
 ```
 
-To put a worker in a chat, run `roster credential add discord` (or `slack`) and
+To put a worker in a chat, run `roster connection add discord` (or `slack`) and
 add one line to its config. It shows up, listens, and answers — with every
 action it takes still going through the same gate.
 
@@ -89,10 +104,12 @@ still move. Built in small steps, each one tested live before the next starts.
 
 Working today: the locked-down container and the gateway in front of it;
 default-deny rules, credential injection, budgets, and a permanent audit log;
-a task queue with schedules and follow-ups; the approval desk and the
-earned-trust ladder; Discord and Slack conversations with warm sessions;
-per-person memory with consent; git-backed knowledge; and code tasks that end
-in a pull request you approve.
+a task system each worker curates for itself — scheduled tasks, cron
+recurrences, dependencies, a heartbeat — with results routed back to the
+channel that asked; the approval desk and the earned-trust ladder; terminal,
+Discord, and Slack conversations with warm sessions; per-person memory with
+consent; git-backed knowledge; and code tasks that end in a pull request you
+approve.
 
 ## How it's built
 
@@ -115,7 +132,7 @@ rather than open.
 
 The source is organized the way the system actually works: `gateway/` (the one
 door), `credential/` (passwords, never in the box), `action/` (propose, approve,
-execute), `work/` (the queue), `run/` (starting containers), `worker/` (identity,
+execute), `work/` (the task system), `run/` (starting containers), `worker/` (identity,
 memory, knowledge), `channel/` (Discord, Slack), and `cli/`.
 
 ## Docs

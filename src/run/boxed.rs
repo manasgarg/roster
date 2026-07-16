@@ -16,6 +16,7 @@ type BErr = Box<dyn std::error::Error>;
 const LOCKDOWN_NETWORK: &str = "roster-locked";
 const GATEWAY_PORT: u16 = 7300;
 const BOX_CA_PATH: &str = "/opt/roster/ca.crt";
+const TASKS_MOUNT: &str = "/opt/roster/tasks.json";
 const BOX_CA_BUNDLE_PATH: &str = "/opt/roster/ca-bundle.crt";
 const SENTINEL: &str = "roster-sentinel-no-real-credential-in-box";
 const CONTAINER_TEMP: &str = "/tmp:rw,nosuid,nodev,size=2147483648,mode=1777";
@@ -45,6 +46,7 @@ pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<
             origin: "direct".into(),
             text: prompt,
             continuation: None,
+            reply_to: None,
         }),
         message: None,
     };
@@ -87,6 +89,7 @@ pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<
 
 /// The outcome of one box run, for the supervisor.
 pub struct Outcome {
+    #[allow(dead_code)] // claim stamps the run id; kept for future consumers
     pub run_id: String,
     pub ended_by: &'static str,
     pub exit_code: Option<i32>,
@@ -371,7 +374,13 @@ pub async fn run_session(
         .await
         .ok();
 
-    eprintln!("session {run_id} [{worker}] started");
+    // On the terminal surface stdout/stderr ARE the conversation — lifecycle
+    // lines would land after the "you> " prompt, so talk announces the
+    // session itself and this stays quiet.
+    let announce = !matches!(surface, crate::worker::context::RunSurface::TermSession);
+    if announce {
+        eprintln!("session {run_id} [{worker}] started");
+    }
     let idle = Duration::from_secs(idle_secs);
     let mut rx_open = true;
     let mut busy = false; // a turn is in progress
@@ -466,7 +475,9 @@ pub async fn run_session(
         if clean_exit { "idle" } else { "error" },
         if clean_exit { Some(0) } else { None },
     );
-    eprintln!("session {run_id} [{worker}] ended");
+    if announce {
+        eprintln!("session {run_id} [{worker}] ended");
+    }
     Ok(())
 }
 
@@ -685,6 +696,15 @@ async fn provision_box(
             args.extend(["-v".into(), format!("{0}:{0}:ro", channel_dir.display())]);
         }
     }
+    // The worker's task partition as a live read view (docs/work.md):
+    // the host rewrites it in place on every mutation;
+    // authoritative writes go through the set_tasks action, file edits are
+    // scratch.
+    let tasks_view = crate::work::tms::ensure_view(worker);
+    args.extend([
+        "-v".into(),
+        format!("{}:{TASKS_MOUNT}", tasks_view.display()),
+    ]);
     if let Some(wt) = &worktree {
         args.extend(["-v".into(), mount(wt)]);
     }
@@ -698,6 +718,7 @@ async fn provision_box(
         format!("PI_CODING_AGENT_DIR={}", pihome.join("agent").display()),
     ]);
     args.extend(["-e".into(), format!("ROSTER_RUN_ID={run_id}")]);
+    args.extend(["-e".into(), format!("ROSTER_TASKS_FILE={TASKS_MOUNT}")]);
     args.extend(["-e".into(), "TMPDIR=/tmp".into()]);
     // Sessions have no wall clock — only task runs get a ceiling to pace against.
     if let Some(min) = ceiling_min {

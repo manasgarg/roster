@@ -24,8 +24,8 @@ const STARTER_ORG: &str = r#"# Roster org config — ADMIN-ONLY. Applies to ever
 # for the full reference and worked examples.
 "#;
 
-pub fn run() -> Result<(), BErr> {
-    let dirs = [
+fn dirs() -> [(&'static str, std::path::PathBuf); 10] {
+    [
         ("config", paths::config_root()),
         ("config/workers", paths::workers_dir()),
         ("data", paths::data_root()),
@@ -36,8 +36,33 @@ pub fn run() -> Result<(), BErr> {
         ("state/runs", paths::runs_dir()),
         ("state/locks", paths::locks_dir()),
         ("state/identity", paths::identity_dir()),
-    ];
-    for (label, dir) in dirs {
+    ]
+}
+
+/// Bring the deployment roots into existence, quietly — called on every
+/// command, so there is no first-run ceremony: install → `roster worker
+/// init <name>` → go. Idempotent, cheap on the happy path, and it never
+/// overwrites an existing file.
+pub fn ensure() -> Result<(), BErr> {
+    for (_, dir) in dirs() {
+        if !dir.exists() {
+            std::fs::create_dir_all(&dir)?;
+        }
+    }
+    let org = paths::org_file();
+    if !org.exists() {
+        std::fs::write(&org, STARTER_ORG)?;
+        eprintln!(
+            "roster: initialized a fresh deployment (org.toml at {})",
+            org.display()
+        );
+    }
+    Ok(())
+}
+
+/// The loud explicit form — harmless, kept for muscle memory and scripts.
+pub fn run() -> Result<(), BErr> {
+    for (label, dir) in dirs() {
         if !dir.exists() {
             std::fs::create_dir_all(&dir)?;
             println!("created {label:<15} {}", dir.display());

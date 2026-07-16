@@ -6,7 +6,7 @@
 pub mod channel;
 pub mod connections;
 pub mod create;
-pub mod gates;
+pub mod approvals;
 pub mod worker;
 pub mod init;
 pub mod knowledge;
@@ -14,4 +14,3 @@ pub mod memory;
 pub mod runs;
 pub mod server;
 pub mod task;
-pub mod vault;

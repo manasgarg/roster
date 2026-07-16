@@ -34,6 +34,15 @@ pub enum RunSurface {
     TermSession,
 }
 
+/// Where a task's results should be delivered — routing metadata, never
+/// provenance: it names a room without tainting the run (a clean run keeps
+/// its writable knowledge shelf).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplyTo {
+    pub provider: String,
+    pub channel: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -42,6 +51,8 @@ pub struct TaskInput {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<ReplyTo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -627,6 +638,24 @@ Roster supplies your identity, purpose, and scope in labeled system blocks like 
 - Keep your notes worth keeping: short, true, useful to the next you.
 - Leaving work unfinished with a clear note is fine. Saying it's done when it isn't is the one thing that really costs you.
 
+## Conversations and tasks
+
+You run in one of two ways, and which one this is decides what you can touch.
+
+A conversation — Discord, Slack, or the operator's terminal — is a warm session. Messages arrive as turns; after enough quiet the session winds down, and the next message wakes a fresh one. Because people are in the room, the run carries interaction context: memory about them is recalled for you, and the knowledge shelf is mounted read-only. That is the deliberate trade of the boundary, not a missing permission — what people say must never flow straight into the durable record of the world.
+
+A task is a work order that runs later, alone: a fresh box with no channel and no participants in it, a wall-clock ceiling, and — because nothing conversational is in the room — the writable knowledge shelf. The mirror-image trade applies: a task run recalls no interaction memory.
+
+## Your tasks
+
+Your plan lives in one file: the task partition mounted read-only-in-spirit at $ROSTER_TASKS_FILE (/opt/roster/tasks.json), present in every run. It holds your pending tasks and your recurring templates, with a version number. It is fully yours to reshape — reorder, reschedule (scheduled_at, RFC3339 UTC like 2026-07-18T09:00:00Z), chain work (depends_on lists task ids that must complete first), cancel entries by omitting them, and create or retire recurring templates (schedule is 5-field cron in the host's local time, e.g. "0 9 * * 1-5"). Save a reshape with the set_tasks action, passing base_version = the version you read; if someone changed the document meanwhile the call fails with the current version — re-read the file and retry. Editing the file directly changes nothing; it is a view.
+
+For a single quick addition, file_task adds one task without echoing the whole document; its optional "at" schedules it. "Wake me at T to do X" is nothing special — a task with scheduled_at set and a self-contained prompt (the future run sees only that text; this conversation does not travel with it). Keep participants out of task prompts entirely: no names, handles, or quotes — the host scans and refuses prompts that name people.
+
+Results go back to the room that asked: a task filed from a channel names its reply channel and send tool in this briefing — deliver there. message_user reaches your lead only when the work has no origin room. The host attests every lifecycle step: pending → claimed → completed or failed happens on the host's side, and you never mark your own work done. Finished tasks leave the file for your journal. Work filed at a trusted operator's request always runs; your own initiative is paced by your budget — an over-budget task is late, not lost. A heartbeat wakes you at least every N minutes to curate the list and do what's due, so nothing in your file is ever more than one heartbeat from a chance to act — and if a run crashes or your plan gets confused, the file survives and the next heartbeat recovers it.
+
+Rule of thumb: answer people in the conversation; change the durable world from a task.
+
 ## The knowledge shelf
 
 When /opt/roster/knowledge is mounted, it holds your durable knowledge about the world; ROSTER_KNOWLEDGE_MODE selects the contract. In read mode — how conversations get the shelf — it's consultation only: if something deserves durable research, use file_task to queue it; the filed task runs later with a writable shelf. In append mode, add knowledge only under records/ and end each new filename with --${ROSTER_RECORD_NAMESPACE}_<number>; don't edit existing files or organization/. In reorganization mode, existing records stay immutable, new synthesis records use the same namespace, and organization/ may be rebuilt. The host validates and commits your changes on a clean exit.
@@ -639,13 +668,34 @@ fn runtime_scope(request: &ContextRequest) -> String {
         RunSurface::DirectBox => {
             "This is a direct one-shot Roster run. Work on the supplied task in the mounted workspace and use governed tools for external actions.".into()
         }
-        RunSurface::QueuedTask => match request.run_context.channel_id.as_deref() {
-            Some(channel) => format!(
-                "This is a queued Roster task associated with Discord channel {channel}. Use discord_send with exactly that channel id when a reply is needed. The authorized channel material is mounted read-only at {}.",
-                paths::channel_dir(channel).display()
-            ),
-            None => "This is a queued Roster task with worker-only scope. It has no channel or participant context.".into(),
-        },
+        RunSurface::QueuedTask => {
+            if let Some(channel) = request.run_context.channel_id.as_deref() {
+                // Interaction content is in the run (a relay-style task):
+                // tainted, channel material mounted.
+                format!(
+                    "This is a queued Roster task associated with Discord channel {channel}. Use discord_send with exactly that channel id when a reply is needed. The authorized channel material is mounted read-only at {}.",
+                    paths::channel_dir(channel).display()
+                )
+            } else if let Some(reply) = request.task.as_ref().and_then(|t| t.reply_to.as_ref()) {
+                let ch = &reply.channel;
+                match reply.provider.as_str() {
+                    "discord" => format!(
+                        "This is a clean queued Roster task filed from Discord channel {ch}. No conversation content is present. Deliver your results there with discord_send (channel id exactly {ch}); keep it under a few messages."
+                    ),
+                    "slack" => format!(
+                        "This is a clean queued Roster task filed from Slack channel {ch}. No conversation content is present. Deliver your results there with slack_send (channel id exactly {ch}), in Slack mrkdwn."
+                    ),
+                    "term" => format!(
+                        "This is a clean queued Roster task filed from the operator's terminal channel {ch}. Deliver your results with term_send (channel id exactly {ch}) — they are recorded on that channel and shown to the operator the next time they open roster talk."
+                    ),
+                    other => format!(
+                        "This is a clean queued Roster task filed from channel {ch} (provider {other}). No send tool reaches it; deliver results with message_user."
+                    ),
+                }
+            } else {
+                "This is a queued Roster task with worker-only scope. It has no channel or participant context. If the results matter to your lead, message_user delivers a note.".into()
+            }
+        }
         RunSurface::DiscordSession => {
             let channel = request.run_context.channel_id.as_deref().unwrap_or("");
             let place = if request.run_context.is_dm {
@@ -962,6 +1012,7 @@ mod tests {
                 origin: "manual".into(),
                 text: text.into(),
                 continuation: None,
+                reply_to: None,
             }),
             message: None,
         }

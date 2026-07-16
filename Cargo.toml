@@ -45,8 +45,10 @@ rustls-native-certs = "0.8"
 # Discord gateway (inbound) WebSocket client — reuses our rustls stack.
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 futures-util = "0.3"
+rustyline = "18.0.1"
 
 [dev-dependencies]
+tempfile = "3.27.0"
 x509-parser = "0.18"
 
 [profile.dev]

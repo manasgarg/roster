@@ -747,7 +747,13 @@ fn fingerprint() -> String {
             })
             .unwrap_or_else(|_| format!("{}:absent", path.display()))
     }
-    let mut parts = vec![stamp(&paths::org_file())];
+    // providers.toml feeds registry_json(), which load() validates connections
+    // against — so an edit here must invalidate the cache too, or the daemon
+    // serves a policy that `validate` already rejects.
+    let mut parts = vec![
+        stamp(&paths::org_file()),
+        stamp(&paths::providers_file()),
+    ];
     let mut names: Vec<PathBuf> = std::fs::read_dir(paths::workers_dir())
         .into_iter()
         .flatten()

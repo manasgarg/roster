@@ -252,13 +252,10 @@ fn read_partition(worker: &str) -> Partition {
 fn save(worker: &str, p: &mut Partition) -> Result<(), BErr> {
     p.version += 1;
     let file = tasks_file(worker);
-    if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     let text = format!("{}\n", serde_json::to_string_pretty(p)?);
-    let tmp = file.with_extension("json.tmp");
-    std::fs::write(&tmp, &text)?;
-    std::fs::rename(&tmp, &file)?;
+    // Atomic + fsynced: a power loss just after the rename can't leave a
+    // zero-length tasks.json that the next tick would read as empty and save over.
+    crate::statefile::write_atomic(&file, text.as_bytes())?;
     render_view(worker, p);
     Ok(())
 }

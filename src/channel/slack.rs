@@ -310,6 +310,7 @@ async fn handle_message(
         user_id.to_string(),
         format!("{text}{hint}"),
         context,
+        bot_token,
     )
     .await;
 }
@@ -335,6 +336,7 @@ async fn route_to_session(
     author_label: String,
     text: String,
     context: crate::worker::memory::RunContext,
+    bot_token: &str,
 ) {
     let start_context = context.clone();
     let message = crate::run::boxed::SessionMessage {
@@ -365,8 +367,10 @@ async fn route_to_session(
         .unwrap()
         .insert(channel_id.to_string(), tx);
     let (w, run_id) = (worker.to_string(), crate::run::boxed::new_run_id());
+    let (channel_owned, token_owned) = (channel_id.to_string(), bot_token.to_string());
+    let thread = start_context.thread_ts.clone();
     tokio::spawn(async move {
-        if let Err(e) = crate::run::boxed::run_session(
+        let failed = crate::run::boxed::run_session(
             &w,
             &run_id,
             crate::worker::context::RunSurface::SlackSession,
@@ -376,8 +380,23 @@ async fn route_to_session(
             None,
         )
         .await
+        .err()
+        .map(|e| e.to_string());
         {
-            eprintln!("slack session error: {e}");
+            let mut map = sessions().lock().unwrap();
+            if map.get(&channel_owned).map(|tx| tx.is_closed()).unwrap_or(false) {
+                map.remove(&channel_owned);
+            }
+        }
+        if let Some(msg) = failed {
+            eprintln!("slack session error: {msg}");
+            let _ = post_message(
+                &token_owned,
+                &channel_owned,
+                "⚠️ I couldn't finish that just now — my box failed to start or exited early. Nothing unsaved was kept; please try again in a moment.",
+                thread.as_deref(),
+            )
+            .await;
         }
     });
 }

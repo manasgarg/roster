@@ -13,6 +13,23 @@ pub fn judge(req: &GovernedRequest, policy: &Policy) -> (Verdict, Option<String>
     (Verdict::Deny, None)
 }
 
+/// Collapse `.`/`..`/empty segments in a URL path so a prefix check can't be
+/// fooled by dot-segments that an upstream would later resolve. Purely lexical
+/// (no filesystem), matching how servers normalize request-targets.
+fn normalize_path(path: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            s => out.push(s),
+        }
+    }
+    format!("/{}", out.join("/"))
+}
+
 fn matches(m: &Match, req: &GovernedRequest) -> bool {
     if let Some(p) = &m.protocol {
         if !p.values().iter().any(|v| v.as_str() == req.protocol) {
@@ -39,7 +56,10 @@ fn matches(m: &Match, req: &GovernedRequest) -> bool {
         }
     }
     if let Some(pp) = &m.path_prefix {
-        if !req.path.starts_with(pp) {
+        // Match the NORMALIZED path: raw starts_with lets "/allowed/../admin"
+        // pass the prefix while an upstream that collapses dot-segments resolves
+        // it to "/admin", escaping the confinement.
+        if !normalize_path(&req.path).starts_with(pp) {
             return false;
         }
     }
@@ -141,6 +161,24 @@ mod tests {
         let (v, r) = judge(&req(), &Policy::empty());
         assert_eq!(v, Verdict::Deny);
         assert!(r.is_none());
+    }
+
+    #[test]
+    fn path_prefix_resists_dot_segment_escape() {
+        assert_eq!(normalize_path("/v1/readonly/../admin"), "/v1/admin");
+        assert_eq!(normalize_path("/v1/readonly/../../admin"), "/admin");
+        assert_eq!(normalize_path("/v1/readonly/./get"), "/v1/readonly/get");
+        let p = policy(
+            r#"{"rules":[{"name":"ro","match":{"host":["api.example.com"],"pathPrefix":"/v1/readonly/"},"verdict":"allow"}]}"#,
+        );
+        let mut good = req();
+        good.host = "api.example.com".into();
+        good.path = "/v1/readonly/thing".into();
+        assert_eq!(judge(&good, &p).0, Verdict::Allow);
+        let mut escape = req();
+        escape.host = "api.example.com".into();
+        escape.path = "/v1/readonly/../admin".into();
+        assert_eq!(judge(&escape, &p).0, Verdict::Deny);
     }
 
     #[test]

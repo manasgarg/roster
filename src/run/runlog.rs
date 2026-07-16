@@ -417,16 +417,25 @@ fn render_content(content: &Value) -> String {
 pub fn files(path: &Path) -> Vec<(String, u64)> {
     fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, u64)>) {
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            // Never follow a symlink: the box can write into this tree, and a
+            // planted `ln -s /` (host enumeration) or `ln -s .` (infinite
+            // recursion) would otherwise be walked. file_type() does not follow.
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
             let path = entry.path();
-            if path.is_dir() {
+            if ft.is_dir() {
                 walk(base, &path, out);
-            } else if let Ok(meta) = entry.metadata() {
-                let relative = path
-                    .strip_prefix(base)
-                    .unwrap_or(&path)
-                    .display()
-                    .to_string();
-                out.push((relative, meta.len()));
+            } else if ft.is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    let relative = path
+                        .strip_prefix(base)
+                        .unwrap_or(&path)
+                        .display()
+                        .to_string();
+                    out.push((relative, meta.len()));
+                }
             }
         }
     }

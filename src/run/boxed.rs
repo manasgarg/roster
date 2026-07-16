@@ -285,7 +285,7 @@ async fn run_box(
         (spec.worker, spec.run_id, spec.task_id, spec.ceiling_min);
     let Provisioned {
         mut args,
-        identity_file,
+        identity: _identity, // held for its Drop: removes the token on any exit
         container,
         session_dir,
         run_dir,
@@ -352,7 +352,7 @@ async fn run_box(
         }
     };
     let _ = stream.await;
-    let _ = std::fs::remove_file(&identity_file); // single-use token
+    // _identity drops at function end and removes the single-use token.
     finalize_storage(&mut storage, ended_by == "exit" && status.success());
     let _ = crate::run::runlog::finish(run_id, ended_by, status.code());
 
@@ -398,7 +398,7 @@ pub async fn run_session(
 
     let Provisioned {
         mut args,
-        identity_file,
+        identity: _identity, // held for its Drop: removes the token on any exit
         container,
         session_dir,
         run_dir,
@@ -553,7 +553,7 @@ pub async fn run_session(
     drop(stdin);
     docker_kill(&container).await;
     let _ = child.wait().await;
-    let _ = std::fs::remove_file(&identity_file); // single-use token
+    // _identity drops at function end and removes the single-use token.
     finalize_storage(&mut storage, clean_exit);
     let _ = crate::run::runlog::finish(
         run_id,
@@ -643,9 +643,22 @@ fn append_cache_session_id(args: &mut Vec<String>, route_key: &str) {
 /// identity token, and the docker args through the image + cwd. Shared by the
 /// one-shot runner and the rpc session runner so the lockdown/identity setup is
 /// defined exactly once.
+/// The minted per-run identity token file. Removed on drop, so any error or
+/// panic between provisioning and the box's exit still cleans up the token
+/// rather than leaving a valid gateway credential on disk.
+struct IdentityToken {
+    path: PathBuf,
+}
+
+impl Drop for IdentityToken {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 struct Provisioned {
     args: Vec<String>,
-    identity_file: PathBuf,
+    identity: IdentityToken,
     container: String,
     session_dir: PathBuf,
     run_dir: PathBuf,
@@ -903,7 +916,9 @@ async fn provision_box(
 
     Ok(Provisioned {
         args,
-        identity_file,
+        identity: IdentityToken {
+            path: identity_file,
+        },
         container,
         // The container-side session path pi is pointed at (`--session-dir`);
         // on the host this maps back to `session` (run_dir/session).

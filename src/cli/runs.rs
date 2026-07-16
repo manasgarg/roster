@@ -6,7 +6,7 @@ use crate::worker::journal;
 use crate::worker::memory;
 use crate::run::runlog;
 use crate::util::BErr;
-use crate::work::queue;
+use crate::work::tms;
 
 pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
     if limit == 0 {
@@ -102,7 +102,7 @@ pub fn show(id: &str) -> Result<(), BErr> {
     println!("path      {}", run.run_dir.display());
 
     if let Some(task_id) = &run.task_id {
-        if let Some(task) = queue::find(task_id) {
+        if let Some(task) = tms::find(task_id) {
             println!("\ntask prompt:\n{}", task.prompt);
         }
     }

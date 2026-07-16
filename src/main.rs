@@ -52,9 +52,10 @@ enum Cmd {
     Worker(WorkerCmd),
     /// Talk with a worker right here in the terminal — a trusted chat channel
     Talk {
-        /// The worker to talk to
-        name: String,
-        /// End after this much quiet, in seconds
+        /// The worker to talk to (omit: list workers, or create "elf" on first run)
+        name: Option<String>,
+        /// Wind a quiet session down after this many seconds (the
+        /// conversation stays open; your next message wakes a fresh one)
         #[arg(long, default_value_t = 300)]
         idle: u64,
     },
@@ -86,9 +87,9 @@ enum ServerCmd {
     /// Parse and check all config; print every error (config loads live)
     #[command(alias = "deploy")]
     Validate,
-    /// The approval desk: list, inspect, approve, deny
-    #[command(subcommand)]
-    Gates(GatesCmd),
+    /// The approval desk: what is pending your approval; inspect, approve, deny
+    #[command(subcommand, alias = "gates")]
+    Approvals(ApprovalsCmd),
     /// Channel edges: trust designation, response mode, memory settings
     #[command(subcommand)]
     Channel(ChannelCmd),
@@ -98,8 +99,8 @@ enum ServerCmd {
 }
 
 #[derive(Subcommand)]
-enum GatesCmd {
-    /// Pending gates
+enum ApprovalsCmd {
+    /// What is pending your approval
     Ls {
         #[arg(long)]
         json: bool,
@@ -396,6 +397,12 @@ async fn main() {
     }
 
     let cli = Cli::parse();
+    // No first-run ceremony: the deployment roots and a starter org.toml
+    // exist by the time any command needs them (idempotent, quiet).
+    if let Err(e) = cli::init::ensure() {
+        eprintln!("roster: could not initialize the deployment roots: {e}");
+        std::process::exit(1);
+    }
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
         Cmd::Init => cli::init::run(),
         Cmd::Server(cmd) => match cmd {
@@ -407,11 +414,13 @@ async fn main() {
             } => cli::server::run(cap, once, no_listen, &addr).await,
             ServerCmd::Status { json } => cli::server::status(json).await,
             ServerCmd::Validate => cli::server::validate(),
-            ServerCmd::Gates(cmd) => match cmd {
-                GatesCmd::Ls { json } => cli::gates::ls(json),
-                GatesCmd::Show { id } => cli::gates::show(&id),
-                GatesCmd::Approve { id, note } => cli::gates::approve(&id, note.as_deref()).await,
-                GatesCmd::Deny { id, note } => cli::gates::deny(&id, note.as_deref()),
+            ServerCmd::Approvals(cmd) => match cmd {
+                ApprovalsCmd::Ls { json } => cli::approvals::ls(json),
+                ApprovalsCmd::Show { id } => cli::approvals::show(&id),
+                ApprovalsCmd::Approve { id, note } => {
+                    cli::approvals::approve(&id, note.as_deref()).await
+                }
+                ApprovalsCmd::Deny { id, note } => cli::approvals::deny(&id, note.as_deref()),
             },
             ServerCmd::Channel(cmd) => match cmd {
                 ChannelCmd::Ls { json } => cli::channel::ls(json),
@@ -476,7 +485,10 @@ async fn main() {
             CredentialCmd::Add { provider } => credential::connect::run(&provider).await,
             CredentialCmd::Ls { json } => cli::vault::ls(json),
         },
-        Cmd::Talk { name, idle } => run::session::talk(&name, idle).await,
+        Cmd::Talk { name, idle } => match name {
+            Some(name) => run::session::talk(&name, idle).await,
+            None => talk_bare(idle).await,
+        },
         Cmd::Worker(cmd) => match cmd {
             WorkerCmd::Init { name } => cli::create::run(&name),
             WorkerCmd::Ls { json } => cli::worker::ls(json),
@@ -542,6 +554,30 @@ async fn main() {
     }
 }
 
+/// `roster talk` with no worker named: on a fresh deployment scaffold "elf"
+/// and start talking — the zero-config first conversation. Otherwise show the
+/// talk help and who is available.
+async fn talk_bare(idle: u64) -> Result<(), Box<dyn std::error::Error>> {
+    let workers = worker::names();
+    if workers.is_empty() {
+        eprintln!("no workers yet — creating one named \"elf\"");
+        cli::create::run("elf")?;
+        return run::session::talk("elf", idle).await;
+    }
+    use clap::CommandFactory;
+    Cli::command()
+        .find_subcommand("talk")
+        .expect("talk subcommand exists")
+        .clone()
+        .bin_name("roster talk")
+        .print_help()?;
+    println!("\nworkers:");
+    for name in workers {
+        println!("  {name}");
+    }
+    Ok(())
+}
+
 /// Where each pre-clap command lives now. Kept until the muscle memory fades.
 fn legacy_pointer(first: &str) -> Option<&'static str> {
     Some(match first {
@@ -550,7 +586,7 @@ fn legacy_pointer(first: &str) -> Option<&'static str> {
         "supervise" => "roster server start  (the daemons merged; --cap and --once moved there)",
         "listen" => "roster server start  (listeners start for every worker with a [channels] entry)",
         "deploy" => "roster server validate  (config now loads live — there is no deploy step)",
-        "gates" => "roster server gates <ls|show|approve|deny>",
+        "gates" => "roster server approvals <ls|show|approve|deny>",
         "channel" => "roster server channel <ls|show|trust|untrust|set>",
         "connect" => "roster credential add <provider>",
         "create" => "roster worker init <name>",

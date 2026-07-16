@@ -32,7 +32,7 @@ talk              <worker> [--idle SECS]  chat with a worker, right here
 server start      [--cap N] [--once] [--no-listen] [--addr HOST:PORT]
 server status     [--json]
 server validate   parse + check all config, print every error
-server gates      ls [--json] | show <id> | approve <id> [note] | deny <id> [note]
+server approvals  ls [--json] | show <id> | approve <id> [note] | deny <id> [note]
 server channel    ls [--json] | show <id> | trust <id> | untrust <id>
                   | set <id> <key> <value>
                     keys: mode, memory, memory-inferred, memory-kinds,
@@ -103,7 +103,7 @@ validate is how you check an edit before the next read picks it up.
 **`server status`** reports daemon health: components, queue depth, pending
 gates, and the compiled config.
 
-**`server gates`** is the approval desk. `ls` shows what's waiting; `show`
+**`server approvals`** is the approval desk. `ls` shows what's waiting; `show`
 prints the exact action that would execute (identity and code gates render a
 diff); `approve` executes it idempotently; `deny` records the refusal. Both
 accept an optional note. See [actions-and-trust.md](actions-and-trust.md).

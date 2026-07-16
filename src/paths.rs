@@ -106,6 +106,27 @@ pub fn worker_queue_dir(worker: &str) -> PathBuf {
     worker_data_dir(worker).join("queue")
 }
 
+/// The TMS partition document (docs/specs/task-management.md).
+pub fn worker_tasks_file(worker: &str) -> PathBuf {
+    worker_data_dir(worker).join("tasks").join("tasks.json")
+}
+
+/// The TMS journal: completed/failed tasks and expired templates, append-only.
+pub fn worker_tasks_journal(worker: &str) -> PathBuf {
+    worker_data_dir(worker).join("tasks").join("journal.jsonl")
+}
+
+/// The box-facing view of a worker's partition (state: rewritten in place on
+/// every mutation so live bind mounts stay fresh; edits to it are scratch).
+pub fn tms_view_file(worker: &str) -> PathBuf {
+    state_root().join("tms-view").join(format!("{}.json", short_worker(worker)))
+}
+
+/// Recurrence cursors (last spawn per template) — reconstructible state.
+pub fn tms_cursors_file() -> PathBuf {
+    state_root().join("tms-cursors.json")
+}
+
 pub fn worker_journal_file(worker: &str) -> PathBuf {
     worker_data_dir(worker).join("journal").join("events.jsonl")
 }
@@ -192,8 +213,9 @@ pub fn outbox_dir() -> PathBuf {
     state_root().join("outbox")
 }
 
-pub fn trigger_state_file() -> PathBuf {
-    state_root().join("trigger-state.json")
+/// Readline history for `roster talk` — operator convenience, prunable.
+pub fn talk_history_file() -> PathBuf {
+    state_root().join("talk-history")
 }
 
 #[cfg(test)]

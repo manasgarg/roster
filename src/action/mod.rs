@@ -403,9 +403,9 @@ fn resolve_followup(g: &Gate) {
     if g.task_id.is_empty() {
         return;
     }
-    if let Some(mut task) = crate::work::queue::find(&g.task_id) {
+    if let Some(task) = crate::work::tms::find(&g.task_id) {
         if task.state == "needs-review" && gate::pending_for_task(&task.id).is_empty() {
-            let _ = crate::work::queue::set_state(&mut task, "done");
+            let _ = crate::work::tms::finish(&task.worker, &task.id, "completed");
         }
     }
 
@@ -436,16 +436,16 @@ fn resolve_followup(g: &Gate) {
         g.intent, g.id, outcome
     );
     let context = json!({ "resolved_gate": { "id": g.id, "intent": g.intent, "state": g.state, "result": g.result, "decided_by": g.decided_by, "note": g.decision_note } });
-    let _ = crate::work::queue::create(
+    let _ = crate::work::tms::add(
         &short,
-        &prompt,
-        "continuation",
-        false,
-        15.0,
-        "append",
-        context,
-        None,
-        None,
+        crate::work::tms::Draft {
+            prompt,
+            created_by: "gate".into(),
+            standing: "owner".into(),
+            ceiling_min: 15.0,
+            context,
+            ..Default::default()
+        },
     );
     journal::append(
         &g.worker,
@@ -475,7 +475,11 @@ pub async fn run_executor(
         "purpose" => exec_purpose(payload),
         "discord" => exec_discord(worker, payload).await,
         "slack" => exec_slack(worker, payload).await,
-        "task" => exec_file_task(worker, payload, run_id),
+        "term" => exec_term_send(worker, payload),
+        "task" => match intent {
+            "set-tasks" => exec_set_tasks(worker, payload, run_id),
+            _ => exec_file_task(worker, payload, run_id),
+        },
         "note" => crate::worker::memory::execute(worker, intent, payload, run_id),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
@@ -516,16 +520,32 @@ fn exec_file_task(worker: &str, payload: &Value, run_id: &str) -> Result<Value, 
         return Err(reason);
     }
 
-    let task = crate::work::queue::create(
+    // Standing inherits the room: a trusted operator's ask is owner work;
+    // untrusted contexts and autonomous runs are proactive (budget-paced).
+    let standing = if matches!(context.role.as_str(), "host-op" | "admin" | "trusted") {
+        "owner"
+    } else {
+        "proactive"
+    };
+    let scheduled_at = payload
+        .get("at")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let task = crate::work::tms::add(
         crate::paths::short_worker(worker),
-        prompt,
-        "worker",
-        true, // worker-initiated: budget-gated at dispatch like other proactive work
-        ceiling,
-        "append",
-        Value::Null,
-        None,
-        None,
+        crate::work::tms::Draft {
+            prompt: prompt.to_string(),
+            created_by: "agent".into(),
+            standing: standing.into(),
+            ceiling_min: ceiling,
+            tags: crate::work::tms::Tags {
+                provider: Some(context.provider.clone()).filter(|p| !p.is_empty()),
+                channel: context.channel_id.clone(),
+                user: context.user_id.clone(),
+            },
+            scheduled_at,
+            ..Default::default()
+        },
     )
     .map_err(|e| e.to_string())?;
     journal::append(
@@ -535,7 +555,75 @@ fn exec_file_task(worker: &str, payload: &Value, run_id: &str) -> Result<Value, 
         json!({ "task_id": task.id, "prompt": prompt }),
     );
     eprintln!("file-task [{worker}] → {} ({} min)", task.id, ceiling);
-    Ok(json!({ "task_id": task.id, "state": "waiting" }))
+    Ok(json!({ "task_id": task.id, "state": task.state }))
+}
+
+/// `term_send` — deliver results to a terminal channel: append to the
+/// channel's recorded history; `roster talk` shows what arrived while the
+/// operator was away. The terminal is a real reply target, not inbound-only.
+fn exec_term_send(worker: &str, payload: &Value) -> Result<Value, String> {
+    let channel = payload
+        .get("channel_id")
+        .and_then(|v| v.as_str())
+        .ok_or("term-send needs a \"channel_id\"")?;
+    if !channel.starts_with("term-") {
+        return Err(format!(
+            "term-send is for terminal channels (term-…), not \"{channel}\" — use the platform's send tool"
+        ));
+    }
+    let text = payload
+        .get("text")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or("term-send needs non-empty \"text\"")?;
+    let short = crate::paths::short_worker(worker);
+    crate::channel::discord::persist_message(
+        channel,
+        &json!({
+            "ts": crate::util::now_rfc3339(),
+            "author_id": short, "author": short, "role": "worker",
+            "content": text, "attachments": [],
+        }),
+    );
+    eprintln!("term-send [{worker}] → channel {channel}");
+    Ok(json!({ "delivered": "terminal", "channel_id": channel }))
+}
+
+/// `set_tasks` — the agent's curation write over its own TMS partition
+/// (docs/specs/task-management.md): one optimistically-concurrent document
+/// swap, validated host-side; a rejection tells the agent to re-read the
+/// mounted view and retry.
+fn exec_set_tasks(worker: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
+    if run_id.is_empty() {
+        return Err("set-tasks needs a trusted run context".into());
+    }
+    let base_version = payload
+        .get("base_version")
+        .and_then(|v| v.as_u64())
+        .ok_or("set-tasks needs \"base_version\" (read it from /opt/roster/tasks.json)")?;
+    let tasks: Vec<crate::work::tms::Task> =
+        serde_json::from_value(payload.get("tasks").cloned().unwrap_or_else(|| json!([])))
+            .map_err(|e| format!("tasks: {e}"))?;
+    let recurring: Vec<crate::work::tms::Recurring> =
+        serde_json::from_value(payload.get("recurring").cloned().unwrap_or_else(|| json!([])))
+            .map_err(|e| format!("recurring: {e}"))?;
+    let context = crate::worker::memory::load_run_context(run_id);
+    let short = crate::paths::short_worker(worker);
+    match crate::work::tms::set_tasks(short, base_version, tasks, recurring, &context) {
+        Ok(p) => {
+            journal::append(
+                worker,
+                run_id,
+                "tasks-set",
+                json!({ "version": p.version, "tasks": p.tasks.len(), "recurring": p.recurring.len() }),
+            );
+            Ok(json!({ "status": "ok", "version": p.version }))
+        }
+        Err(rej) => Err(format!(
+            "set_tasks rejected: {} — re-read /opt/roster/tasks.json (now version {}) and retry",
+            rej.reason, rej.current.version
+        )),
+    }
 }
 
 async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, String> {
@@ -552,7 +640,7 @@ async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, Strin
             .filter(|s| !s.is_empty());
         if let (Some(token), Some(owner)) = (token, owner) {
             match crate::channel::discord::open_dm(token, owner).await {
-                Ok(dm) => match crate::channel::discord::post_message(token, &dm, text).await {
+                Ok(dm) => match crate::channel::discord::post_chunked(token, &dm, text).await {
                     Ok(_) => {
                         eprintln!("message-user [{worker}] → lead DM");
                         return Ok(json!({ "delivered": "discord-dm" }));
@@ -619,7 +707,7 @@ async fn exec_discord(worker: &str, payload: &Value) -> Result<Value, String> {
         .get("token")
         .and_then(|v| v.as_str())
         .ok_or("discord credential has no token")?;
-    let id = crate::channel::discord::post_message(token, channel, text).await?;
+    let id = crate::channel::discord::post_chunked(token, channel, text).await?;
     eprintln!("discord [{worker}] → channel {channel}");
     Ok(json!({ "sent": true, "channel_id": channel, "message_id": id }))
 }

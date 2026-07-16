@@ -44,7 +44,12 @@ model calls in transit. Two pieces:
 roster credential add openai-codex     # or: anthropic
 ```
 
-runs the provider's login flow and stores the credential in the vault. Then
+runs the provider's login flow and stores the credential in the vault.
+(`roster server start` offers this on its own when the vault holds no LLM
+credential: it can import an existing pi login — always asking first, never
+silently — or run the login inline. Import-and-own: after an import,
+roster's gateway owns the token refresh, and pi simply re-logs-in the next
+time it needs to.) Then
 grant the model hosts in `org.toml`, with injection:
 
 ```toml
@@ -109,9 +114,9 @@ executor = "email"
 Proposals then wait at the approval desk:
 
 ```bash
-roster server gates ls
-roster server gates show g-8f3a     # the exact bytes that would go out
-roster server gates approve g-8f3a
+roster server approvals ls
+roster server approvals show g-8f3a     # the exact bytes that would go out
+roster server approvals approve g-8f3a
 ```
 
 As a worker builds a track record you can let routine things through
@@ -137,16 +142,14 @@ action still governed. Channels start untrusted (replies gate);
 
 ## Give it standing work
 
-```toml
-# workers/yuko/worker.toml
-[[trigger]]
-schedule = "every 6h"
-prompt   = "sweep the feeds; file tasks for anything worth a deep dive"
-```
-
-Trigger-filed work is proactive and budget-gated; work you file always
-runs. Add budgets in `org.toml` before the fleet grows —
-[gateway.md](gateway.md) has the model.
+Write the standing purpose into the worker's identity ("sweep the feeds;
+keep the digest current") and let the machinery carry it: every worker has
+a **heartbeat** (default every 30m, tuned per worker with
+`heartbeat = "1h"` in its spec) that wakes it to curate its own task list —
+where it schedules one-shot tasks and cron recurring templates for itself
+(see [work.md](work.md)). Its self-initiated work is proactive and
+budget-gated; work you file always runs. Add budgets in `org.toml` before
+the fleet grows — [gateway.md](gateway.md) has the model.
 
 ## Where to go next
 

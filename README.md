@@ -66,7 +66,7 @@ roster server start &           # the one daemon: gateway + queue + chat listene
 
 roster worker run yuko "find three recent papers on X and summarize them"
 roster worker ls                   # your workers, at a glance
-roster server gates ls          # anything waiting for your approval
+roster server approvals ls          # anything waiting for your approval
 roster server runs ls           # everything that has run, ever
 ```
 

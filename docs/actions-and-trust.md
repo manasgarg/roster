@@ -49,10 +49,10 @@ is appended to the permanent audit log.
 ## The approval desk
 
 ```bash
-roster server gates ls               # what's waiting
-roster server gates show g-8f3a      # the exact bytes that would go out
-roster server gates approve g-8f3a   # a human decides
-roster server gates deny g-8f3a "not this recipient"
+roster server approvals ls               # what's waiting
+roster server approvals show g-8f3a      # the exact bytes that would go out
+roster server approvals approve g-8f3a   # a human decides
+roster server approvals deny g-8f3a "not this recipient"
 ```
 
 A gate is a timestamped state machine:

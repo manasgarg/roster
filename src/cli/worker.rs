@@ -10,22 +10,8 @@ use crate::worker::memory;
 use crate::paths;
 use crate::util::now_ms;
 use crate::util::BErr;
-use crate::work::queue;
+use crate::work::tms;
 use std::collections::BTreeMap;
-
-fn worker_names() -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(paths::workers_dir())
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().join("worker.toml").exists())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default();
-    names.sort();
-    names
-}
 
 fn knowledge_head(worker: &str) -> Option<String> {
     let repo = crate::worker::knowledge::repo_path(worker).ok()?;
@@ -42,14 +28,14 @@ fn knowledge_head(worker: &str) -> Option<String> {
 
 fn queue_counts(worker: &str) -> BTreeMap<String, usize> {
     let mut by_state = BTreeMap::new();
-    for t in queue::list_all().into_iter().filter(|t| t.worker == worker) {
+    for t in tms::list_all().into_iter().filter(|t| t.worker == worker) {
         *by_state.entry(t.state).or_insert(0) += 1;
     }
     by_state
 }
 
 pub fn ls(json: bool) -> Result<(), BErr> {
-    let names = worker_names();
+    let names = crate::worker::names();
     if json {
         let rows: Vec<serde_json::Value> = names
             .iter()
@@ -119,7 +105,10 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
         .into_iter()
         .filter(|g| g.state == "pending")
         .collect();
-    let triggers = worker_triggers(name);
+    let heartbeat = crate::config::snapshot()
+        .ok()
+        .and_then(|c| c.heartbeats.get(name).cloned())
+        .unwrap_or_else(|| "every 30m".into());
     let counts = queue_counts(name);
     let memory_notes = memory::list(name).len();
     let knowledge = crate::worker::knowledge::repo_path(name).ok();
@@ -133,7 +122,7 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
             "budget": balances.iter().map(|(l, used)| serde_json::json!({
                 "currency": l.currency, "window": l.window.label(), "used": used, "max": l.max, "scope": l.scope,
             })).collect::<Vec<_>>(),
-            "triggers": triggers,
+            "heartbeat": heartbeat,
             "memory_notes": memory_notes,
             "knowledge": knowledge.as_ref().map(|p| p.display().to_string()),
             "knowledge_head": knowledge_head(name),
@@ -182,17 +171,7 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
             );
         }
     }
-    for t in &triggers {
-        println!(
-            "trigger   {}  (ceiling {} min): {}",
-            t.get("schedule").and_then(|v| v.as_str()).unwrap_or("?"),
-            t.get("ceiling_min").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            crate::run::runlog::one_line(
-                t.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
-                60
-            )
-        );
-    }
+    println!("heartbeat {heartbeat}");
     println!("memory    {memory_notes} note(s)");
     if let Some(repo) = knowledge {
         println!(
@@ -203,18 +182,6 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
     }
     println!("\ntrust: roster worker trust {name}   work: roster worker task ls");
     Ok(())
-}
-
-fn worker_triggers(name: &str) -> Vec<serde_json::Value> {
-    crate::config::snapshot()
-        .map(|c| {
-            c.triggers
-                .iter()
-                .filter(|t| t.get("worker").and_then(|w| w.as_str()) == Some(name))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// Per-action trust, read-only: what the worker may propose, the default level,

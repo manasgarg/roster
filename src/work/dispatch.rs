@@ -1,21 +1,21 @@
 //! The task-dispatch half of `roster server start`: the trusted orchestration
-//! loop. It dispatches waiting tasks to the box (bounded concurrency), and when
-//! a run ends decides whether the task is done or needs review (it filed a
-//! gate). Runs beside the gateway in the same daemon, sharing the same on-disk
-//! state. See docs/work.md.
+//! loop, a dumb executor over the TMS (docs/specs/task-management.md). Each
+//! tick it asks the TMS who is due, applies its own envelope — the concurrency
+//! cap, and budgets for proactive standing — runs one governed box per task,
+//! and attests claim/complete/fail back. It holds no plan and no timer.
 
 use crate::action::gate;
 use crate::gateway::ledger;
 use crate::run::boxed;
-use crate::work::queue;
-use crate::work::trigger;
+use crate::work::tms;
+use std::collections::HashSet;
 use std::time::Duration;
 use tokio::task::JoinSet;
 
 type BErr = Box<dyn std::error::Error>;
 
-/// How often the loop re-polls the queue (for newly-filed tasks) whether idle or
-/// running boxes — the ceiling on dispatch latency.
+/// How often the loop re-polls the TMS whether idle or running boxes — the
+/// ceiling on dispatch latency.
 const POLL_SECS: u64 = 2;
 
 pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
@@ -23,99 +23,135 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
         return Err("--cap wants a positive integer".into());
     }
     reclaim();
-    let mut set: JoinSet<(queue::Task, Result<boxed::Outcome, String>)> = JoinSet::new();
+    let mut set: JoinSet<(tms::Task, Result<boxed::Outcome, String>)> = JoinSet::new();
+    // Tasks handed to boxes this tick-cycle but not yet joined, so a slow
+    // journal write can't double-dispatch.
+    let mut in_flight: HashSet<String> = HashSet::new();
 
     loop {
         // Broken config = no governance guarantees; pause dispatch until it
         // parses again. The gateway is failing closed in parallel.
-        if let Err(e) = crate::config::snapshot() {
-            eprintln!("dispatch paused — config invalid:\n{e}");
-            if once {
-                return Err("config invalid".into());
+        let config = match crate::config::snapshot() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("dispatch paused — config invalid:\n{e}");
+                if once {
+                    return Err("config invalid".into());
+                }
+                tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
+                continue;
             }
-            tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
-            continue;
-        }
-        // Fire any due schedule triggers, which file proactive tasks (§3.5).
-        trigger::fire();
+        };
 
-        // Fill idle slots with the next waiting tasks (each atomically claimed).
-        while set.len() < cap {
-            let Some(mut task) = queue::claim_next() else {
-                break;
-            };
-            // D6: proactive work is soft-stopped when the worker is over budget;
-            // owner-filed/continuation work always runs.
-            if task.proactive {
-                let limits = crate::gateway::budget::load_budget().limits;
-                if let Some(reason) =
-                    ledger::over_any_limit(&task.subject(), &limits, crate::util::now_ms())
-                {
-                    eprintln!("defer {} (proactive, {reason})", task.id);
-                    let _ = queue::set_state(&mut task, "deferred");
+        // The TMS keeps heartbeats honest and spawns due recurrences inside
+        // due(); what comes back is eligibility, owner standing first.
+        let mut idle = true;
+        'workers: for due in tms::due(&config.heartbeats) {
+            for task in due.claimable {
+                if set.len() >= cap {
+                    break 'workers;
+                }
+                if in_flight.contains(&task.id) {
                     continue;
                 }
-            }
-            // Record the run id on the task before the box starts, so a crash
-            // leaves a task we can map to its (now dead) container and reclaim.
-            let run_id = boxed::new_run_id();
-            task.run_id = Some(run_id.clone());
-            let _ = queue::save(&task);
-            let memory_context = task_memory_context(&task);
-            let _ = crate::worker::memory::save_run_context(&run_id, &memory_context);
-            eprintln!(
-                "dispatch {} [{}] run {run_id} — {}",
-                task.id,
-                task.worker,
-                first_line(&task.prompt)
-            );
-            let t = task.clone();
-            let context_task = crate::worker::context::TaskInput {
-                task_id: Some(task.id.clone()),
-                origin: task.origin.clone(),
-                text: task.prompt.clone(),
-                continuation: task.context.get("resolved_gate").cloned(),
-            };
-            set.spawn(async move {
-                let code = t.repo.as_ref().map(|r| boxed::CodeSpec {
-                    repo: r.clone(),
-                    base: t.base.clone().unwrap_or_else(|| "main".into()),
-                });
-                let spec = boxed::RunSpec {
-                    worker: &t.worker,
-                    run_id: &run_id,
-                    task_id: &t.id,
-                    ceiling_min: t.ceiling_min,
-                    code: code.as_ref(),
-                    run_context: &memory_context,
-                    knowledge_mode: &t.knowledge_mode,
+                // D6: proactive work is paced by the envelope; owner work
+                // always runs. An unaffordable task is simply late — it stays
+                // claimable and runs when the window clears.
+                if task.proactive() {
+                    let limits = crate::gateway::budget::load_budget().limits;
+                    if ledger::over_any_limit(&task.subject(), &limits, crate::util::now_ms())
+                        .is_some()
+                    {
+                        continue;
+                    }
+                }
+                let run_id = boxed::new_run_id();
+                let task = match tms::claim(&due.worker, &task.id, &run_id) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("dispatch: could not claim {}: {e}", task.id);
+                        continue;
+                    }
                 };
-                let out = boxed::dispatch(spec, context_task)
-                    .await
-                    .map_err(|e| e.to_string());
-                (t, out)
-            });
+                idle = false;
+                in_flight.insert(task.id.clone());
+                let memory_context = task_memory_context(&task);
+                let _ = crate::worker::memory::save_run_context(&run_id, &memory_context);
+                eprintln!(
+                    "dispatch {} [{}] run {run_id} — {}",
+                    task.id,
+                    task.worker,
+                    first_line(&task.prompt)
+                );
+                // Routing, not provenance: the origin channel reaches the
+                // box through the briefing while the run context stays clean
+                // (the tainting context.discord path is only for relays).
+                let reply_to = if memory_context.channel_id.is_none() {
+                    task.tags
+                        .provider
+                        .clone()
+                        .zip(task.tags.channel.clone())
+                        .map(|(provider, channel)| crate::worker::context::ReplyTo {
+                            provider,
+                            channel,
+                        })
+                } else {
+                    None
+                };
+                let context_task = crate::worker::context::TaskInput {
+                    task_id: Some(task.id.clone()),
+                    origin: task.created_by.clone(),
+                    text: task.prompt.clone(),
+                    continuation: task.context.get("resolved_gate").cloned(),
+                    reply_to,
+                };
+                let t = task.clone();
+                set.spawn(async move {
+                    let code = t.repo.as_ref().map(|r| boxed::CodeSpec {
+                        repo: r.clone(),
+                        base: t.base.clone().unwrap_or_else(|| "main".into()),
+                    });
+                    let spec = boxed::RunSpec {
+                        worker: &t.worker,
+                        run_id: &run_id,
+                        task_id: &t.id,
+                        ceiling_min: t.ceiling_min,
+                        code: code.as_ref(),
+                        run_context: &memory_context,
+                        knowledge_mode: &t.knowledge_mode,
+                    };
+                    let out = boxed::dispatch(spec, context_task)
+                        .await
+                        .map_err(|e| e.to_string());
+                    (t, out)
+                });
+            }
         }
 
         if set.is_empty() {
             if once {
-                break;
+                if idle {
+                    break;
+                }
+                continue;
             }
             tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
             continue;
         }
 
-        // Wait for a run to finish, but wake at least every POLL_SECS so a task
-        // filed while a box is running fills a free slot promptly, instead of
-        // waiting for that box to finish.
+        // Wait for a run to finish, but wake at least every POLL_SECS so a
+        // newly due task fills a free slot promptly.
         let joined =
             match tokio::time::timeout(Duration::from_secs(POLL_SECS), set.join_next()).await {
                 Ok(j) => j,
-                Err(_) => continue, // timed out — loop back and re-poll the queue
+                Err(_) => continue, // timed out — loop back and re-poll
             };
         if let Some(joined) = joined {
             match joined {
-                Ok((task, outcome)) => finalize(task, outcome),
+                Ok((task, outcome)) => {
+                    in_flight.remove(&task.id);
+                    finalize(task, outcome);
+                }
                 Err(e) => eprintln!("supervise: a run panicked: {e}"),
             }
         }
@@ -123,27 +159,24 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
     Ok(())
 }
 
-/// On startup, any task still marked `running` is orphaned from a previous
-/// supervisor. If its box container is gone, put it back to `waiting` so it runs
-/// again; if a container is somehow still alive, leave it be (don't double-run).
+/// On startup, any task still `claimed` is orphaned from a previous supervisor.
+/// If its box container is gone, put it back to pending so it runs again; if a
+/// container is somehow still alive, leave it be (don't double-run).
 fn reclaim() {
-    for mut t in queue::list_all()
-        .into_iter()
-        .filter(|t| t.state == "running")
-    {
+    for t in tms::list_all().into_iter().filter(|t| t.state == "claimed") {
         if t.run_id.as_deref().map(boxed::box_alive).unwrap_or(false) {
             eprintln!(
                 "reclaim: {} still has a live box ({}) — leaving it",
                 t.id,
                 t.run_id.as_deref().unwrap_or("")
             );
-        } else if queue::set_state(&mut t, "waiting").is_ok() {
-            eprintln!("reclaim: {} → waiting (no live box)", t.id);
+        } else if tms::finish(&t.worker, &t.id, "pending").is_ok() {
+            eprintln!("reclaim: {} → pending (no live box)", t.id);
         }
     }
 }
 
-fn task_memory_context(task: &queue::Task) -> crate::worker::memory::RunContext {
+fn task_memory_context(task: &tms::Task) -> crate::worker::memory::RunContext {
     let d = task
         .context
         .get("discord")
@@ -176,16 +209,15 @@ fn task_memory_context(task: &queue::Task) -> crate::worker::memory::RunContext 
     }
 }
 
-/// Decide the task's terminal state from how the box ended and whether it left a
-/// gate open. A filed gate → needs-review (a human, then a continuation).
-fn finalize(mut task: queue::Task, outcome: Result<boxed::Outcome, String>) {
+/// Attest the outcome: a filed gate → needs-review (a human, then maybe a
+/// continuation); a clean exit → completed; anything else → failed.
+fn finalize(task: tms::Task, outcome: Result<boxed::Outcome, String>) {
     let next = match outcome {
         Err(e) => {
             eprintln!("task {} failed to run: {e}", task.id);
             "failed"
         }
         Ok(o) => {
-            task.run_id = Some(o.run_id.clone());
             if o.ended_by == "ceiling" {
                 "failed"
             } else if o.exit_code != Some(0) {
@@ -194,11 +226,11 @@ fn finalize(mut task: queue::Task, outcome: Result<boxed::Outcome, String>) {
             } else if !gate::pending_for_task(&task.id).is_empty() {
                 "needs-review"
             } else {
-                "done"
+                "completed"
             }
         }
     };
-    if let Err(e) = queue::set_state(&mut task, next) {
+    if let Err(e) = tms::finish(&task.worker, &task.id, next) {
         eprintln!("supervise: could not update task {}: {e}", task.id);
     } else {
         eprintln!("task {} → {next}", task.id);

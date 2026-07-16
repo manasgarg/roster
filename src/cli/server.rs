@@ -7,7 +7,7 @@
 
 use crate::action::gate;
 use crate::util::BErr;
-use crate::work::queue;
+use crate::work::tms;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -34,6 +34,8 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
         }
     }
 
+    bootstrap_llm_credential().await?;
+
     let gateway = crate::gateway::start(addr).await?;
     eprintln!(
         "roster server {BUILD} — gateway on {addr}; dispatch cap {cap}{}{}",
@@ -58,7 +60,19 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
 
     // Dispatch runs in the foreground: with --once it drains due work and
     // returns; otherwise it loops until the process is stopped.
-    let result = crate::work::dispatch::dispatch_loop(cap, once).await;
+    let dispatch = crate::work::dispatch::dispatch_loop(cap, once);
+    tokio::pin!(dispatch);
+    let result = tokio::select! {
+        r = &mut dispatch => r,
+        sig = shutdown_signal() => {
+            eprintln!("roster server: {sig} — shutting down");
+            // In-flight boxes heard the same signal and are killing their
+            // containers; give those handlers a beat to finish their run logs.
+            // (dispatch is pinned, not dropped, so its spawned runs live on.)
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            Ok(())
+        }
+    };
     gateway.abort();
     for l in listeners {
         l.abort();
@@ -66,19 +80,107 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
     result
 }
 
+/// Resolves when the process is told to stop (SIGTERM or Ctrl-C). The daemon
+/// must listen at the top level: each box run installs its own process-wide
+/// signal stream, which permanently replaces the default die-on-signal
+/// disposition — without this, a SIGTERM arriving after the first box run
+/// finished was silently swallowed (only SIGKILL worked).
+async fn shutdown_signal() -> &'static str {
+    let mut term =
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(s) => s,
+            // Could not install: the kernel's default kill-on-SIGTERM still
+            // applies, so only Ctrl-C needs handling here.
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+                return "SIGINT";
+            }
+        };
+    tokio::select! {
+        _ = term.recv() => "SIGTERM",
+        _ = tokio::signal::ctrl_c() => "SIGINT",
+    }
+}
+
+/// Boxes cannot call a model without an LLM credential in the vault. On an
+/// interactive launch with none present, offer to import the host's pi login
+/// (never silently — the user confirms per provider) or run the provider
+/// login right here; non-interactive launches get the hint and skip.
+/// Import-and-own: after import, roster's gateway owns the refresh and pi's
+/// copy may go stale — pi re-logs-in when it next needs to.
+async fn bootstrap_llm_credential() -> Result<(), BErr> {
+    const LLM_PROVIDERS: [&str; 2] = ["anthropic", "openai-codex"];
+    if LLM_PROVIDERS
+        .iter()
+        .any(|n| crate::credential::vault::get_credential(n).is_some())
+    {
+        return Ok(());
+    }
+    let interactive = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
+    if !interactive {
+        eprintln!(
+            "no LLM credential in the vault — boxes cannot call a model. \
+             Connect one: roster credential add anthropic  (or openai-codex)"
+        );
+        return Ok(());
+    }
+
+    // A host pi login is importable — with confirmation, never silently.
+    let pi_auth = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
+        .join(".pi/agent/auth.json");
+    let pi_logins = std::fs::read_to_string(&pi_auth)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    let mut imported = false;
+    if let Some(logins) = pi_logins.as_ref().and_then(|v| v.as_object()) {
+        for name in LLM_PROVIDERS {
+            let Some(cred) = logins.get(name).filter(|v| v.is_object()) else {
+                continue;
+            };
+            let answer = crate::credential::connect::ask(&format!(
+                "found a pi login for {name}; use it for roster? [y/N] "
+            ))?;
+            if matches!(answer.trim(), "y" | "Y" | "yes") {
+                crate::credential::connect::store(name, cred)
+                    .map_err(|e| format!("could not store {name}: {e}"))?;
+                eprintln!(
+                    "imported {name} — roster now owns the token refresh; \
+                     pi will re-login when it next needs to"
+                );
+                imported = true;
+            }
+        }
+    }
+    if imported {
+        return Ok(());
+    }
+
+    // No import — walk through the provider login right here.
+    let answer = crate::credential::connect::ask(
+        "no LLM credential yet — connect one now? [anthropic / openai-codex / skip] ",
+    )?;
+    match answer.trim() {
+        p @ ("anthropic" | "openai-codex") => crate::credential::connect::run(p)
+            .await
+            .map_err(|e| format!("credential add {p}: {e}"))?,
+        _ => eprintln!("skipped — connect later with: roster credential add <provider>"),
+    }
+    Ok(())
+}
+
 /// `roster server validate` — parse everything, print every error.
 pub fn validate() -> Result<(), BErr> {
     match crate::config::load() {
         Ok(c) => {
             println!(
-                "config valid: {} worker(s) [{}], {} grant(s), {} action(s), {} trust rule(s), {} limit(s), {} trigger(s), {} listener(s), {} exposure(s)",
+                "config valid: {} worker(s) [{}], {} grant(s), {} action(s), {} trust rule(s), {} limit(s), {} heartbeat(s), {} listener(s), {} exposure(s)",
                 c.workers.len(),
                 c.workers.join(", "),
                 c.policy.rules.len(),
                 c.actions.actions.len(),
                 c.actions.trust.len(),
                 c.budget.limits.len(),
-                c.triggers.len(),
+                c.heartbeats.len(),
                 c.listeners.len(),
                 c.exposes.len(),
             );
@@ -112,15 +214,20 @@ pub fn validate() -> Result<(), BErr> {
     }
 }
 
-pub async fn status(json: bool) -> Result<(), BErr> {
-    // Is a gateway answering on the well-known port?
-    let gateway_up = tokio::time::timeout(
+/// Is a gateway answering on the well-known port? The daemon-liveness probe
+/// shared by `server status` and anything that needs the server up (talk).
+pub async fn gateway_up() -> bool {
+    tokio::time::timeout(
         Duration::from_millis(500),
         tokio::net::TcpStream::connect(("127.0.0.1", crate::gateway::PORT)),
     )
     .await
     .map(|r| r.is_ok())
-    .unwrap_or(false);
+    .unwrap_or(false)
+}
+
+pub async fn status(json: bool) -> Result<(), BErr> {
+    let gateway_up = gateway_up().await;
 
     // Config parses? (It loads live — no staleness concept.)
     let config = match crate::config::load() {
@@ -132,7 +239,7 @@ pub async fn status(json: bool) -> Result<(), BErr> {
     };
 
     let mut queue_by_state: BTreeMap<String, usize> = BTreeMap::new();
-    for t in queue::list_all() {
+    for t in tms::list_all() {
         *queue_by_state.entry(t.state).or_insert(0) += 1;
     }
     let gates_pending = gate::list_pending().len();
@@ -179,7 +286,7 @@ pub async fn status(json: bool) -> Result<(), BErr> {
         if gates_pending == 0 {
             "none pending".to_string()
         } else {
-            format!("{gates_pending} PENDING — review: roster server gates ls")
+            format!("{gates_pending} PENDING — review: roster server approvals ls")
         }
     );
     if listeners.is_empty() {

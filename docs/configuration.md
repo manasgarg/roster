@@ -12,7 +12,7 @@ The files:
 ```
 org.toml                    org-wide policy: grants, actions, trust, budgets,
                             memory/knowledge/context policy
-workers/<name>/worker.toml  one worker: channels, triggers, overlays
+workers/<name>/worker.toml  one worker: channels, heartbeat, overlays
 workers/<name>/identity.md  who the worker is (prose, not config)
 connections/<name>.toml     one service capability (usually wizard-written)
 providers.toml              optional overlay on the built-in provider registry
@@ -167,10 +167,7 @@ name = "yuko"                # must equal the folder name
 [channels]
 discord = "discord"          # vault credential for its bot (also: slack = "…")
 
-[[trigger]]
-schedule    = "every 1h"     # interval: s / m / h / d — not cron
-prompt      = "check the feeds and file anything worth deeper work"
-ceiling_min = 20
+heartbeat = "every 30m"      # the curation pulse; default 30m, "off" disables
 
 [[budget.limit]]             # per-worker cap (limits only; currencies,
 currency = "model_calls"     # vars, and meters are org-level)

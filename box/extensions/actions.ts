@@ -304,25 +304,77 @@ export default function rosterActionTools(api: PiToolApi): void {
   });
 
   api.registerTool({
-    name: "file_task",
-    label: "file_task",
+    name: "term_send",
+    label: "term_send",
     description:
-      "Queue durable work for your next run — research to do, records to write. Use this from conversations: " +
-      "the knowledge shelf is read-only there, and the filed task runs later with a writable shelf and a clean slate. " +
-      "Describe the WORK, not the people — prompts naming conversation participants are refused.",
-    promptSnippet: "file_task(prompt[, ceiling_min]): queue durable research/work for a later clean run",
+      "Deliver results to a terminal channel (channel ids starting with term-). The message is recorded on that " +
+      "channel and shown to the operator the next time they open roster talk. Use this when your task briefing names " +
+      "a terminal reply channel.",
+    promptSnippet: "term_send(channel_id, text): deliver results to the operator's terminal channel",
     parameters: {
       type: "object",
       properties: {
-        prompt: { type: "string", description: "What to research or do, self-contained — the next run sees only this text." },
+        channel_id: { type: "string", description: "The terminal channel id from your briefing (term-…)." },
+        text: { type: "string", description: "The message to deliver, plain text." },
+      },
+      required: ["channel_id", "text"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const { channel_id, text } = params as { channel_id: string; text: string };
+      const s = await submit("term-send", { channel_id, text }, "");
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
+    name: "file_task",
+    label: "file_task",
+    description:
+      "Add ONE task to your task partition — durable work for a later clean run (writable knowledge shelf, no conversation in the room). " +
+      "Optionally schedule it with \"at\" (RFC3339 UTC). For reshaping the whole list (reorder, cancel, chain, recurring templates), read " +
+      "$ROSTER_TASKS_FILE and use set_tasks instead. Describe the WORK, not the people — prompts naming conversation participants are refused.",
+    promptSnippet: "file_task(prompt[, ceiling_min, at]): add one task; set_tasks reshapes the whole list",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "What to research or do, self-contained — the future run sees only this text." },
         ceiling_min: { type: "number", description: "Optional wall-clock ceiling in minutes (default 30)." },
+        at: { type: "string", description: "Optional earliest start, RFC3339 UTC (\"2026-07-18T09:00:00Z\"). Absent = eligible now." },
       },
       required: ["prompt"],
       additionalProperties: false,
     },
     async execute(_id, params) {
-      const { prompt, ceiling_min } = params as { prompt: string; ceiling_min?: number };
-      const s = await submit("file-task", { prompt, ceiling_min }, "");
+      const { prompt, ceiling_min, at } = params as { prompt: string; ceiling_min?: number; at?: string };
+      const s = await submit("file-task", { prompt, ceiling_min, at }, "");
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
+    name: "set_tasks",
+    label: "set_tasks",
+    description:
+      "Replace your task partition — pending tasks and recurring templates — with a reshaped version. Read the current document " +
+      "from $ROSTER_TASKS_FILE (/opt/roster/tasks.json) first and send its \"version\" back as base_version. Rules the host enforces: " +
+      "claimed/needs-review tasks must be echoed unchanged; system recurring entries (your heartbeat) are host-owned; task states are " +
+      "host-attested (new entries are pending); dependencies must stay acyclic. On a version conflict the call fails with the current " +
+      "version — re-read the file and retry.",
+    promptSnippet: "set_tasks(base_version, tasks[, recurring]): reshape your task list (read $ROSTER_TASKS_FILE first)",
+    parameters: {
+      type: "object",
+      properties: {
+        base_version: { type: "number", description: "The \"version\" field from the tasks file you just read." },
+        tasks: { type: "array", description: "The complete replacement task list. Echo claimed/needs-review entries unchanged; omit an entry to cancel it; leave \"id\" empty on new entries.", items: { type: "object" } },
+        recurring: { type: "array", description: "The complete replacement recurring-template list (5-field cron schedules, host-local). Echo system entries unchanged.", items: { type: "object" } },
+      },
+      required: ["base_version", "tasks"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const { base_version, tasks, recurring } = params as { base_version: number; tasks: unknown[]; recurring?: unknown[] };
+      const s = await submit("set-tasks", { base_version, tasks, recurring: recurring ?? [] }, "");
       return { content: [{ type: "text", text: describe(s) }] };
     },
   });

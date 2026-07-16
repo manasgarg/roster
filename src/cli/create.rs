@@ -49,6 +49,6 @@ pub fn run(name: &str) -> Result<(), Box<dyn std::error::Error>> {
         )
     })?;
     println!("initialized knowledge at {knowledge_commit}");
-    println!("edit them, then run: roster server deploy");
+    println!("edit them anytime — config loads live (roster server validate checks it)");
     Ok(())
 }

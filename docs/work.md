@@ -1,66 +1,82 @@
-# Work: tasks, triggers, and runs
+# Work: the task management system
 
-All work a worker does is a **task** on its durable, per-worker queue — filed by
-you, by a schedule, by a chat message, or by the worker itself. The dispatch
-loop inside `roster server start` drains the queues into boxes. Nothing
-works inline: a trigger firing or a message arriving *files a task*, and the
-queue is the only path into a container. (Chat conversations take a warm
-shortcut — see [channels.md](channels.md) — but everything else is a task.)
+All work a worker does is a **task** in its partition of the task management
+system (TMS) — one document per worker (`data/workers/<name>/tasks/
+tasks.json`) holding pending tasks and recurring templates, plus an
+append-only journal of everything finished. The dispatch loop inside
+`roster server start` is a dumb executor over it: each tick it asks the TMS
+who is due and runs one governed box per claimable task. Nothing works
+inline, and the TMS is the only path into a container. (Chat conversations
+take a warm shortcut — see [channels.md](channels.md) — but everything else
+is a task.) Full behavioral contract:
+[specs/task-management.md](specs/task-management.md).
 
 ## How work arrives
 
-- **You file it**: `roster worker task add yuko "…"`. Admin-filed work always
-  runs, budget or no budget.
-- **A schedule fires.** Triggers live in the worker's spec and run on an
-  interval:
-
-  ```toml
-  # workers/yuko/worker.toml
-  [[trigger]]
-  schedule    = "every 1h"        # units: s, m, h, d
-  prompt      = "scan the feeds; file anything worth a deeper look"
-  ceiling_min = 20
-  ```
-
-  Trigger-filed tasks are **proactive**: budget-gated at dispatch. Cursors
-  persist across restarts, so a schedule neither double-fires nor silently
-  skips because the daemon rebooted.
+- **You file it**: `roster worker task add yuko "…"`. Owner-standing work
+  always runs, budget or no budget.
+- **The heartbeat fires.** Every worker has a system recurring template —
+  on by default, tuned with `heartbeat = "30m"` in its spec (`"off"`
+  disables) — that wakes it to curate its task list and do what's due.
+- **A recurring template fires.** Templates live in the partition itself
+  (5-field cron, host-local time, optional window) and spawn ordinary
+  pending tasks. The worker creates and retires its own via `set_tasks`;
+  cursors persist, so a restart neither double-fires nor silently skips.
 - **A message arrives.** Chat listeners file relay tasks framed as untrusted
   content — the message directs attention; it never commands (see
   [channels.md](channels.md)). `roster worker task relay` does the same by
   hand.
-- **The worker files it.** The `file_task` action queues durable follow-up work
-  on the worker's own queue — the bridge that lets a conversation schedule
-  clean-room research (see [knowledge.md](knowledge.md)).
+- **The worker files it.** The `file_task` action adds one task (optionally
+  scheduled with `at`); the `set_tasks` action reshapes the whole partition
+  — reorder, reschedule, chain with `depends_on`, cancel, recur. Standing
+  follows the room: filed at a trusted operator's ask → owner (always
+  runs); autonomous or untrusted-context filings → proactive, paced by
+  budget.
 - **A gate resolves.** If the action's grant sets `wake_on_resolve`,
   resolution files a continuation task, and the next run starts briefed with
   the outcome.
 
 `roster worker run` is the one exception: a governed session right now,
-bypassing the queue, for ad-hoc work and testing. Same box, same gateway,
+bypassing the TMS, for ad-hoc work and testing. Same box, same gateway,
 same rules.
 
 ## Task lifecycle
 
 ```
-waiting → running → done | failed | needs-review
+pending → claimed → completed | failed | needs-review → journal
 ```
 
+- Eligibility is derived, never stored: a pending task is claimable once
+  its `scheduled_at` (if any) has passed and everything in `depends_on`
+  completed. A dependency that failed or was canceled blocks its
+  dependents until someone curates the list.
 - **`needs-review`** — the box finished but left a gate pending; when the
   last gate resolves, the task completes.
-- **`deferred`** — a proactive task that hit the budget gate; it waits for
-  the window to reset without clogging the queue.
-- **`roster worker task requeue`** puts a stuck or finished task back to
-  `waiting`.
+- Over-budget proactive work is simply **late**: it stays claimable and
+  runs when the window clears — there is no parked state.
+- **`roster worker task requeue`** puts a claimed (dead-box) or
+  needs-review task back to `pending`. Completed and failed tasks are in
+  the journal; file a new task instead.
+- Every state change is host-attested — the worker never marks its own
+  work done.
 
 Dispatch polls every couple of seconds and runs up to `--cap` boxes at once
-(default 3). On startup it reclaims honestly: `running` tasks whose
-container actually died are requeued; live ones are left alone. Restarting
-the daemon mid-flight loses nothing.
+(default 3). On startup it reclaims honestly: `claimed` tasks whose
+container actually died go back to pending; live ones are left alone.
+Restarting the daemon mid-flight loses nothing.
 
 Every run has a wall-clock ceiling — the container is killed when it
 expires. Defaults: 30 minutes for filed tasks and ad-hoc runs, 20 for
-trigger runs, 15 for relays; override per task with `--ceiling`.
+recurring templates, 15 for relays; override per task with `--ceiling`.
+
+## The worker's own view
+
+Every run mounts the partition read-write at `/opt/roster/tasks.json`
+(`$ROSTER_TASKS_FILE`) — a live view the host rewrites on every change.
+The worker reads it freely; authoritative writes go through `set_tasks`
+with optimistic concurrency (send back the `version` you read; on conflict
+re-read and retry). Direct file edits are scratch. The heartbeat template
+is `system: true` and host-owned — the one entry the worker cannot touch.
 
 ## Code tasks
 

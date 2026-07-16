@@ -5,3 +5,4 @@ pub mod discord;
 pub mod listen;
 pub mod relay;
 pub mod slack;
+pub mod slash;

@@ -15,13 +15,14 @@ the reasoning attached.
 
 ```bash
 cargo install digital-roster         # installs the `roster` binary
-docker build -t roster-box -f box/Dockerfile .   # the container image
-                                                  # (clone the repo for box/)
 ```
 
-The image bakes in the agent engine and the toolbelt — build it once, and
-again whenever you update. `--build-arg TIER2=1` adds pandoc, imagemagick,
-and ffmpeg if your workers do document or media work.
+That's the whole install. The container image workers run in
+(`ghcr.io/manasgarg/roster-box`) bakes in the agent engine and the
+toolbelt; `roster server start` pulls it automatically and re-pulls on
+every restart, so it stays current on its own. (To iterate on the image
+itself, build it from a checkout and point `[engine] image` in `org.toml`
+at your tag — see [box.md](box.md).)
 
 ## Initialize the deployment
 

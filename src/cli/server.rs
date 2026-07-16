@@ -38,19 +38,28 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: Option<&str>) ->
     // --addr, which the port-bind check wouldn't catch — would run its own
     // dispatch loop over the same tasks and double-execute them. Hold this lock
     // for the daemon's whole lifetime; the OS releases it if the process dies.
-    let _daemon_lock = match crate::statefile::FileLock::try_acquire_path(&crate::paths::lock_file(
-        "daemon",
-    )) {
-        Ok(Some(lock)) => lock,
-        Ok(None) => {
-            return Err("another roster server is already running for this deployment — \
+    let _daemon_lock =
+        match crate::statefile::FileLock::try_acquire_path(&crate::paths::lock_file("daemon")) {
+            Ok(Some(lock)) => lock,
+            Ok(None) => {
+                return Err(
+                    "another roster server is already running for this deployment — \
                         stop it first, or check: roster server status"
-                .into())
-        }
-        Err(e) => return Err(format!("could not take the daemon lock: {e}").into()),
-    };
+                        .into(),
+                )
+            }
+            Err(e) => return Err(format!("could not take the daemon lock: {e}").into()),
+        };
 
     bootstrap_llm_credential().await?;
+
+    // Fetch the box image up front: the daemon tracks the published `:latest`
+    // (or `[engine] image`), so every restart picks up the newest engine and
+    // the first run never waits on a download mid-dispatch. Absent AND
+    // unpullable means no box can run — refuse to boot, loudly.
+    if let Ok(c) = crate::config::snapshot() {
+        crate::run::boxed::ensure_image(&c.box_image).await?;
+    }
 
     let addrs = crate::gateway::resolve_bind_addrs(addr);
     let gateways = crate::gateway::start(&addrs).await.map_err(|e| -> BErr {
@@ -78,7 +87,9 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: Option<&str>) ->
     if !no_listen && !once {
         let plan = crate::channel::listen::plan();
         if plan.is_empty() {
-            eprintln!("listeners: none configured (a worker opts in via [channels] in its worker.toml)");
+            eprintln!(
+                "listeners: none configured (a worker opts in via [channels] in its worker.toml)"
+            );
         }
         for (worker, platform, credential) in plan {
             listeners.push(tokio::spawn(crate::channel::listen::supervised(
@@ -123,16 +134,15 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: Option<&str>) ->
 /// disposition — without this, a SIGTERM arriving after the first box run
 /// finished was silently swallowed (only SIGKILL worked).
 async fn shutdown_signal() -> &'static str {
-    let mut term =
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(s) => s,
-            // Could not install: the kernel's default kill-on-SIGTERM still
-            // applies, so only Ctrl-C needs handling here.
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
-                return "SIGINT";
-            }
-        };
+    let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(s) => s,
+        // Could not install: the kernel's default kill-on-SIGTERM still
+        // applies, so only Ctrl-C needs handling here.
+        Err(_) => {
+            let _ = tokio::signal::ctrl_c().await;
+            return "SIGINT";
+        }
+    };
     tokio::select! {
         _ = term.recv() => "SIGTERM",
         _ = tokio::signal::ctrl_c() => "SIGINT",
@@ -244,7 +254,7 @@ pub fn validate() -> Result<(), BErr> {
                     "engine: dev override {} (mounted over the baked engine)",
                     dir.display()
                 ),
-                None => println!("engine: baked into the roster-box image"),
+                None => println!("engine: baked into the box image ({})", c.box_image),
             }
             if !c.connections.is_empty() {
                 println!("connections: {}", c.connections.len());

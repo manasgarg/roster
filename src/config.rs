@@ -20,6 +20,11 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// The published box image. Tracks `:latest` deliberately: the host re-pulls
+/// on every server start, so deployments stay current without a binary
+/// upgrade. `[engine] image` in org.toml overrides (e.g. a local build).
+pub const DEFAULT_BOX_IMAGE: &str = "ghcr.io/manasgarg/roster-box:latest";
+
 /// A service connection (`connections/<name>.toml`): one intent — "this
 /// worker may act on that service" — compiled into a grant with injection,
 /// an env exposure, and a provider template, all keyed by one name that is
@@ -145,9 +150,13 @@ pub struct Loaded {
     pub warnings: Vec<String>,
     pub workers: Vec<String>,
     /// `[engine] dir` in org.toml — a dev checkout mounted read-only over the
-    /// engine baked into the roster-box image. Unset (the default) runs the
+    /// engine baked into the box image. Unset (the default) runs the
     /// baked engine.
     pub engine_dir: Option<PathBuf>,
+    /// The box image workers run in — `[engine] image` in org.toml, or the
+    /// published image (always `:latest`; the host re-pulls at server start).
+    /// Point it at a locally built tag to iterate on the Dockerfile.
+    pub box_image: String,
     /// `[box]` — container hardening/resource envelope and session ceilings.
     pub box_policy: BoxPolicy,
 }
@@ -214,6 +223,21 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         .and_then(|e| e.get("dir"))
         .and_then(|v| v.as_str())
         .map(PathBuf::from);
+
+    let box_image = match org.get("engine").and_then(|e| e.get("image")) {
+        None => DEFAULT_BOX_IMAGE.to_string(),
+        Some(v) => match v.as_str().map(str::trim) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => {
+                errors.push(
+                    "org.toml [engine] image: must be a non-empty string — an image \
+                     reference (registry or locally built tag)"
+                        .into(),
+                );
+                DEFAULT_BOX_IMAGE.to_string()
+            }
+        },
+    };
 
     let box_policy = parse_box_policy(org.get("box"));
 
@@ -456,6 +480,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         warnings,
         workers,
         engine_dir,
+        box_image,
         box_policy,
     })
 }
@@ -547,9 +572,7 @@ fn compile_connection(
     // logins and the gateway injects the real credential in transit.
     let model_hosts = model_hosts_of(&provider);
     let is_model = model_hosts.is_some();
-    let hosts = strings("hosts")
-        .or(model_hosts)
-        .unwrap_or_default();
+    let hosts = strings("hosts").or(model_hosts).unwrap_or_default();
     if hosts.is_empty() {
         errors.push(format!("{ctx}: needs hosts = [\"api.example.com\", ..]"));
     }
@@ -761,10 +784,7 @@ fn fingerprint() -> String {
     // providers.toml feeds registry_json(), which load() validates connections
     // against — so an edit here must invalidate the cache too, or the daemon
     // serves a policy that `validate` already rejects.
-    let mut parts = vec![
-        stamp(&paths::org_file()),
-        stamp(&paths::providers_file()),
-    ];
+    let mut parts = vec![stamp(&paths::org_file()), stamp(&paths::providers_file())];
     let mut names: Vec<PathBuf> = std::fs::read_dir(paths::workers_dir())
         .into_iter()
         .flatten()

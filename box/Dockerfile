@@ -5,17 +5,21 @@
 # the repo's lockfile; `[engine] dir` in org.toml is a dev override that
 # mounts a checkout over them.
 #
-# Build from the REPO ROOT (the engine layers need package-lock.json + box/):
+# Published on every release as ghcr.io/manasgarg/roster-box (:latest and
+# :<version>) — the host pulls it automatically. To build locally instead,
+# build from the REPO ROOT (the engine layers need package-lock.json + box/):
 #   docker build -t roster-box -f box/Dockerfile .
+# and point org.toml at it:  [engine] image = "roster-box"
 FROM node:24-bookworm-slim
 
-# Tier 1 — always installed. Base image already carries node/npm/npx.
-# build-essential is the big line (~250 MB): native pip/npm builds are the
-# most common illegible failure when it is absent.
+# The toolbelt — one image, everything installed. Base image already carries
+# node/npm/npx. build-essential is the big line (~250 MB): native pip/npm
+# builds are the most common illegible failure when it is absent.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash ca-certificates curl git jq python3 ripgrep \
     build-essential pkg-config \
+    ffmpeg imagemagick pandoc \
     fd-find file git-lfs less moreutils openssl poppler-utils procps \
     python3-pip python3-venv rsync sqlite3 tree tzdata unzip wget \
     xz-utils zip zstd \
@@ -48,15 +52,6 @@ RUN corepack enable
 # neutralized at runtime; removing the bits is belt-and-suspenders and shrinks
 # the in-container privilege-escalation surface to nothing (F2).
 RUN find / -xdev -type f \( -perm -4000 -o -perm -2000 \) -exec chmod -s {} + 2>/dev/null || true
-
-# Tier 2 — org choice, heavy: document/media tooling.
-#   docker build --build-arg TIER2=1 -t roster-box -f box/Dockerfile .
-ARG TIER2=0
-RUN if [ "$TIER2" = "1" ]; then \
-      apt-get update \
-      && apt-get install -y --no-install-recommends pandoc imagemagick ffmpeg \
-      && rm -rf /var/lib/apt/lists/*; \
-    fi
 
 # The engine: pi + extensions at the lockfile-pinned version. /opt/roster/engine/run-pi
 # is the stable entry the host invokes — it expands the baked extensions itself,

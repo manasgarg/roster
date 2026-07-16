@@ -308,8 +308,10 @@ fn finalize(task: tms::Task, outcome: Result<boxed::Outcome, String>) {
 
 fn first_line(s: &str) -> String {
     let line = s.lines().next().unwrap_or("");
-    if line.len() > 60 {
-        format!("{}…", &line[..60])
+    // Truncate by character, not byte: a multibyte char straddling byte 60
+    // would panic here, and this runs after claim — a poison-pill crash loop.
+    if line.chars().count() > 60 {
+        format!("{}…", line.chars().take(60).collect::<String>())
     } else {
         line.to_string()
     }

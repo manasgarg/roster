@@ -805,8 +805,10 @@ pub async fn run(
 
 fn first_words(s: &str) -> String {
     let s = s.replace('\n', " ");
-    if s.len() > 60 {
-        format!("{}…", &s[..60])
+    // Char-safe truncation: a byte slice at 60 panics on multibyte input and
+    // takes down the listener task.
+    if s.chars().count() > 60 {
+        format!("{}…", s.chars().take(60).collect::<String>())
     } else {
         s
     }
@@ -842,5 +844,16 @@ mod tests {
         assert!(complete("hello /wor", 10, "w").1.is_empty());
         // beyond the last argument → nothing
         assert!(complete("/gates ls extra ", 16, "w").1.is_empty());
+    }
+
+    #[test]
+    fn first_words_is_char_safe_on_multibyte() {
+        // A multibyte char straddling byte 60 must not panic.
+        let s = "é".repeat(80); // 160 bytes, 80 chars; byte 60 splits a char
+        let out = first_words(&s);
+        assert!(out.ends_with('…'));
+        assert_eq!(out.chars().count(), 61); // 60 chars + ellipsis
+        // Short strings pass through untouched.
+        assert_eq!(first_words("hello"), "hello");
     }
 }

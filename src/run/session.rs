@@ -313,6 +313,43 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
         )
     };
 
+    // Live deliveries: task runs term_send into this channel's history while
+    // the conversation is open. Tail the file so results surface as they
+    // land, not just at the next session open. (Worker-role entries come
+    // only from term_send — live session replies are never persisted — so
+    // nothing prints twice.)
+    let delivery_watch = {
+        let channel_id = channel_id.clone();
+        let reply_tx = reply_tx.clone();
+        tokio::spawn(async move {
+            let path = crate::paths::channel_dir(&channel_id).join("messages.jsonl");
+            let mut seen = std::fs::read_to_string(&path)
+                .map(|s| s.lines().count())
+                .unwrap_or(0);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let lines: Vec<&str> = text.lines().collect();
+                if lines.len() < seen {
+                    seen = lines.len(); // rotated/truncated: adopt
+                    continue;
+                }
+                for l in &lines[seen..] {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
+                        if v.get("role").and_then(|r| r.as_str()) == Some("worker") {
+                            if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
+                                let _ = reply_tx.send(content.to_string()).await;
+                            }
+                        }
+                    }
+                }
+                seen = lines.len();
+            }
+        })
+    };
+
     // One conversation, many sessions. A message routes to the live session
     // if there is one; otherwise it wakes a fresh one — exactly how the
     // Discord listener treats a channel. Session death never ends this loop;
@@ -384,6 +421,7 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
         drop(tx);
         let _ = handle.await;
     }
+    delivery_watch.abort();
     drop(reply_tx);
     drop(info_tx);
     let _ = reply_sink.await;

@@ -662,7 +662,7 @@ async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, Strin
             .filter(|s| !s.is_empty());
         if let (Some(token), Some(owner)) = (token, owner) {
             match crate::channel::slack::open_dm(token, owner).await {
-                Ok(dm) => match crate::channel::slack::post_message(token, &dm, text, None).await {
+                Ok(dm) => match crate::channel::slack::post_chunked(token, &dm, text, None).await {
                     Ok(_) => {
                         eprintln!("message-user [{worker}] → lead Slack DM");
                         return Ok(json!({ "delivered": "slack-dm" }));
@@ -748,7 +748,7 @@ async fn exec_slack(worker: &str, payload: &Value) -> Result<Value, String> {
         .get("bot_token")
         .and_then(|v| v.as_str())
         .ok_or("slack credential has no bot_token")?;
-    let ts = crate::channel::slack::post_message(token, channel, text, thread_ts).await?;
+    let ts = crate::channel::slack::post_chunked(token, channel, text, thread_ts).await?;
     eprintln!("slack [{worker}] → channel {channel}");
     Ok(json!({ "sent": true, "channel_id": channel, "message_ts": ts }))
 }

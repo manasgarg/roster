@@ -191,6 +191,35 @@ fn empty() -> Body {
         .boxed()
 }
 
+// ── per-run refusal tally ───────────────────────────────────────────────────
+
+/// Refused calls per run, in this daemon's memory — evidence for task
+/// attestation: a run that ends silently after refusals is not a success.
+/// Read-and-cleared by dispatch when it finalizes the task; session runs
+/// leave tiny entries behind, bounded by runs-per-daemon-lifetime.
+static REFUSALS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, u32>>> =
+    std::sync::OnceLock::new();
+
+fn refusal_tally() -> &'static std::sync::Mutex<HashMap<String, u32>> {
+    REFUSALS.get_or_init(Default::default)
+}
+
+fn note_refusal(run_id: &str) {
+    if run_id.is_empty() {
+        return;
+    }
+    *refusal_tally()
+        .lock()
+        .unwrap()
+        .entry(run_id.to_string())
+        .or_insert(0) += 1;
+}
+
+/// How many of this run's calls the gateway refused; clears the tally.
+pub fn take_refusals(run_id: &str) -> u32 {
+    refusal_tally().lock().unwrap().remove(run_id).unwrap_or(0)
+}
+
 // ── identity ────────────────────────────────────────────────────────────────
 
 /// A subject that no grant, action, or budget can ever match — the resolved
@@ -562,7 +591,10 @@ async fn handle(
             mcp: None,
         };
         return match gate(&gr, &subject).await {
-            Gate::Deny(resp) => Ok(resp),
+            Gate::Deny(resp) => {
+                note_refusal(&run_id);
+                Ok(resp)
+            }
             Gate::Allow(inject) => forward_websocket(req, host, port, inject).await,
         };
     }
@@ -589,7 +621,10 @@ async fn handle(
     };
 
     let inject = match gate(&gr, &subject).await {
-        Gate::Deny(resp) => return Ok(resp),
+        Gate::Deny(resp) => {
+            note_refusal(&run_id);
+            return Ok(resp);
+        }
         Gate::Allow(inject) => inject,
     };
 

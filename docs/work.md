@@ -59,7 +59,13 @@ pending → claimed → completed | failed | needs-review → journal
   `pending` — the natural retry after fixing what broke it (a missing
   credential, a bad repo path).
 - Every state change is host-attested — the worker never marks its own
-  work done.
+  work done. It does *report*: a task run ends with `task_complete`, or
+  `task_fail` and the reason. The report is evidence, not the verdict:
+  a crash, a nonzero exit, or the ceiling is failure no matter what was
+  claimed, and a run that ends silently after refused gateway calls (a
+  spent budget, a revoked credential, a denied host) is attested failed
+  with that evidence — a blocked worker's no-op never shows up as
+  "completed".
 
 Dispatch polls every couple of seconds and runs up to `--cap` boxes at once
 (default 3). On startup it reclaims honestly: `claimed` tasks whose

@@ -105,6 +105,32 @@ pub fn fail(run_id: &str, error: Option<&str>) {
     }
 }
 
+/// The worker's own claim about how its task went — evidence for the host's
+/// attestation, never the attestation itself. Last report wins.
+pub fn record_outcome_report(
+    run_id: &str,
+    status: &str,
+    note: Option<&str>,
+) -> Result<(), String> {
+    let path = paths::run_dir(run_id).join("outcome.json");
+    let dir = path.parent().ok_or("bad run dir")?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let body = serde_json::json!({ "status": status, "note": note, "ts": now_rfc3339() });
+    std::fs::write(&path, format!("{body}\n")).map_err(|e| e.to_string())
+}
+
+/// The reported outcome for a run, if the worker filed one: (status, note).
+pub fn outcome_report(run_id: &str) -> Option<(String, Option<String>)> {
+    let v: Value = serde_json::from_str(
+        &std::fs::read_to_string(paths::run_dir(run_id).join("outcome.json")).ok()?,
+    )
+    .ok()?;
+    Some((
+        v.get("status")?.as_str()?.to_string(),
+        v.get("note").and_then(Value::as_str).map(String::from),
+    ))
+}
+
 pub fn attach_storage(run_id: &str, knowledge: Option<KnowledgeRunRecord>) -> Result<(), String> {
     let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
     record.knowledge = knowledge;

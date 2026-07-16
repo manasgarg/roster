@@ -238,9 +238,13 @@ fn task_memory_context(task: &tms::Task) -> crate::worker::memory::RunContext {
     }
 }
 
-/// Attest the outcome: a filed gate → needs-review (a human, then maybe a
-/// continuation); a clean exit → completed; anything else → failed. The
-/// failure reason rides along so `task show` can answer "why".
+/// Attest the outcome. Host evidence rules first — a crash, a nonzero exit,
+/// or the ceiling is failure no matter what anyone claims; a filed gate is
+/// needs-review. Then the worker's own outcome report (task_complete /
+/// task_fail — a claim, not authority) decides, and a run that ended
+/// silently after refused gateway calls is failure: the worker was blocked
+/// (a spent budget, a revoked credential, a denied host) and never said it
+/// finished. The reason rides along so `task show` can answer "why".
 fn finalize(task: tms::Task, outcome: Result<boxed::Outcome, String>) {
     let (next, error) = match outcome {
         Err(e) => {
@@ -248,6 +252,15 @@ fn finalize(task: tms::Task, outcome: Result<boxed::Outcome, String>) {
             ("failed", Some(e))
         }
         Ok(o) => {
+            let report = task
+                .run_id
+                .as_deref()
+                .and_then(crate::run::runlog::outcome_report);
+            let refusals = task
+                .run_id
+                .as_deref()
+                .map(crate::gateway::proxy::take_refusals)
+                .unwrap_or(0);
             if o.ended_by == "ceiling" {
                 (
                     "failed",
@@ -268,7 +281,21 @@ fn finalize(task: tms::Task, outcome: Result<boxed::Outcome, String>) {
             } else if !gate::pending_for_task(&task.id).is_empty() {
                 ("needs-review", None)
             } else {
-                ("completed", None)
+                match report {
+                    Some((status, note)) if status == "failed" => (
+                        "failed",
+                        Some(note.unwrap_or_else(|| "the worker reported failure".into())),
+                    ),
+                    Some(_) => ("completed", None),
+                    None if refusals > 0 => (
+                        "failed",
+                        Some(format!(
+                            "ended without reporting an outcome after {refusals} refused gateway call(s) — transcript: roster server runs show {}",
+                            task.run_id.as_deref().unwrap_or("?")
+                        )),
+                    ),
+                    None => ("completed", None),
+                }
             }
         }
     };

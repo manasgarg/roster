@@ -399,6 +399,64 @@ export default function rosterActionTools(api: PiToolApi): void {
     },
   });
 
+  // Outcome reporting — part of the task protocol, so only task runs get the
+  // tools. The report is evidence for the host's attestation, not the
+  // attestation itself: a crash or refused-and-silent run is failed no matter
+  // what was claimed.
+  if (TASK_ID) {
+    const reportOutcome = async (status: "completed" | "failed", note?: string): Promise<string> => {
+      try {
+        const res = await fetch("https://actions.roster.internal/outcome", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ status, note: note ?? "" }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        const s = (await res.json()) as Submission;
+        return s.status === "done"
+          ? `Outcome recorded: ${status}. You can wrap up and exit now.`
+          : `Could not record the outcome: ${s.error ?? "unknown error"}.`;
+      } catch (e) {
+        return `Could not record the outcome: ${e instanceof Error ? e.message : String(e)}.`;
+      }
+    };
+
+    api.registerTool({
+      name: "task_complete",
+      label: "task_complete",
+      description:
+        "Report that THIS task's work is done — call it once, just before you exit. The host attests the final state; " +
+        "a run that ends without reporting, after refused calls, is recorded as failed.",
+      promptSnippet: "task_complete([note]): report this task done, right before exiting",
+      parameters: {
+        type: "object",
+        properties: { note: { type: "string", description: "One line on what was accomplished (optional)." } },
+        additionalProperties: false,
+      },
+      async execute(_id, params) {
+        return { content: [{ type: "text", text: await reportOutcome("completed", params.note as string | undefined) }] };
+      },
+    });
+
+    api.registerTool({
+      name: "task_fail",
+      label: "task_fail",
+      description:
+        "Report that THIS task could not be done — call it once, just before you exit, with the reason. " +
+        "Use it when you're blocked (refused calls, missing access, impossible ask) so the failure is visible with its cause.",
+      promptSnippet: "task_fail(reason): report this task failed, right before exiting",
+      parameters: {
+        type: "object",
+        properties: { reason: { type: "string", description: "Why the task could not be completed." } },
+        required: ["reason"],
+        additionalProperties: false,
+      },
+      async execute(_id, params) {
+        return { content: [{ type: "text", text: await reportOutcome("failed", params.reason as string) }] };
+      },
+    });
+  }
+
   api.registerTool({
     name: "send_email",
     label: "send_email",

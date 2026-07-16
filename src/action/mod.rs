@@ -126,6 +126,7 @@ pub async fn handle_action(
 ) -> Response<Body> {
     match (method, path) {
         ("POST", "/submit") => submit(worker, trusted_run_id, body).await,
+        ("POST", "/outcome") => outcome(worker, trusted_run_id, body),
         ("GET", "/gates") => {
             let gates: Vec<Value> = crate::action::gate::for_worker(worker)
                 .iter()
@@ -153,6 +154,49 @@ pub async fn handle_action(
             json!({ "status": "error", "error": "unknown action endpoint" }),
         ),
     }
+}
+
+/// The worker's outcome report for its task run — part of the task protocol,
+/// not a granted action. The claim is recorded as evidence (journal +
+/// run manifest); the host still attests the task's state when the box ends.
+/// A run that ends silently after refused calls is attested failed.
+fn outcome(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> {
+    if trusted_run_id.is_empty() {
+        return reply(
+            StatusCode::FORBIDDEN,
+            json!({ "status": "error", "error": "an outcome report needs a trusted run context" }),
+        );
+    }
+    let v: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return reply(
+                StatusCode::BAD_REQUEST,
+                json!({ "status": "error", "error": format!("bad outcome body: {e}") }),
+            )
+        }
+    };
+    let status = v.get("status").and_then(Value::as_str).unwrap_or("");
+    if !matches!(status, "completed" | "failed") {
+        return reply(
+            StatusCode::BAD_REQUEST,
+            json!({ "status": "error", "error": "outcome status must be \"completed\" or \"failed\"" }),
+        );
+    }
+    let note = v.get("note").and_then(Value::as_str).filter(|n| !n.trim().is_empty());
+    if let Err(e) = crate::run::runlog::record_outcome_report(trusted_run_id, status, note) {
+        return reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "status": "error", "error": format!("could not record the report: {e}") }),
+        );
+    }
+    journal::append(
+        worker,
+        trusted_run_id,
+        "outcome-reported",
+        json!({ "status": status, "note": note }),
+    );
+    reply(StatusCode::OK, json!({ "status": "done" }))
 }
 
 /// Handle one action envelope: attribute, authorize, and either execute now or

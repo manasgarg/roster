@@ -652,7 +652,7 @@ Your plan lives in one file: the task partition mounted read-only-in-spirit at $
 
 For a single quick addition, file_task adds one task without echoing the whole document; its optional "at" schedules it. "Wake me at T to do X" is nothing special — a task with scheduled_at set and a self-contained prompt (the future run sees only that text; this conversation does not travel with it). Keep participants out of task prompts entirely: no names, handles, or quotes — the host scans and refuses prompts that name people.
 
-Results go back to the room that asked: a task filed from a channel names its reply channel and send tool in this briefing — deliver there. message_user reaches your lead only when the work has no origin room. The host attests every lifecycle step: pending → claimed → completed or failed happens on the host's side, and you never mark your own work done. Finished tasks leave the file for your journal. Work filed at a trusted operator's request always runs; your own initiative is paced by your budget — an over-budget task is late, not lost. A heartbeat wakes you at least every N minutes to curate the list and do what's due, so nothing in your file is ever more than one heartbeat from a chance to act — and if a run crashes or your plan gets confused, the file survives and the next heartbeat recovers it.
+Results go back to the room that asked: a task filed from a channel names its reply channel and send tool in this briefing — deliver there. message_user reaches your lead only when the work has no origin room. The host attests every lifecycle step: pending → claimed → completed or failed happens on the host's side, and you never mark your own work done — but you do report it: a task run ends with task_complete, or task_fail and the reason. The report is evidence, not the verdict; a run that ends silently after refused calls is attested failed. Finished tasks leave the file for your journal. Work filed at a trusted operator's request always runs; your own initiative is paced by your budget — an over-budget task is late, not lost. A heartbeat wakes you at least every N minutes to curate the list and do what's due, so nothing in your file is ever more than one heartbeat from a chance to act — and if a run crashes or your plan gets confused, the file survives and the next heartbeat recovers it.
 
 Rule of thumb: answer people in the conversation; change the durable world from a task.
 
@@ -669,7 +669,7 @@ fn runtime_scope(request: &ContextRequest) -> String {
             "This is a direct one-shot Roster run. Work on the supplied task in the mounted workspace and use governed tools for external actions.".into()
         }
         RunSurface::QueuedTask => {
-            if let Some(channel) = request.run_context.channel_id.as_deref() {
+            let scope = if let Some(channel) = request.run_context.channel_id.as_deref() {
                 // Interaction content is in the run (a relay-style task):
                 // tainted, channel material mounted.
                 format!(
@@ -693,8 +693,11 @@ fn runtime_scope(request: &ContextRequest) -> String {
                     ),
                 }
             } else {
-                "This is a queued Roster task with worker-only scope. It has no channel or participant context. If the results matter to your lead, message_user delivers a note.".into()
-            }
+                "This is a queued Roster task with worker-only scope. It has no channel or participant context. If the results matter to your lead, message_user delivers a note.".to_string()
+            };
+            format!(
+                "{scope} When the work is finished, report it before you exit: task_complete — or task_fail with the reason if you were blocked. A run that ends silently after refused calls is recorded as failed."
+            )
         }
         RunSurface::DiscordSession => {
             let channel = request.run_context.channel_id.as_deref().unwrap_or("");

@@ -153,7 +153,9 @@ sees. The admin binds intents to executors in config; the built-in set:
 And the box-side tools that propose through them: `message_user`,
 `discord_send`, `slack_send`, `send_email`, `propose_changes` (one intent
 covering commit, push, and PR), `propose_purpose_edit`, `file_task`, and the
-memory tools.
+memory tools. Task runs also carry `task_complete`/`task_fail` — not granted
+actions but part of the task protocol: the worker's outcome report, recorded
+as evidence for the host's attestation (see [work.md](work.md)).
 
 Because the box holds no write credential and has no egress grant to any
 write host, it *cannot* perform these actions — only propose them. A fully

@@ -131,10 +131,18 @@ async fn shutdown_signal() -> &'static str {
 /// copy may go stale — pi re-logs-in when it next needs to.
 async fn bootstrap_llm_credential() -> Result<(), BErr> {
     use crate::credential::LLM_PROVIDERS;
-    if LLM_PROVIDERS
+    let present: Vec<&str> = LLM_PROVIDERS
         .iter()
-        .any(|n| crate::credential::vault::get_credential(n).is_some())
-    {
+        .copied()
+        .filter(|n| crate::credential::vault::get_credential(n).is_some())
+        .collect();
+    if !present.is_empty() {
+        // A connection is a grant by default: heal a deployment whose model
+        // credential predates model connections (an admin's hand-written
+        // grant wins — nothing is scaffolded over it).
+        for name in present {
+            crate::cli::connections::ensure_model_grant(name)?;
+        }
         return Ok(());
     }
     let interactive = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
@@ -168,6 +176,7 @@ async fn bootstrap_llm_credential() -> Result<(), BErr> {
                     "imported {name} — roster now owns the token refresh; \
                      pi will re-login when it next needs to"
                 );
+                crate::cli::connections::ensure_model_grant(name)?;
                 imported = true;
             }
         }
@@ -181,9 +190,12 @@ async fn bootstrap_llm_credential() -> Result<(), BErr> {
         "no LLM credential yet — connect one now? [anthropic / openai-codex / skip] ",
     )?;
     match answer.trim() {
-        p @ ("anthropic" | "openai-codex") => crate::credential::connect::run(p)
-            .await
-            .map_err(|e| format!("connection add {p}: {e}"))?,
+        p @ ("anthropic" | "openai-codex") => {
+            crate::credential::connect::run(p)
+                .await
+                .map_err(|e| format!("connection add {p}: {e}"))?;
+            crate::cli::connections::ensure_model_grant(p)?;
+        }
         _ => eprintln!("skipped — connect later with: roster connection add <provider>"),
     }
     Ok(())

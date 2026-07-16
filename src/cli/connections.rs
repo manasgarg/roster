@@ -292,6 +292,9 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
     if channel {
         bind_channel(&service, &name, &workers)?;
     }
+    if model {
+        ensure_model_connection(&name, &service, &workers)?;
+    }
 
     // The compiled result (or every error, if the admin's config is off).
     match crate::config::load() {
@@ -586,15 +589,75 @@ fn upsert_channel_binding(
     Ok(Some(out))
 }
 
-/// Model follow-through: report the grants that inject this credential, or
-/// print a starter block. Grants stay deliberate, hand-written policy — the
-/// wizard never writes them.
+/// A model connection IS a grant by default: scaffold the connection file
+/// that compiles into one (allow + inject on the provider's model hosts,
+/// GET/POST, no env exposure). Admin-owned after creation — edit or delete
+/// it to change access. Returns whether a file was written.
+pub fn ensure_model_connection(
+    name: &str,
+    service: &str,
+    workers: &[String],
+) -> Result<bool, BErr> {
+    let path = crate::paths::connections_dir().join(format!("{name}.toml"));
+    if path.exists() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(crate::paths::connections_dir())?;
+    let scope_line = if workers.is_empty() {
+        "scope = \"org\"".to_string()
+    } else {
+        format!(
+            "workers = [{}]",
+            workers
+                .iter()
+                .map(|w| format!("\"{w}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    std::fs::write(
+        &path,
+        format!(
+            "# Model connection — workers' boxes may call {service}'s model API; the\n\
+             # gateway injects the credential in transit. Hosts and methods derive from\n\
+             # the provider registry; override with hosts = [..] / methods = [..].\n\
+             # ADMIN-OWNED after creation: edit or delete this file to change access.\n\
+             provider = \"{service}\"\n\
+             {scope_line}\n"
+        ),
+    )?;
+    println!(
+        "created {}   (the model grant — edit or delete it to change access)",
+        path.display()
+    );
+    Ok(true)
+}
+
+/// Grant-by-default healing: a vault model credential that no rule injects
+/// gets its connection file scaffolded. A hand-written grant elsewhere wins —
+/// nothing is scaffolded over it.
+pub fn ensure_model_grant(name: &str) -> Result<(), BErr> {
+    if let Ok(c) = crate::config::load() {
+        let injected = c
+            .policy
+            .rules
+            .iter()
+            .any(|r| r.inject.as_ref().is_some_and(|i| i.credential == name));
+        if !injected {
+            ensure_model_connection(name, name, &[])?;
+        }
+    }
+    Ok(())
+}
+
+/// Model follow-through: report the grants that inject this credential —
+/// the connection's own by-default grant, or the admin's hand-written one —
+/// with a starter block as the fallback when neither exists.
 fn report_model(c: &crate::config::Loaded, name: &str, provider: Option<&Value>) {
     let grants: Vec<String> = c
         .policy
         .rules
         .iter()
-        .filter(|r| !r.name.starts_with("connection:"))
         .filter(|r| r.inject.as_ref().is_some_and(|i| i.credential == name))
         .map(|r| format!("\"{}\" ({})", r.name, r.scope))
         .collect();
@@ -805,13 +868,23 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             None => "org".to_string(),
             Some(l) => l.join(","),
         };
+        // A connection with no env exposure is a model connection: boxes
+        // authenticate via sentinel logins, injection happens in transit.
+        let is_model = conn.env.is_empty();
         rows.push(serde_json::json!({
-            "name": conn.name, "use": "capability", "provider": conn.provider,
+            "name": conn.name,
+            "use": if is_model { "model" } else { "capability" },
+            "provider": conn.provider,
             "workers": conn.workers, "hosts": conn.hosts, "methods": conn.methods,
             "env": conn.env,
             "state": if conn.enabled { "active" } else { "DISABLED (no secret)" },
-            "detail": format!("{scope}: {} [{}] → {}",
-                conn.hosts.join(","), conn.methods.join(","), conn.env),
+            "detail": if is_model {
+                format!("{scope}: {} [{}], injected in transit",
+                    conn.hosts.join(","), conn.methods.join(","))
+            } else {
+                format!("{scope}: {} [{}] → {}",
+                    conn.hosts.join(","), conn.methods.join(","), conn.env)
+            },
         }));
     }
     for (worker, platform, credential) in &c.listeners {

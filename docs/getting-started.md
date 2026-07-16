@@ -44,24 +44,19 @@ model calls in transit. Two pieces:
 roster connection add openai-codex     # or: anthropic
 ```
 
-runs the provider's login flow and stores the credential in the vault.
-(`roster server start` offers this on its own when the vault holds no LLM
-credential: it can import an existing pi login — always asking first, never
-silently — or run the login inline. Import-and-own: after an import,
-roster's gateway owns the token refresh, and pi simply re-logs-in the next
-time it needs to.) Then
-grant the model hosts in `org.toml`, with injection:
+runs the provider's login flow, stores the credential in the vault, and
+scaffolds the model grant — a two-line connection file
+(`connections/openai-codex.toml`) that compiles into an allow-and-inject
+rule for the provider's model hosts, org-wide. Edit or delete that file to
+change access; a hand-written `[[grant]]` in `org.toml` that injects the
+credential takes its place. (`roster server start` offers the login on its
+own when the vault holds no LLM credential: it can import an existing pi
+login — always asking first, never silently — or run the login inline.
+Import-and-own: after an import, roster's gateway owns the token refresh,
+and pi simply re-logs-in the next time it needs to.)
 
-```toml
-[[grant]]
-name    = "model-api"
-match   = { host = ["chatgpt.com", "api.anthropic.com"], port = 443 }
-verdict = "allow"
-inject  = { credential = "openai-codex" }
-```
-
-That grant is the *only* egress your workers have so far — everything else is
-still default-deny.
+That model grant is the *only* egress your workers have so far — everything
+else is still default-deny.
 
 ## Scaffold a worker
 

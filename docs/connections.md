@@ -45,9 +45,12 @@ roster triggers), stores the secret, and follows through per use:
   chosen worker's spec (`--worker` answers non-interactively; declining
   prints the snippet). One credential serves one worker's listener —
   use `--name` for a second bot.
-- **model** — reports which grants already inject the secret, or prints a
-  starter `[[grant]]` block. It never writes grants; they are deliberate,
-  hand-written policy.
+- **model** — a grant by default: scaffolds a connection file whose hosts
+  and methods derive from the provider registry, compiling into an
+  allow-and-inject rule for the model API (org-wide unless `--worker`
+  narrows it, no env exposure). The file is admin-owned after creation —
+  edit or delete it to change access; a hand-written `[[grant]]` injecting
+  the same credential is respected and nothing is scaffolded over it.
 
 A provider supporting several uses (slack) asks which to set up —
 `--use channel --use capability` for scripts — and collects only the

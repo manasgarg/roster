@@ -371,6 +371,16 @@ pub fn load() -> Result<Loaded, Vec<String>> {
             &workers,
             |p| registry.contains_key(p),
             |c| crate::credential::vault::get_credential(c).is_some(),
+            |p| {
+                registry.get(p).and_then(|entry| {
+                    entry.get("model_hosts").and_then(Value::as_array).map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                })
+            },
         ) {
             Ok((connection, rules, connection_exposes, warning)) => {
                 connection_rules.extend(rules);
@@ -451,6 +461,7 @@ fn compile_connection(
     known_workers: &[String],
     provider_exists: impl Fn(&str) -> bool,
     secret_exists: impl Fn(&str) -> bool,
+    model_hosts_of: impl Fn(&str) -> Option<Vec<String>>,
 ) -> Result<CompiledConnection, Vec<String>> {
     let mut errors = Vec::new();
     let ctx = format!("connection \"{name}\"");
@@ -519,17 +530,31 @@ fn compile_connection(
         (None, true) => {}
     }
 
-    let hosts = strings("hosts").unwrap_or_default();
+    // A model provider's connection is a grant by default: hosts come from
+    // the registry's model_hosts, the model API's verbs are allowed, and
+    // there is no env exposure — the box authenticates through sentinel
+    // logins and the gateway injects the real credential in transit.
+    let model_hosts = model_hosts_of(&provider);
+    let is_model = model_hosts.is_some();
+    let hosts = strings("hosts")
+        .or(model_hosts)
+        .unwrap_or_default();
     if hosts.is_empty() {
         errors.push(format!("{ctx}: needs hosts = [\"api.example.com\", ..]"));
     }
-    let methods = strings("methods").unwrap_or_else(|| vec!["GET".into()]);
+    let methods = strings("methods").unwrap_or_else(|| {
+        if is_model {
+            vec!["GET".into(), "POST".into()]
+        } else {
+            vec!["GET".into()]
+        }
+    });
     let env = v
         .get("env")
         .and_then(|x| x.as_str())
         .unwrap_or_default()
         .to_string();
-    if env.is_empty() {
+    if env.is_empty() && !is_model {
         errors.push(format!("{ctx}: needs env = \"<VAR the box sees>\""));
     }
     if !errors.is_empty() {
@@ -582,14 +607,18 @@ fn compile_connection(
             })
         })
         .collect();
-    let exposes = scopes
-        .into_iter()
-        .map(|scope| Expose {
-            scope,
-            credential: name.to_string(),
-            env: env.clone(),
-        })
-        .collect();
+    let exposes = if env.is_empty() {
+        Vec::new()
+    } else {
+        scopes
+            .into_iter()
+            .map(|scope| Expose {
+                scope,
+                credential: name.to_string(),
+                env: env.clone(),
+            })
+            .collect()
+    };
     Ok((connection, rules, exposes, None))
 }
 
@@ -886,7 +915,7 @@ mod tests {
         );
         let workers = vec!["yuko".to_string(), "kdemo".to_string()];
         let (c, rules, exposes, warning) =
-            compile_connection("github", &v, &workers, |_| true, |_| true).unwrap();
+            compile_connection("github", &v, &workers, |_| true, |_| true, |_| None).unwrap();
         assert!(c.enabled);
         assert_eq!(c.methods, vec!["GET"]); // the default
         assert_eq!(rules.len(), 2);
@@ -913,9 +942,39 @@ mod tests {
             inject_value = "Bearer {key}"
         "#,
         );
-        let (_, rules, _, _) = compile_connection("acme", &v, &[], |_| false, |_| true).unwrap();
+        let (_, rules, _, _) =
+            compile_connection("acme", &v, &[], |_| false, |_| true, |_| None).unwrap();
         assert_eq!(rules[0]["inject"]["provider"], "acme");
         assert_eq!(rules[0]["inject"]["headers"][0]["value"], "Bearer {key}");
+    }
+
+    #[test]
+    fn model_connection_is_a_grant_by_default() {
+        // Two lines of toml — hosts, methods, and the no-exposure shape all
+        // derive from the provider being a model (registry model_hosts).
+        let v = toml(
+            r#"
+            provider = "anthropic"
+            scope = "org"
+        "#,
+        );
+        let (c, rules, exposes, warning) = compile_connection(
+            "anthropic",
+            &v,
+            &[],
+            |_| true,
+            |_| true,
+            |p| (p == "anthropic").then(|| vec!["api.anthropic.com".to_string()]),
+        )
+        .unwrap();
+        assert!(c.enabled);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["scope"], "org");
+        assert_eq!(rules[0]["match"]["host"][0], "api.anthropic.com");
+        assert_eq!(rules[0]["match"]["method"][1], "POST");
+        assert_eq!(rules[0]["inject"]["credential"], "anthropic");
+        assert!(exposes.is_empty(), "models expose no env var");
+        assert!(warning.is_none());
     }
 
     #[test]
@@ -929,7 +988,7 @@ mod tests {
         "#,
         );
         let (c, rules, exposes, warning) =
-            compile_connection("github", &v, &[], |_| true, |_| false).unwrap();
+            compile_connection("github", &v, &[], |_| true, |_| false, |_| None).unwrap();
         assert!(!c.enabled);
         assert!(rules.is_empty() && exposes.is_empty());
         assert!(warning.unwrap().contains("disabled"));
@@ -950,6 +1009,7 @@ mod tests {
             &["yuko".to_string()],
             |p| p == "github",
             |_| true,
+            |_| None,
         )
         .unwrap_err();
         assert!(errors.iter().any(|e| e.contains("unknown provider")));

@@ -1,4 +1,4 @@
-//! The task management system (TMS) — docs/specs/task-management.md.
+//! The task management system (TMS) — docs/work.md.
 //!
 //! One partition document per worker (`data/workers/<name>/tasks/tasks.json`)
 //! holds the live tasks and recurring templates; terminal tasks move to an

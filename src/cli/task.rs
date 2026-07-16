@@ -1,5 +1,5 @@
 //! `roster worker task` — file, list, and inspect tasks: the human window
-//! into the TMS partition (docs/specs/task-management.md).
+//! into the TMS partition (docs/work.md).
 
 use crate::util::BErr;
 use crate::work::tms;

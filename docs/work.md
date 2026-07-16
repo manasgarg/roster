@@ -8,8 +8,7 @@ append-only journal of everything finished. The dispatch loop inside
 who is due and runs one governed box per claimable task. Nothing works
 inline, and the TMS is the only path into a container. (Chat conversations
 take a warm shortcut — see [channels.md](channels.md) — but everything else
-is a task.) Full behavioral contract:
-[specs/task-management.md](specs/task-management.md).
+is a task.)
 
 ## How work arrives
 

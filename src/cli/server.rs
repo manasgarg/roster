@@ -120,7 +120,7 @@ async fn bootstrap_llm_credential() -> Result<(), BErr> {
     if !interactive {
         eprintln!(
             "no LLM credential in the vault — boxes cannot call a model. \
-             Connect one: roster credential add anthropic  (or openai-codex)"
+             Connect one: roster connection add anthropic  (or openai-codex)"
         );
         return Ok(());
     }
@@ -162,8 +162,8 @@ async fn bootstrap_llm_credential() -> Result<(), BErr> {
     match answer.trim() {
         p @ ("anthropic" | "openai-codex") => crate::credential::connect::run(p)
             .await
-            .map_err(|e| format!("credential add {p}: {e}"))?,
-        _ => eprintln!("skipped — connect later with: roster credential add <provider>"),
+            .map_err(|e| format!("connection add {p}: {e}"))?,
+        _ => eprintln!("skipped — connect later with: roster connection add <provider>"),
     }
     Ok(())
 }

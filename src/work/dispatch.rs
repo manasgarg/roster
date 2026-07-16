@@ -1,5 +1,5 @@
 //! The task-dispatch half of `roster server start`: the trusted orchestration
-//! loop, a dumb executor over the TMS (docs/specs/task-management.md). Each
+//! loop, a dumb executor over the TMS (docs/work.md). Each
 //! tick it asks the TMS who is due, applies its own envelope — the concurrency
 //! cap, and budgets for proactive standing — runs one governed box per task,
 //! and attests claim/complete/fail back. It holds no plan and no timer.

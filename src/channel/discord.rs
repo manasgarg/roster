@@ -243,6 +243,21 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
     result
 }
 
+/// Remember a channel's human identity so the CLI never shows a bare id.
+pub(crate) fn write_channel_meta(channel_id: &str, meta: &Value) {
+    let path = crate::paths::channel_meta_file(channel_id);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, format!("{meta}\n"));
+}
+
+/// The channel's human identity, if a listener has learned it.
+pub fn channel_meta(channel_id: &str) -> Option<Value> {
+    let text = std::fs::read_to_string(crate::paths::channel_meta_file(channel_id)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 fn ingest_guild(d: &Value) -> Guild {
     let mut role_perms = HashMap::new();
     let mut everyone_perms = 0;
@@ -260,8 +275,27 @@ fn ingest_guild(d: &Value) -> Guild {
             role_perms.insert(id.to_string(), perms);
         }
     }
+    // GUILD_CREATE carries every channel's name — persist them so `channel
+    // ls/show` can say "#general @ rototo" instead of a snowflake id.
+    let guild_name = d["name"].as_str().unwrap_or("");
+    if let Some(channels) = d["channels"].as_array() {
+        for c in channels {
+            let (Some(id), Some(name)) = (c["id"].as_str(), c["name"].as_str()) else {
+                continue;
+            };
+            write_channel_meta(
+                id,
+                &serde_json::json!({
+                    "platform": "discord",
+                    "server": guild_name,
+                    "name": name,
+                }),
+            );
+        }
+    }
+
     Guild {
-        name: d["name"].as_str().unwrap_or("").to_string(),
+        name: guild_name.to_string(),
         owner_id: d["owner_id"].as_str().unwrap_or("").to_string(),
         everyone_perms,
         role_perms,
@@ -319,6 +353,13 @@ async fn handle_message(
     let is_dm = d["guild_id"].as_str().is_none();
     if is_dm {
         set_channel_trust(channel_id, true); // DMs are always trusted (1:1, sought-out)
+        write_channel_meta(
+            channel_id,
+            &json!({
+                "platform": "discord",
+                "name": format!("DM with {}", d["author"]["username"].as_str().unwrap_or("?")),
+            }),
+        );
     }
     let role = resolve_role(d, guilds);
     let author = d["author"]["username"].as_str().unwrap_or("?");

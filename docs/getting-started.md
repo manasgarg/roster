@@ -41,7 +41,7 @@ The box never holds a real key, so the gateway must be able to authenticate
 model calls in transit. Two pieces:
 
 ```bash
-roster credential add openai-codex     # or: anthropic
+roster connection add openai-codex     # or: anthropic
 ```
 
 runs the provider's login flow and stores the credential in the vault.
@@ -125,10 +125,10 @@ automatically — see [actions-and-trust.md](actions-and-trust.md).
 ## Put it in a chat
 
 ```bash
-roster credential add discord       # or: slack
+roster connection add discord --worker yuko       # or: slack
 ```
 
-then bind it in `workers/yuko/worker.toml`:
+The wizard writes the binding into `workers/yuko/worker.toml`:
 
 ```toml
 [channels]

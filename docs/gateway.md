@@ -91,7 +91,7 @@ A denial is a verdict, never a mystery hang:
 ## Credential injection
 
 Real credentials live in the vault (`data/vault/`, one JSON file per name,
-mode 0600), seeded by `roster credential add` and by the connection wizard.
+mode 0600), seeded by `roster connection add`.
 The box carries sentinels — structurally valid placeholders, shaped like the
 real thing so clients will send them (even a well-formed fake JWT where a
 JWT is expected).
@@ -111,7 +111,7 @@ sentinel to a real host.
 per credential so concurrent requests don't race a rotating token, merged
 and written atomically so a crash can't half-rotate the vault, audited to
 `audit/credentials.jsonl` (events only, never values). If a refresh chain
-ever breaks, `roster credential add <provider>` re-authenticates.
+ever breaks, `roster connection add <provider>` re-authenticates.
 
 ## Identity: who is asking
 

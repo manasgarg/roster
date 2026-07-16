@@ -14,4 +14,3 @@ pub mod memory;
 pub mod runs;
 pub mod server;
 pub mod task;
-pub mod vault;

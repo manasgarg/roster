@@ -590,7 +590,7 @@ fn exec_term_send(worker: &str, payload: &Value) -> Result<Value, String> {
 }
 
 /// `set_tasks` — the agent's curation write over its own TMS partition
-/// (docs/specs/task-management.md): one optimistically-concurrent document
+/// (docs/work.md): one optimistically-concurrent document
 /// swap, validated host-side; a rejection tells the agent to re-read the
 /// mounted view and retry.
 fn exec_set_tasks(worker: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
@@ -702,7 +702,7 @@ async fn exec_discord(worker: &str, payload: &Value) -> Result<Value, String> {
         .filter(|s| !s.trim().is_empty())
         .ok_or("discord-send needs non-empty \"text\"")?;
     let cred = crate::credential::vault::get_credential("discord")
-        .ok_or("no discord credential — run: roster credential add discord")?;
+        .ok_or("no discord credential — run: roster connection add discord")?;
     let token = cred
         .get("token")
         .and_then(|v| v.as_str())
@@ -743,7 +743,7 @@ async fn exec_slack(worker: &str, payload: &Value) -> Result<Value, String> {
         .filter(|s| !s.is_empty());
     let name = slack_credential_name(worker);
     let cred = crate::credential::vault::get_credential(&name)
-        .ok_or_else(|| format!("no \"{name}\" credential — run: roster credential add slack"))?;
+        .ok_or_else(|| format!("no \"{name}\" credential — run: roster connection add slack"))?;
     let token = cred
         .get("bot_token")
         .and_then(|v| v.as_str())
@@ -787,7 +787,7 @@ async fn exec_email(worker: &str, payload: &Value) -> Result<Value, String> {
     // No SMTP configured: fail loudly so an email is never silently dropped. The
     // local sink (a file, no real send) is opt-in for offline testing only.
     if std::env::var("ROSTER_EMAIL_SINK").is_err() {
-        return Err("email not sent: no SMTP configured — run `roster credential add smtp` (e.g. your Mailgun SMTP creds)".into());
+        return Err("email not sent: no SMTP configured — run `roster connection add smtp` (e.g. your Mailgun SMTP creds)".into());
     }
     let dir = paths::outbox_dir();
     let _ = std::fs::create_dir_all(&dir);

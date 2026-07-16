@@ -6,25 +6,25 @@ through the same gate as everything else. The listener is host-side
 infrastructure; its bot credential lives in the vault and never enters a
 box.
 
-Don't confuse the two Slack integrations: talking *in* Slack (this page)
-uses the `slack` channel credential; a worker calling the Slack *API* as a
-capability uses the `slack-api` entry in the connection catalog
-([connections.md](connections.md)). Different intents, different names.
+Talking *in* Slack (this page) and calling the Slack *API* as a capability
+are two **uses** of one `slack` connection
+([connections.md](connections.md)) — set up either or both from one login.
 
 ## Setup
 
 ```bash
-roster credential add discord     # or: slack
+roster connection add discord --worker yuko     # or: slack
 ```
 
 Discord takes the bot token. Slack takes two: the bot token (`xoxb-…`) and
 an app-level token (`xapp-…`, scope `connections:write`) for Socket Mode.
-Then bind the credential in the worker's spec:
+The wizard offers to write the binding into the worker's spec (that's what
+`--worker` answers); it lands as:
 
 ```toml
 # workers/yuko/worker.toml
 [channels]
-discord = "discord"     # the vault credential its bot uses
+discord = "discord"     # the vault secret its bot uses
 slack   = "slack"
 ```
 

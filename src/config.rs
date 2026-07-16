@@ -202,7 +202,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
             for t in array(&w, "trust") {
                 trust.push(with_scope(t, &scope));
             }
-            // [[trigger]] retired (docs/specs/task-management.md): periodic
+            // [[trigger]] retired (docs/work.md): periodic
             // invocation is the heartbeat; other cadences are the worker's own
             // recurring templates in its task partition.
             if w.get("trigger").is_some() {
@@ -579,7 +579,7 @@ fn validate_exposes(
         }
         if !credential_exists(&e.credential) {
             errors.push(format!(
-                "[[expose]] {}: no \"{}\" credential in the vault — run: roster credential add <provider>",
+                "[[expose]] {}: no \"{}\" credential in the vault — run: roster connection add <provider>",
                 e.env, e.credential
             ));
         }

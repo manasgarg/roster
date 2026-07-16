@@ -10,6 +10,25 @@ use crate::util::BErr;
 const SET_KEYS: &str =
     "mode, memory, memory-inferred, memory-kinds, memory-retention, memory-notes, memory-chars";
 
+/// A channel's human identity: what the listener learned ("#general @ rototo",
+/// "DM with jane"), or derived for terminal channels, or the bare id.
+pub fn describe(channel_id: &str) -> String {
+    if let Some(meta) = discord::channel_meta(channel_id) {
+        let platform = meta.get("platform").and_then(|v| v.as_str()).unwrap_or("?");
+        let name = meta.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        return match meta.get("server").and_then(|v| v.as_str()) {
+            Some(server) if !server.is_empty() => format!("{platform} #{name} @ {server}"),
+            _ => format!("{platform} {name}"),
+        };
+    }
+    if let Some(rest) = channel_id.strip_prefix("term-") {
+        if let Some((user, worker)) = rest.rsplit_once('-') {
+            return format!("terminal {user} ↔ {worker}");
+        }
+    }
+    "-".into()
+}
+
 pub fn ls(json: bool) -> Result<(), BErr> {
     let map = discord::channel_settings_all();
     if json {
@@ -20,11 +39,15 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         println!("no channels configured (untrusted, mode=all by default)");
         return Ok(());
     }
-    println!("{:<22}  {:<9}  {:<7}  MEMORY", "CHANNEL", "TRUST", "MODE");
+    println!(
+        "{:<22}  {:<28}  {:<9}  {:<7}  MEMORY",
+        "CHANNEL", "WHERE", "TRUST", "MODE"
+    );
     for (id, s) in map {
         println!(
-            "{:<22}  {:<9}  {:<7}  {}",
+            "{:<22}  {:<28}  {:<9}  {:<7}  {}",
             id,
+            describe(&id),
             if s.trusted { "trusted" } else { "untrusted" },
             s.mode,
             memory_summary(&s),
@@ -46,6 +69,10 @@ pub fn show(channel_id: &str) -> Result<(), BErr> {
             "   (not configured — defaults)"
         }
     );
+    let described = describe(channel_id);
+    if described != "-" {
+        println!("where     {described}");
+    }
     println!(
         "trust     {}",
         if s.trusted { "trusted" } else { "untrusted" }
@@ -94,6 +121,54 @@ pub fn set_trust(channel_id: &str, trusted: bool) -> Result<(), BErr> {
         "channel {channel_id} → {}",
         if trusted { "trusted" } else { "untrusted" }
     );
+    Ok(())
+}
+
+/// Bare `channel set <id>`: show every key, its allowed values, and the
+/// channel's current value — the same pattern as `connection add` without a
+/// service.
+pub fn set_help(channel_id: &str) -> Result<(), BErr> {
+    let s = current_settings(channel_id);
+    let current_kinds = s
+        .memory_allowed_kinds
+        .as_ref()
+        .map(|v| v.join(","))
+        .unwrap_or_else(|| "default".into());
+    let current_retention = s
+        .memory_retention_days
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "default".into());
+    let current_notes = s
+        .memory_recall_max_notes
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "default".into());
+    let current_chars = s
+        .memory_recall_char_budget
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "default".into());
+    println!("channel {channel_id}  ({})\n", describe(channel_id));
+    println!("{:<18}  {:<34}  CURRENT", "KEY", "VALUES");
+    let rows = [
+        ("mode", "all | mention", s.mode.clone()),
+        (
+            "memory",
+            "on | off",
+            if s.memory_enabled { "on" } else { "off" }.to_string(),
+        ),
+        (
+            "memory-inferred",
+            "auto | review",
+            if s.memory_inferred_auto { "auto" } else { "review" }.to_string(),
+        ),
+        ("memory-kinds", "default | kind,kind,…", current_kinds),
+        ("memory-retention", "default | days", current_retention),
+        ("memory-notes", "default | max notes recalled", current_notes),
+        ("memory-chars", "default | max chars recalled", current_chars),
+    ];
+    for (key, values, current) in rows {
+        println!("{key:<18}  {values:<34}  {current}");
+    }
+    println!("\nset one: roster server channel set {channel_id} <key> <value>");
     Ok(())
 }
 

@@ -1,8 +1,8 @@
-//! `roster credential add <provider>` — create a credential via the provider's
-//! login flow.
-//! flow (our own implementation). Generalized over the provider registry
-//! (providers.json): api-key providers take a key; OAuth providers run
-//! device-code or PKCE. The result lands in the vault; refresh keeps it alive.
+//! Provider login flows (our own implementation), generalized over the
+//! provider registry: api-key providers take a key; OAuth providers run
+//! device-code or PKCE. The result lands in the vault; refresh keeps it
+//! alive. Driven by `roster connection add` (and the launch bootstrap) —
+//! there is no user-facing "credential" verb (docs/connections.md).
 
 use crate::util::now_ms;
 use base64::Engine;
@@ -13,44 +13,8 @@ use std::time::{Duration, Instant};
 
 type BErr = Box<dyn std::error::Error>;
 
-/// The provider list for `credential add --help`: one line per registered
-/// provider and what its login flow will ask of you. Best-effort — outside a
-/// roster root there is no registry, so the help points at where it looks.
-pub fn provider_help() -> String {
-    let Ok(registry) = read_registry() else {
-        return format!(
-            "Provider defaults ship with the binary; overlay them at {}.",
-            crate::paths::providers_file().display()
-        );
-    };
-    let mut names: Vec<&String> = registry.keys().collect();
-    names.sort();
-    let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
-    let mut out = String::from("Providers:\n");
-    for name in names {
-        let p = &registry[name.as_str()];
-        let what = match p["auth"].as_str() {
-            Some("api_key") => "prompts you to paste an API key",
-            Some("smtp") => "prompts for SMTP host, port, username, password (e.g. Mailgun)",
-            Some("discord") => "prompts for a bot token and, optionally, your Discord user id",
-            Some("slack") => "prompts for a bot token (xoxb-) and a Socket Mode app token (xapp-)",
-            Some("oauth") => match p["login"]["flow"].as_str() {
-                Some("device_code") => {
-                    "device-code login: open a URL, enter the shown code, approve"
-                }
-                Some("pkce") => {
-                    "browser login: open the printed URL, authorize, paste the code back"
-                }
-                _ => "OAuth login (unrecognized flow)",
-            },
-            _ => "unrecognized auth kind",
-        };
-        out.push_str(&format!("  {name:width$}  {what}\n"));
-    }
-    out.push_str("\nThe credential is stored securely; tokens are refreshed automatically.");
-    out
-}
-
+/// Internal login-and-store, used by the launch bootstrap (LLM providers).
+/// The user-facing path is `roster connection add`.
 pub async fn run(name: &str) -> Result<(), BErr> {
     let registry = read_registry()?;
     let mut available: Vec<String> = registry.keys().cloned().collect();
@@ -61,7 +25,7 @@ pub async fn run(name: &str) -> Result<(), BErr> {
             available.join(", ")
         )
     })?;
-    let cred = login(name, p).await?;
+    let cred = login(name, p, true).await?;
     store(name, &cred)?;
     println!("\nconnected: credential for \"{name}\" written to the vault");
     Ok(())
@@ -69,12 +33,14 @@ pub async fn run(name: &str) -> Result<(), BErr> {
 
 /// Run a provider's interactive login flow and return the credential JSON
 /// (not stored). The connections wizard stores it under its own name.
-pub async fn login(provider_name: &str, p: &Value) -> Result<Value, BErr> {
+/// `channel_use` widens field collection where a use needs more (slack's
+/// Socket Mode app token exists only for the channel listener).
+pub async fn login(provider_name: &str, p: &Value, channel_use: bool) -> Result<Value, BErr> {
     match p.get("auth").and_then(|v| v.as_str()) {
         Some("api_key") => connect_api_key(),
         Some("smtp") => connect_smtp(),
         Some("discord") => connect_discord(),
-        Some("slack") => connect_slack(),
+        Some("slack") => connect_slack(channel_use),
         Some("oauth") => {
             let login = p.get("login").cloned().unwrap_or_else(|| json!({}));
             match login.get("flow").and_then(|v| v.as_str()) {
@@ -149,9 +115,11 @@ fn connect_discord() -> Result<Value, BErr> {
     Ok(json!({ "type": "discord", "token": token, "owner_id": owner_id }))
 }
 
-/// Slack channel credential: the bot token does the talking (Web API), the
-/// app-level token opens the Socket Mode websocket. Both stay host-side.
-fn connect_slack() -> Result<Value, BErr> {
+/// Slack credential: the bot token does the talking (Web API and the
+/// `Bearer {bot_token}` capability injection); the app-level token opens the
+/// Socket Mode websocket, so it is collected only when the channel use wants
+/// it. Both stay host-side.
+fn connect_slack(channel_use: bool) -> Result<Value, BErr> {
     let bot_token = prompt_hidden("Slack bot token (xoxb-…): ")?;
     if bot_token.is_empty() {
         return Err("no bot token entered".into());
@@ -159,14 +127,17 @@ fn connect_slack() -> Result<Value, BErr> {
     if !bot_token.starts_with("xoxb-") {
         eprintln!("note: bot tokens usually start with xoxb-");
     }
-    let app_token = prompt_hidden("Slack app-level token (xapp-…, scope connections:write): ")?;
-    if app_token.is_empty() {
-        return Err("no app-level token entered — Socket Mode needs one (app settings → Basic Information → App-Level Tokens)".into());
+    let mut cred = json!({ "type": "slack", "bot_token": bot_token });
+    if channel_use {
+        let app_token = prompt_hidden("Slack app-level token (xapp-…, scope connections:write): ")?;
+        if app_token.is_empty() {
+            return Err("no app-level token entered — Socket Mode needs one (app settings → Basic Information → App-Level Tokens)".into());
+        }
+        let owner_id = prompt("Your lead's Slack member id (for DMs; optional): ")?;
+        cred["app_token"] = json!(app_token);
+        cred["owner_id"] = json!(owner_id);
     }
-    let owner_id = prompt("Your lead's Slack member id (for DMs; optional): ")?;
-    Ok(
-        json!({ "type": "slack", "bot_token": bot_token, "app_token": app_token, "owner_id": owner_id }),
-    )
+    Ok(cred)
 }
 
 // ── OAuth device-code ────────────────────────────────────────────────────────

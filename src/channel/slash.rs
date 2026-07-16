@@ -487,8 +487,14 @@ pub async fn run(
                 .ok()
                 .map(|p| p.trim().to_string())
                 .filter(|p| !p.is_empty());
+            let described = crate::cli::channel::describe(channel_id);
+            let place = if described == "-" {
+                String::new()
+            } else {
+                format!(" — {described}")
+            };
             format!(
-                "This channel ({channel_id}):\n\
+                "This channel ({channel_id}{place}):\n\
                  trust: **{}** · mode: **{}**\n\
                  memory: **{}** (inferred {}, kinds {}, retention {})\n\
                  purpose: {}",

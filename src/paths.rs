@@ -106,7 +106,7 @@ pub fn worker_queue_dir(worker: &str) -> PathBuf {
     worker_data_dir(worker).join("queue")
 }
 
-/// The TMS partition document (docs/specs/task-management.md).
+/// The TMS partition document (docs/work.md).
 pub fn worker_tasks_file(worker: &str) -> PathBuf {
     worker_data_dir(worker).join("tasks").join("tasks.json")
 }
@@ -161,6 +161,12 @@ pub fn channels_dir() -> PathBuf {
 
 pub fn channel_dir(channel_id: &str) -> PathBuf {
     channels_dir().join(channel_id)
+}
+
+/// Human identity of a channel (platform, server, name) — written by the
+/// listeners as they learn it, read wherever a bare id would be illegible.
+pub fn channel_meta_file(channel_id: &str) -> PathBuf {
+    channel_dir(channel_id).join("meta.json")
 }
 
 fn audit_dir() -> PathBuf {

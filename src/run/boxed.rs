@@ -696,8 +696,8 @@ async fn provision_box(
             args.extend(["-v".into(), format!("{0}:{0}:ro", channel_dir.display())]);
         }
     }
-    // The worker's task partition as a live read view (docs/specs/
-    // task-management.md): the host rewrites it in place on every mutation;
+    // The worker's task partition as a live read view (docs/work.md):
+    // the host rewrites it in place on every mutation;
     // authoritative writes go through the set_tasks action, file edits are
     // scratch.
     let tasks_view = crate::work::tms::ensure_view(worker);

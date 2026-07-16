@@ -361,32 +361,58 @@ async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Bod
 
 // ── approval-side execution (shared with `roster gates approve`) ─────────────
 
-/// Execute an approved gate, idempotently. `pending`/`approved` → run; `executed`
-/// is terminal (never re-runs); a crash between approve and execute resumes.
+/// Execute an approved gate exactly once. Two phases: under the gate lock we
+/// atomically claim a `pending`/`approved`/`failed` gate by moving it to
+/// `executing` (a second approver then sees `executing` and is refused); the
+/// executor — the real, non-idempotent side effect — runs with the lock
+/// released; then, under the lock again, we record the terminal state.
+///
+/// `executing` is not retryable through this path: a gate stuck there means a
+/// prior run died mid-execute, and we cannot know whether the email/PR/message
+/// already went out, so we refuse rather than risk a double send.
 pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Result<Gate, String> {
-    let mut g = gate::load(id).ok_or_else(|| format!("no such gate {id}"))?;
-    if g.state == "executed" {
-        return Err(format!("gate {id} already executed"));
-    }
-    if g.state == "denied" {
-        return Err(format!("gate {id} was denied"));
-    }
-    if g.state == "pending" {
-        g.state = "approved".into();
-        g.decided_by = Some(decided_by.to_string());
-        g.decided_at = Some(now_rfc3339());
-        g.decision_note = note.map(String::from);
+    // Phase 1 — claim the gate for execution, exclusively.
+    let mut g = {
+        let _lock = gate::lock().map_err(|e| format!("gate lock: {e}"))?;
+        let mut g = gate::load(id).ok_or_else(|| format!("no such gate {id}"))?;
+        match g.state.as_str() {
+            "executed" => return Err(format!("gate {id} already executed")),
+            "denied" => return Err(format!("gate {id} was denied")),
+            "executing" => {
+                return Err(format!(
+                    "gate {id} is mid-execution (or a prior run crashed while executing it) — \
+                     inspect whether the action already happened before retrying"
+                ))
+            }
+            // pending | approved | failed (a failed executor may be retried)
+            _ => {}
+        }
+        if g.state == "pending" {
+            g.state = "approved".into();
+            g.decided_by = Some(decided_by.to_string());
+            g.decided_at = Some(now_rfc3339());
+            g.decision_note = note.map(String::from);
+            gate::save(&g).map_err(|e| e.to_string())?;
+            journal::append(
+                &g.worker,
+                &g.run_id,
+                "approved",
+                json!({ "gate_id": g.id, "by": decided_by, "note": note }),
+            );
+        }
+        g.state = "executing".into();
+        g.error = None;
         gate::save(&g).map_err(|e| e.to_string())?;
-        journal::append(
-            &g.worker,
-            &g.run_id,
-            "approved",
-            json!({ "gate_id": g.id, "by": decided_by, "note": note }),
-        );
-    }
-    g.state = "executing".into();
-    gate::save(&g).map_err(|e| e.to_string())?;
-    match run_executor(&g.executor, &g.worker, &g.intent, &g.payload, &g.run_id).await {
+        g
+    };
+
+    // Phase 2 — the side effect runs without the lock, so a slow send can't
+    // block other approvals; the `executing` marker guards against re-entry.
+    let outcome = run_executor(&g.executor, &g.worker, &g.intent, &g.payload, &g.run_id).await;
+
+    // Phase 3 — record the terminal state under the lock.
+    let _lock = gate::lock().map_err(|e| format!("gate lock: {e}"))?;
+    match outcome {
         Ok(result) => {
             g.state = "executed".into();
             g.executed_at = Some(now_rfc3339());
@@ -413,15 +439,24 @@ pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Res
                 json!({ "gate_id": g.id, "intent": g.intent, "error": e }),
             );
             audit(&g.worker, &g.intent, "failed", Some(&g.id), None);
+            // Close the loop even on failure, so the task doesn't wedge in
+            // needs-review and the worker learns the action didn't happen.
+            resolve_followup(&g);
             Err(e)
         }
     }
 }
 
 pub fn deny_gate(id: &str, decided_by: &str, note: Option<&str>) -> Result<Gate, String> {
+    let _lock = gate::lock().map_err(|e| format!("gate lock: {e}"))?;
     let mut g = gate::load(id).ok_or_else(|| format!("no such gate {id}"))?;
     if g.is_terminal() {
         return Err(format!("gate {id} is already {}", g.state));
+    }
+    if g.state == "executing" {
+        return Err(format!(
+            "gate {id} is being executed — it can no longer be denied"
+        ));
     }
     g.state = "denied".into();
     g.decided_by = Some(decided_by.to_string());

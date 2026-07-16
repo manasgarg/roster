@@ -203,7 +203,9 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
     let user = std::env::var("USER").unwrap_or_else(|_| "operator".into());
     let channel_id = format!("term-{user}-{worker}");
     // The operator's own shell is trusted like a DM (1:1, sought-out).
-    crate::channel::discord::set_channel_trust(&channel_id, true);
+    if let Err(e) = crate::channel::discord::set_channel_trust(&channel_id, true) {
+        eprintln!("talk: could not mark {channel_id} trusted: {e}");
+    }
 
     let context = crate::worker::memory::RunContext {
         provider: "term".into(),

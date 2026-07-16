@@ -178,10 +178,32 @@ pub fn new_recurring_id() -> String {
 
 // ── persistence: partition, journal, view ─────────────────────────────────────
 
-/// Serialize access per process: the daemon's tick and its executors share this.
-/// Cross-process writers (the CLI) are rare and human-paced; last write wins
-/// there, which the version counter makes visible.
+/// Serialize access within this process (the daemon's tick and its executors).
+/// Cross-process writers — a hand-run CLI, the relay, gate approval — are held
+/// off by a per-worker `flock` taken alongside this mutex, so a stale CLI copy
+/// can no longer clobber a claim the daemon just made (and vice versa).
 static LOCK: Mutex<()> = Mutex::new(());
+
+fn tms_lock_name(worker: &str) -> String {
+    format!("tms-{}", paths::short_worker(worker))
+}
+
+/// Holds both the process mutex and the worker's cross-process file lock for the
+/// duration of a read-modify-write. Always taken mutex-first, one worker at a
+/// time, so there is no lock-ordering hazard.
+struct WorkerGuard {
+    _proc: std::sync::MutexGuard<'static, ()>,
+    _file: crate::statefile::FileLock,
+}
+
+fn lock_worker(worker: &str) -> Result<WorkerGuard, BErr> {
+    let proc = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let file = crate::statefile::FileLock::acquire(&tms_lock_name(worker))?;
+    Ok(WorkerGuard {
+        _proc: proc,
+        _file: file,
+    })
+}
 
 fn tasks_file(worker: &str) -> PathBuf {
     paths::worker_tasks_file(worker)
@@ -193,10 +215,38 @@ pub fn load(worker: &str) -> Partition {
 }
 
 fn read_partition(worker: &str) -> Partition {
-    std::fs::read_to_string(tasks_file(worker))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let path = tasks_file(worker);
+    let text = match crate::statefile::read_if_present(&path) {
+        Ok(None) => return Partition::default(), // fresh worker — a genuine empty
+        Ok(Some(t)) => t,
+        Err(e) => {
+            // Present but unreadable (not just absent). Returning an empty here
+            // would let a later save overwrite the real file with nothing, so
+            // flag it loudly; a transient read error resolves on the next tick.
+            eprintln!("tms: could not read {worker} tasks file ({e}); leaving it untouched");
+            return Partition::default();
+        }
+    };
+    match serde_json::from_str::<Partition>(&text) {
+        Ok(p) => p,
+        Err(e) => {
+            // Corrupt JSON (e.g. a zero-length file after power loss). Never coerce
+            // this to an empty partition and save over it — that is silent total
+            // task loss. Preserve the bytes alongside and start empty, loudly.
+            let aside = path.with_extension(format!("json.corrupt-{}", now_ms()));
+            let moved = std::fs::rename(&path, &aside).is_ok();
+            eprintln!(
+                "tms: {worker} tasks file is corrupt ({e}); {} — recover live tasks from there \
+                 and the journal",
+                if moved {
+                    format!("preserved at {}", aside.display())
+                } else {
+                    "could not preserve it".into()
+                }
+            );
+            Partition::default()
+        }
+    }
 }
 
 fn save(worker: &str, p: &mut Partition) -> Result<(), BErr> {
@@ -467,7 +517,7 @@ pub fn add(worker: &str, draft: Draft) -> Result<Task, BErr> {
         return Err("a knowledge reorganization cannot also be a code task".into());
     }
     check_scheduled_at(&draft.scheduled_at)?;
-    let _guard = LOCK.lock().unwrap();
+    let _guard = lock_worker(worker)?;
     let mut p = load(worker);
     if draft.knowledge_mode == "reorganization" {
         if let Some(active) = p
@@ -528,7 +578,10 @@ pub fn set_tasks(
     mut recurring: Vec<Recurring>,
     ctx: &crate::worker::memory::RunContext,
 ) -> Result<Partition, SetRejection> {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = lock_worker(worker).map_err(|e| SetRejection {
+        reason: format!("could not lock the task document: {e}"),
+        current: read_partition(worker),
+    })?;
     let current = load(worker);
     let reject = |reason: String, current: &Partition| SetRejection {
         reason,
@@ -793,7 +846,7 @@ fn mutate<F: FnOnce(&mut Partition) -> Result<Option<Task>, String>>(
     worker: &str,
     f: F,
 ) -> Result<Option<Task>, BErr> {
-    let _guard = LOCK.lock().unwrap();
+    let _guard = lock_worker(worker)?;
     let mut p = load(worker);
     let out = f(&mut p).map_err(|e| -> BErr { e.into() })?;
     save(worker, &mut p)?;
@@ -926,7 +979,7 @@ pub fn requeue(task_id: &str) -> Result<String, BErr> {
     let t = find(task_id).ok_or_else(|| format!("no task {task_id}"))?;
     if !t.live() {
         let (worker, id, prev) = (t.worker.clone(), t.id.clone(), t.state.clone());
-        let _guard = LOCK.lock().unwrap();
+        let _guard = lock_worker(&worker)?;
         let mut p = load(&worker);
         if p.tasks.iter().any(|x| x.id == id) {
             return Ok(format!("task {id} is already back in the queue"));
@@ -1035,12 +1088,12 @@ fn load_cursors() -> HashMap<String, i64> {
 }
 
 fn save_cursors(c: &HashMap<String, i64>) {
-    let path = paths::tms_cursors_file();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     if let Ok(text) = serde_json::to_string_pretty(c) {
-        let _ = std::fs::write(path, text);
+        // Atomic: a torn write here would reset every template's cursor and
+        // re-fire (or skip) recurrences across the fleet.
+        if let Err(e) = crate::statefile::write_atomic(&paths::tms_cursors_file(), text.as_bytes()) {
+            eprintln!("tms: could not save recurrence cursors: {e}");
+        }
     }
 }
 
@@ -1049,6 +1102,12 @@ fn save_cursors(c: &HashMap<String, i64>) {
 /// time, never for the past). Catch-up is coalesced: one spawn however many
 /// firings were missed while the daemon was down.
 fn run_recurrence(worker: &str, p: &mut Partition, now_str: &str, now: i64) -> bool {
+    // The cursor map is global (all workers), so guard the read-modify-write
+    // against another worker's tick in a second process. Always taken inside the
+    // per-worker tms lock, so the ordering is fixed and deadlock-free.
+    let _cursor_lock = crate::statefile::FileLock::acquire("tms-cursors")
+        .map_err(|e| eprintln!("tms: recurrence cursor lock unavailable ({e}); proceeding"))
+        .ok();
     let mut cursors = load_cursors();
     let mut changed = false;
     let mut expired: Vec<usize> = Vec::new();
@@ -1190,7 +1249,15 @@ pub fn due(heartbeats: &HashMap<String, String>) -> Vec<DueWorker> {
         }
     }
     for worker in workers {
-        let _guard = LOCK.lock().unwrap();
+        // Never evaluate a worker's due set without the lock — an unlocked
+        // read racing a claim could hand the same task out twice.
+        let _guard = match lock_worker(&worker) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("tms: skipping {worker} this tick — could not lock: {e}");
+                continue;
+            }
+        };
         let mut p = load(&worker);
         let mut changed = ensure_heartbeat(&worker, &mut p, heartbeats.get(&worker).map(|s| s.as_str()));
         changed |= run_recurrence(&worker, &mut p, &now_str, now);
@@ -1370,16 +1437,17 @@ mod tests {
         }
     }
 
-    // Tests share the process env (ROSTER_ROOT), so they serialize on one lock.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
+    // Tests share the process env (ROSTER_ROOT), so they serialize on the one
+    // cross-module lock (shared with the other env-repointing test suites).
     struct Sandbox {
         _guard: std::sync::MutexGuard<'static, ()>,
         _dir: tempfile::TempDir,
     }
 
     fn sandbox() -> Sandbox {
-        let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = crate::statefile::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("ROSTER_ROOT", dir.path());
         Sandbox {

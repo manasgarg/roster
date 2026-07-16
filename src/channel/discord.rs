@@ -352,7 +352,11 @@ async fn handle_message(
     }
     let is_dm = d["guild_id"].as_str().is_none();
     if is_dm {
-        set_channel_trust(channel_id, true); // DMs are always trusted (1:1, sought-out)
+        if let Err(e) = set_channel_trust(channel_id, true) {
+            // DMs are always trusted (1:1, sought-out); a failure here isn't
+            // user-facing, but it must not pass unnoticed.
+            eprintln!("discord: could not mark DM channel {channel_id} trusted: {e}");
+        }
         write_channel_meta(
             channel_id,
             &json!({
@@ -775,14 +779,25 @@ fn load_settings() -> HashMap<String, ChannelSettings> {
         .unwrap_or_default()
 }
 
-fn save_settings(map: &HashMap<String, ChannelSettings>) {
-    let path = settings_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(text) = serde_json::to_string_pretty(map) {
-        let _ = std::fs::write(path, text);
-    }
+fn save_settings(map: &HashMap<String, ChannelSettings>) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
+    crate::statefile::write_atomic(&settings_path(), text.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Load, apply `f`, and persist channel settings as one locked, atomic
+/// read-modify-write. The lock keeps the daemon (marking a DM trusted), other
+/// slash commands, and a separate CLI process from losing each other's updates;
+/// the atomic write keeps a concurrent reader from ever seeing a half-written
+/// file. The write error is returned so callers report a real failure instead
+/// of claiming a change that didn't land.
+fn mutate_settings(
+    f: impl FnOnce(&mut HashMap<String, ChannelSettings>),
+) -> Result<(), String> {
+    let _lock = crate::statefile::FileLock::acquire("channels")
+        .map_err(|e| format!("channel settings lock: {e}"))?;
+    let mut m = load_settings();
+    f(&mut m);
+    save_settings(&m)
 }
 
 /// Is this channel marked trusted? (DMs are marked trusted when first seen.)
@@ -793,14 +808,15 @@ pub fn channel_trusted(channel_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub fn set_channel_trust(channel_id: &str, trusted: bool) {
-    let mut m = load_settings();
-    let e = m.entry(channel_id.to_string()).or_default();
-    if e.trusted == trusted {
-        return;
+pub fn set_channel_trust(channel_id: &str, trusted: bool) -> Result<(), String> {
+    // Hot path: DMs re-assert trust on every message. Skip the locked write when
+    // nothing changes (the read sees a whole file thanks to atomic writes).
+    if channel_trusted(channel_id) == trusted {
+        return Ok(());
     }
-    e.trusted = trusted;
-    save_settings(&m);
+    mutate_settings(|m| {
+        m.entry(channel_id.to_string()).or_default().trusted = trusted;
+    })
 }
 
 /// The channel's response mode: "all" (default) or "mention".
@@ -811,11 +827,11 @@ pub fn channel_mode(channel_id: &str) -> String {
         .unwrap_or_else(default_mode)
 }
 
-pub fn set_channel_mode(channel_id: &str, mode: &str) {
-    let mut m = load_settings();
-    let e = m.entry(channel_id.to_string()).or_default();
-    e.mode = mode.to_string();
-    save_settings(&m);
+pub fn set_channel_mode(channel_id: &str, mode: &str) -> Result<(), String> {
+    let mode = mode.to_string();
+    mutate_settings(|m| {
+        m.entry(channel_id.to_string()).or_default().mode = mode;
+    })
 }
 
 pub fn channel_memory_enabled(channel_id: &str) -> bool {
@@ -856,42 +872,49 @@ pub fn channel_memory_retention_days(channel_id: &str) -> Option<u64> {
         .and_then(|s| s.memory_retention_days)
 }
 
-pub fn set_channel_memory_inferred_auto(channel_id: &str, enabled: bool) {
-    let mut m = load_settings();
-    m.entry(channel_id.to_string())
-        .or_default()
-        .memory_inferred_auto = enabled;
-    save_settings(&m);
+pub fn set_channel_memory_inferred_auto(channel_id: &str, enabled: bool) -> Result<(), String> {
+    mutate_settings(|m| {
+        m.entry(channel_id.to_string())
+            .or_default()
+            .memory_inferred_auto = enabled;
+    })
 }
 
-pub fn set_channel_memory_allowed_kinds(channel_id: &str, kinds: Option<Vec<String>>) {
-    let mut m = load_settings();
-    m.entry(channel_id.to_string())
-        .or_default()
-        .memory_allowed_kinds = kinds;
-    save_settings(&m);
+pub fn set_channel_memory_allowed_kinds(
+    channel_id: &str,
+    kinds: Option<Vec<String>>,
+) -> Result<(), String> {
+    mutate_settings(|m| {
+        m.entry(channel_id.to_string())
+            .or_default()
+            .memory_allowed_kinds = kinds;
+    })
 }
 
-pub fn set_channel_memory_retention_days(channel_id: &str, days: Option<u64>) {
-    let mut m = load_settings();
-    m.entry(channel_id.to_string())
-        .or_default()
-        .memory_retention_days = days;
-    save_settings(&m);
+pub fn set_channel_memory_retention_days(channel_id: &str, days: Option<u64>) -> Result<(), String> {
+    mutate_settings(|m| {
+        m.entry(channel_id.to_string())
+            .or_default()
+            .memory_retention_days = days;
+    })
 }
 
-pub fn set_channel_memory(channel_id: &str, enabled: bool) {
-    let mut m = load_settings();
-    m.entry(channel_id.to_string()).or_default().memory_enabled = enabled;
-    save_settings(&m);
+pub fn set_channel_memory(channel_id: &str, enabled: bool) -> Result<(), String> {
+    mutate_settings(|m| {
+        m.entry(channel_id.to_string()).or_default().memory_enabled = enabled;
+    })
 }
 
-pub fn set_channel_memory_budget(channel_id: &str, notes: Option<usize>, chars: Option<usize>) {
-    let mut m = load_settings();
-    let entry = m.entry(channel_id.to_string()).or_default();
-    entry.memory_recall_max_notes = notes;
-    entry.memory_recall_char_budget = chars;
-    save_settings(&m);
+pub fn set_channel_memory_budget(
+    channel_id: &str,
+    notes: Option<usize>,
+    chars: Option<usize>,
+) -> Result<(), String> {
+    mutate_settings(|m| {
+        let entry = m.entry(channel_id.to_string()).or_default();
+        entry.memory_recall_max_notes = notes;
+        entry.memory_recall_char_budget = chars;
+    })
 }
 
 pub fn channel_settings_all() -> HashMap<String, ChannelSettings> {

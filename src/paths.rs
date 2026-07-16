@@ -218,6 +218,13 @@ pub fn locks_dir() -> PathBuf {
     state_root().join("locks")
 }
 
+/// The lock file backing a logical resource (see `statefile::FileLock`). The
+/// name identifies the resource — `"tms-<worker>"`, `"gates-<worker>"`,
+/// `"channels"` — not the data file it guards.
+pub fn lock_file(name: &str) -> PathBuf {
+    locks_dir().join(format!("{name}.flock"))
+}
+
 pub fn worker_listener_lock(worker: &str) -> PathBuf {
     locks_dir().join(format!("{}.lock", short_worker(worker)))
 }

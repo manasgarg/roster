@@ -516,14 +516,18 @@ pub async fn run(
             if rank < 2 {
                 return denied("server admins");
             }
-            set_channel_trust(channel_id, true);
+            if let Err(e) = set_channel_trust(channel_id, true) {
+                return format!("Couldn't update this channel: {e}");
+            }
             "This channel's participants are now **trusted** — they can administer, and I'll reply here without a gate.".into()
         }
         ("channel", "untrust") => {
             if rank < 2 {
                 return denied("server admins");
             }
-            set_channel_trust(channel_id, false);
+            if let Err(e) = set_channel_trust(channel_id, false) {
+                return format!("Couldn't update this channel: {e}");
+            }
             "This channel's participants are now **untrusted** — they can talk to me, but not administer, and my replies here will be gated.".into()
         }
         ("channel", "mode") => {
@@ -534,7 +538,9 @@ pub async fn run(
             if mode != "all" && mode != "mention" {
                 return "Mode must be `all` or `mention`.".into();
             }
-            set_channel_mode(channel_id, &mode);
+            if let Err(e) = set_channel_mode(channel_id, &mode) {
+                return format!("Couldn't update this channel: {e}");
+            }
             if mode == "all" {
                 "I'll now read **every** message here and decide whether to respond.".into()
             } else {
@@ -551,7 +557,9 @@ pub async fn run(
                 "off" => false,
                 _ => return "Memory state must be `on` or `off`.".into(),
             };
-            set_channel_memory(channel_id, enabled);
+            if let Err(e) = set_channel_memory(channel_id, enabled) {
+                return format!("Couldn't update this channel: {e}");
+            }
             format!(
                 "Memory is now **{}** in this channel.",
                 if enabled { "on" } else { "off" }
@@ -567,7 +575,9 @@ pub async fn run(
                 "review" => false,
                 _ => return "Inferred memory must be `auto` or `review`.".into(),
             };
-            set_channel_memory_inferred_auto(channel_id, enabled);
+            if let Err(e) = set_channel_memory_inferred_auto(channel_id, enabled) {
+                return format!("Couldn't update this channel: {e}");
+            }
             format!(
                 "Inferred channel memories now require **{}**.",
                 if enabled { "no review" } else { "review" }
@@ -580,7 +590,9 @@ pub async fn run(
             let value = call.arg("kinds");
             match crate::cli::channel::parse_memory_kinds(&value) {
                 Ok(kinds) => {
-                    set_channel_memory_allowed_kinds(channel_id, kinds.clone());
+                    if let Err(e) = set_channel_memory_allowed_kinds(channel_id, kinds.clone()) {
+                        return format!("Couldn't update this channel: {e}");
+                    }
                     format!(
                         "Channel memory kinds: **{}**.",
                         kinds
@@ -606,7 +618,9 @@ pub async fn run(
                     }
                 }
             };
-            set_channel_memory_retention_days(channel_id, days);
+            if let Err(e) = set_channel_memory_retention_days(channel_id, days) {
+                return format!("Couldn't update this channel: {e}");
+            }
             format!(
                 "Channel memory retention: **{}**.",
                 days.map(|n| format!("{n} days"))

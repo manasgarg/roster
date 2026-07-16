@@ -82,8 +82,19 @@ pub fn now() -> String {
     now_rfc3339()
 }
 
+/// The exclusive lock every gate transition takes. Approvals are rare and
+/// human-paced, so one global lock (rather than per-worker) is simplest, and it
+/// is only ever held across the file writes — never across the executor — so a
+/// slow SMTP send can't block other approvals. Holding this across
+/// load→check→transition is what stops two approvers from both executing a gate.
+pub fn lock() -> std::io::Result<crate::statefile::FileLock> {
+    crate::statefile::FileLock::acquire("gates")
+}
+
 /// Persist a gate, filing it under pending/ or resolved/ by its state and
-/// removing any stale copy in the other directory (atomic move on transition).
+/// removing any stale copy in the other directory. The write is atomic + fsynced
+/// (a reader sees the whole old or whole new file); callers mutating state hold
+/// `lock()` so the two-directory move is never observed half-done by a writer.
 pub fn save(g: &Gate) -> Result<(), BErr> {
     let (dir, other) = if g.is_terminal() {
         (
@@ -96,11 +107,8 @@ pub fn save(g: &Gate) -> Result<(), BErr> {
             paths::worker_gates_resolved_dir(&g.worker),
         )
     };
-    std::fs::create_dir_all(&dir)?;
     let text = format!("{}\n", serde_json::to_string_pretty(g)?);
-    let tmp = dir.join(format!("{}.json.tmp", g.id));
-    std::fs::write(&tmp, &text)?;
-    std::fs::rename(&tmp, dir.join(format!("{}.json", g.id)))?;
+    crate::statefile::write_atomic(&dir.join(format!("{}.json", g.id)), text.as_bytes())?;
     let stale = other.join(format!("{}.json", g.id));
     if stale.exists() {
         let _ = std::fs::remove_file(stale);
@@ -110,7 +118,10 @@ pub fn save(g: &Gate) -> Result<(), BErr> {
 
 pub fn load(id: &str) -> Option<Gate> {
     for worker in worker_dirs() {
-        for sub in ["pending", "resolved"] {
+        // Resolved is the terminal truth: prefer it over a pending copy that a
+        // crashed transition may have left behind, so an executed gate is never
+        // re-read as still-executing.
+        for sub in ["resolved", "pending"] {
             if let Ok(s) =
                 std::fs::read_to_string(worker.join("gates").join(sub).join(format!("{id}.json")))
             {
@@ -192,4 +203,57 @@ pub fn history(worker: &str, intent: &str) -> (u32, u32) {
         }
     }
     (executed, denied)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn sandbox() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
+        let guard = crate::statefile::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ROSTER_ROOT", dir.path());
+        (guard, dir)
+    }
+
+    fn gate(id: &str, state: &str) -> Gate {
+        Gate {
+            id: id.into(),
+            worker: "w".into(),
+            intent: "email".into(),
+            executor: "email".into(),
+            payload: Value::Null,
+            rationale: String::new(),
+            run_id: "r".into(),
+            task_id: "t".into(),
+            state: state.into(),
+            filed_at: now(),
+            decided_by: None,
+            decided_at: None,
+            decision_note: None,
+            executed_at: None,
+            result: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn load_prefers_resolved_over_a_stale_pending_leftover() {
+        let (_g, _dir) = sandbox();
+        // Simulate a crashed transition: the terminal copy landed in resolved/
+        // but the pending/ copy was never removed.
+        let resolved = gate("g-1", "executed");
+        save(&resolved).unwrap();
+        let stale_pending = gate("g-1", "executing");
+        let pdir = paths::worker_gates_pending_dir("w");
+        std::fs::create_dir_all(&pdir).unwrap();
+        std::fs::write(
+            pdir.join("g-1.json"),
+            serde_json::to_string_pretty(&stale_pending).unwrap(),
+        )
+        .unwrap();
+        // load must report the executed (resolved) truth, not the stale copy.
+        assert_eq!(load("g-1").unwrap().state, "executed");
+    }
 }

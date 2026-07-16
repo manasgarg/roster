@@ -134,6 +134,17 @@ impl RunContext {
     pub fn tainted(&self) -> bool {
         self.channel_id.is_some() || self.user_id.is_some() || self.inbound
     }
+
+    /// A deliberately-tainted context for when a run's real context can't be
+    /// read. The participant scan then runs (fail closed) instead of being
+    /// silently skipped, so an unreadable context file cannot disable the
+    /// memory/knowledge boundary. `inbound` is the only field `tainted()` reads.
+    pub fn tainted_unknown() -> Self {
+        RunContext {
+            inbound: true,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +293,27 @@ fn write_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Holds both the in-process memory mutex and the per-worker cross-process file
+/// lock, so a `compact` in one process can't clobber a `remember`/`forget` that
+/// another process (the daemon's executor, a `gates approve`) is appending — the
+/// erased or resurrected note bug. Taken mutex-first, one worker at a time.
+struct MemoryGuard {
+    _proc: std::sync::MutexGuard<'static, ()>,
+    _file: crate::statefile::FileLock,
+}
+
+fn lock_memory(worker: &str) -> Result<MemoryGuard, String> {
+    let proc = write_lock()
+        .lock()
+        .map_err(|_| "memory write lock poisoned".to_string())?;
+    let file = crate::statefile::FileLock::acquire(&format!("memory-{}", short_worker(worker)))
+        .map_err(|e| format!("memory lock: {e}"))?;
+    Ok(MemoryGuard {
+        _proc: proc,
+        _file: file,
+    })
+}
+
 pub fn save_run_context(run_id: &str, context: &RunContext) -> Result<(), String> {
     if run_id.is_empty() {
         return Ok(());
@@ -303,28 +335,35 @@ pub fn save_run_context(run_id: &str, context: &RunContext) -> Result<(), String
 
 pub fn load_run_context(run_id: &str) -> RunContext {
     if run_id.is_empty() {
+        // No run identity to key a context on (host-op / CLI paths). This is a
+        // legitimate absence, not a failure, and carries no interaction content.
         return RunContext::default();
     }
-    std::fs::read_to_string(run_context_path(run_id))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    match crate::statefile::read_if_present(&run_context_path(run_id)) {
+        Ok(Some(s)) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            eprintln!("memory: run context for {run_id} is corrupt ({e}); treating run as tainted");
+            RunContext::tainted_unknown()
+        }),
+        // A dispatched run always writes its context; a missing or unreadable
+        // one means that write was lost. Fail closed so the participant scan
+        // still runs, rather than silently disabling the boundary.
+        Ok(None) => {
+            eprintln!("memory: no run context for {run_id}; treating run as tainted");
+            RunContext::tainted_unknown()
+        }
+        Err(e) => {
+            eprintln!("memory: could not read run context for {run_id} ({e}); treating run as tainted");
+            RunContext::tainted_unknown()
+        }
+    }
 }
 
 fn append_event(worker: &str, event: &Value) -> Result<(), String> {
-    let _guard = write_lock()
-        .lock()
-        .map_err(|_| "memory write lock poisoned")?;
-    let path = memory_path(worker);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| e.to_string())?;
-    writeln!(f, "{event}").map_err(|e| e.to_string())
+    let _guard = lock_memory(worker)?;
+    // append_line fsyncs before returning, so a "remembered"/"forgot"
+    // acknowledgement is never given for a write the OS could still lose.
+    crate::statefile::append_line(&memory_path(worker), &event.to_string())
+        .map_err(|e| e.to_string())
 }
 
 fn read_events(worker: &str) -> Vec<Value> {
@@ -827,11 +866,26 @@ pub fn admin_mutate(
 /// Rewrite the event log to its current live state. This is deliberately an
 /// owner-only operation used for retention/privacy erasure, not normal upkeep.
 pub fn compact(worker: &str) -> Result<usize, String> {
-    let _guard = write_lock()
-        .lock()
-        .map_err(|_| "memory write lock poisoned")?;
+    let _guard = lock_memory(worker)?;
     let path = memory_path(worker);
     let legacy = legacy_notes_path(worker);
+
+    // Fold the legacy file into the primary log FIRST — durably — and only then
+    // remove it. Dropping a legacy note's `forget` tombstone (below) while its
+    // `remember` still lived in a not-yet-removed legacy file would resurrect a
+    // forgotten note on the next read; merging first closes that window. A crash
+    // mid-merge is safe: the events are idempotent under fold, and the tombstones
+    // are still present until the rewrite completes.
+    if legacy.exists() {
+        if let Ok(text) = std::fs::read_to_string(&legacy) {
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                crate::statefile::append_line(&path, line).map_err(|e| e.to_string())?;
+            }
+        }
+        std::fs::remove_file(&legacy).map_err(|e| e.to_string())?;
+    }
+
+    // Now the primary log is the whole truth; fold it and rewrite atomically.
     let notes: Vec<MemoryNote> = fold_events(&read_events(worker))
         .into_iter()
         .filter(|n| !n.forgotten)
@@ -840,15 +894,13 @@ pub fn compact(worker: &str) -> Result<usize, String> {
         .into_iter()
         .filter(|e| e.get("op").and_then(Value::as_str) == Some("user-settings"))
         .collect();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    let tmp = path.with_extension("jsonl.tmp");
-    let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+
+    let mut buf = String::new();
     for note in &notes {
         let mut event = serde_json::to_value(note).map_err(|e| e.to_string())?;
         event["op"] = json!("remember");
-        writeln!(f, "{event}").map_err(|e| e.to_string())?;
+        buf.push_str(&event.to_string());
+        buf.push('\n');
     }
     // Preserve only the latest effective settings for each user.
     let mut latest: HashMap<String, Value> = HashMap::new();
@@ -858,12 +910,11 @@ pub fn compact(worker: &str) -> Result<usize, String> {
         }
     }
     for event in latest.into_values() {
-        writeln!(f, "{event}").map_err(|e| e.to_string())?;
+        buf.push_str(&event.to_string());
+        buf.push('\n');
     }
-    std::fs::rename(tmp, path).map_err(|e| e.to_string())?;
-    if legacy.exists() {
-        std::fs::remove_file(legacy).map_err(|e| e.to_string())?;
-    }
+    // Atomic + fsynced: power loss can't leave a truncated or empty memory log.
+    crate::statefile::write_atomic(&path, buf.as_bytes()).map_err(|e| e.to_string())?;
     Ok(notes.len())
 }
 

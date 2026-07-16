@@ -6,8 +6,6 @@ use crate::gateway::budget::{Limit, Window};
 use crate::util::{now_ms, now_rfc3339};
 use serde_json::json;
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::sync::{Mutex, OnceLock};
 
 struct Counter {
@@ -130,16 +128,27 @@ pub fn debit(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now:
             }
         }
     }
+    // Serialize the append across processes: without it, two concurrent debits
+    // interleave their bytes into a corrupt line that rehydrate() silently drops
+    // on the next boot — losing spend the worker already made.
     let path = usage_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
-        for (currency, amount) in spend {
-            let line = json!({"ts": now_rfc3339(), "ts_ms": now, "subject": subject, "currency": currency, "amount": amount});
-            let _ = writeln!(f, "{line}");
+    let _lock = match crate::statefile::FileLock::acquire_path(&usage_lock_path()) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("ledger: could not lock usage log ({e}); spend not durably recorded");
+            return;
+        }
+    };
+    for (currency, amount) in spend {
+        let line = json!({"ts": now_rfc3339(), "ts_ms": now, "subject": subject, "currency": currency, "amount": amount});
+        if let Err(e) = crate::statefile::append_line(&path, &line.to_string()) {
+            eprintln!("ledger: could not append usage record ({e})");
         }
     }
+}
+
+fn usage_lock_path() -> std::path::PathBuf {
+    usage_path().with_extension("jsonl.lock")
 }
 
 /// Current balance per limit — for inspection (`server status`, `worker show`).

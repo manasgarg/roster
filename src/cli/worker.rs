@@ -89,6 +89,19 @@ pub fn ls(json: bool) -> Result<(), BErr> {
 
 pub fn show(name: &str, json: bool) -> Result<(), BErr> {
     crate::worker::require_worker(name)?;
+    // If config doesn't parse, load_budget/load_action_policy/heartbeat all fall
+    // back to defaults — "no limits", "every 30m", "no grants" — which would
+    // read as fact. Warn loudly and fail the command so an audit can't be misled.
+    let bad_config = match crate::config::snapshot() {
+        Ok(_) => false,
+        Err(e) => {
+            eprintln!(
+                "warning: configuration does not parse — the budget, heartbeat, and trust shown \
+                 below are DEFAULTS, not your configured values:\n{e}\n"
+            );
+            true
+        }
+    };
     let subject = format!("org/{name}");
 
     // Budget: every limit that applies to this worker, with its current balance
@@ -128,7 +141,7 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
             "knowledge_head": knowledge_head(name),
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
+        return authoritative(bad_config);
     }
 
     println!("worker    {name}");
@@ -181,6 +194,16 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
         );
     }
     println!("\ntrust: roster worker trust {name}   work: roster worker task ls");
+    authoritative(bad_config)
+}
+
+/// Turn "the config didn't parse" into a non-zero exit after the (warned)
+/// best-effort view has printed, so scripts and audits don't read defaults as
+/// truth.
+fn authoritative(bad_config: bool) -> Result<(), BErr> {
+    if bad_config {
+        return Err("configuration is invalid; the view above is not authoritative".into());
+    }
     Ok(())
 }
 
@@ -264,6 +287,19 @@ pub fn rm(name: &str, yes: bool) -> Result<(), BErr> {
 /// set here — it is earned through gate outcomes; grants live in the specs.
 pub fn trust(name: &str, json: bool) -> Result<(), BErr> {
     crate::worker::require_worker(name)?;
+    // A broken config makes load_action_policy() return an empty policy, so an
+    // admin auditing what a worker may do would read "no grants" as fact. Warn
+    // and fail rather than fabricate the answer.
+    let bad_config = match crate::config::snapshot() {
+        Ok(_) => false,
+        Err(e) => {
+            eprintln!(
+                "warning: configuration does not parse — the action grants shown below are a \
+                 DEFAULT empty policy, not your configured trust:\n{e}\n"
+            );
+            true
+        }
+    };
     let subject = format!("org/{name}");
     let policy = action::load_action_policy();
 
@@ -299,14 +335,14 @@ pub fn trust(name: &str, json: bool) -> Result<(), BErr> {
 
     if json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
-        return Ok(());
+        return authoritative(bad_config);
     }
     if rows.is_empty() {
         println!("{name} has no action grants — it can propose nothing");
         println!(
             "grant actions in org.toml ([[action]] + [[trust]] rules), then check: roster server validate"
         );
-        return Ok(());
+        return authoritative(bad_config);
     }
     for row in rows {
         println!(
@@ -341,5 +377,5 @@ pub fn trust(name: &str, json: bool) -> Result<(), BErr> {
         }
     }
     println!("\npromotion is admin-only: rules live in org.toml / worker.toml; a denial revokes earned auto");
-    Ok(())
+    authoritative(bad_config)
 }

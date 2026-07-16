@@ -115,15 +115,11 @@ impl From<String> for CheckpointError {
     }
 }
 
+/// A held integration lane. Backed by an `flock`, so the OS releases it if the
+/// holder crashes — the old `mkdir` lease could wedge a worker's lane forever.
 #[derive(Debug)]
 struct Lease {
-    path: PathBuf,
-}
-
-impl Drop for Lease {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
+    _lock: crate::statefile::FileLock,
 }
 
 struct TempTree {
@@ -968,15 +964,18 @@ fn acquire_lease(path: &Path) -> Result<Lease, String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
+    // Migration: the previous scheme made this path a *directory* (holding an
+    // `owner` file). flock needs a regular file, so clear a stale leftover — it
+    // can only exist if an old binary crashed mid-lease, which is exactly the
+    // wedge this change removes.
+    if path.is_dir() {
+        let _ = fs::remove_dir_all(path);
+    }
+    // Bounded wait (~5s), same as before, but on a lock the OS frees on crash.
     for _ in 0..250 {
-        match fs::create_dir(path) {
-            Ok(()) => {
-                let _ = fs::write(path.join("owner"), format!("pid={}\n", std::process::id()));
-                return Ok(Lease { path: path.into() });
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                thread::sleep(Duration::from_millis(20));
-            }
+        match crate::statefile::FileLock::try_acquire_path(path) {
+            Ok(Some(lock)) => return Ok(Lease { _lock: lock }),
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
             Err(error) => return Err(error.to_string()),
         }
     }

@@ -20,8 +20,6 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -116,12 +114,17 @@ fn record(
         dec["note"] = json!(n);
     }
 
+    // Serialize the append so concurrent requests can't interleave into a
+    // corrupt line: this is the tamper-evident record the gateway exists to
+    // produce, so a garbled entry is worse than a slow one.
     let path = paths::decisions_log();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{dec}");
+    match crate::statefile::FileLock::acquire("audit-decisions") {
+        Ok(_lock) => {
+            if let Err(e) = crate::statefile::append_line(&path, &dec.to_string()) {
+                eprintln!("gateway: could not append decision record ({e})");
+            }
+        }
+        Err(e) => eprintln!("gateway: could not lock decision log ({e}); decision not recorded"),
     }
     eprintln!(
         "{} {} {}{} {}",
@@ -307,6 +310,28 @@ fn deny_response(verdict: Verdict, rule: Option<&str>) -> Response<Body> {
     resp
 }
 
+/// The rule allowed this call, but its injected credential is missing or expired.
+/// That is an operations problem the admin can fix — not policy — so say so
+/// distinctly (503, a different hint) instead of masquerading as a denial that
+/// "retrying won't change".
+fn credential_outage_response(rule: Option<&str>) -> Response<Body> {
+    let rule_json = rule
+        .map(|r| format!("\"{r}\""))
+        .unwrap_or_else(|| "null".into());
+    let mut resp = Response::new(full(&format!(
+        "{{\"error\":\"gateway could not supply the credential for this call\",\"rule\":{rule_json},\"hint\":\"the rule allows this, but its credential is missing or expired — this is an outage, not policy; ask your admin to (re)connect it, then retry\"}}"
+    )));
+    *resp.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+    let headers = resp.headers_mut();
+    headers.insert("x-roster-verdict", "credential-outage".parse().unwrap());
+    if let Some(rule) = rule {
+        if let Ok(v) = rule.parse() {
+            headers.insert("x-roster-rule", v);
+        }
+    }
+    resp
+}
+
 // ── server ──────────────────────────────────────────────────────────────────
 
 pub fn build_client() -> UpstreamClient {
@@ -462,15 +487,21 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
             if let Some(inj) = policy.rule(rule_name).and_then(|r| r.inject.as_ref()) {
                 match vault::get_fresh_credential(&inj.credential).await {
                     Err(_) | Ok(None) => {
+                        // The rule matched (Allow); the credential is just absent.
+                        // Record it as its own outcome, not a policy denial, so the
+                        // audit log and the caller both see a fixable outage.
                         record(
                             gr,
-                            Verdict::Deny,
+                            Verdict::Allow,
                             rule.as_deref(),
                             None,
                             &HashMap::new(),
-                            None,
+                            Some(&format!(
+                                "credential outage: \"{}\" missing or expired",
+                                inj.credential
+                            )),
                         );
-                        return Gate::Deny(deny_response(Verdict::Deny, rule.as_deref()));
+                        return Gate::Deny(credential_outage_response(rule.as_deref()));
                     }
                     Ok(Some(cred)) => {
                         inject = if inj.headers.is_empty() {

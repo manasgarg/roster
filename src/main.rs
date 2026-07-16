@@ -15,6 +15,7 @@ mod gateway;
 mod worker;
 mod paths;
 mod run;
+mod statefile;
 mod util;
 mod work;
 

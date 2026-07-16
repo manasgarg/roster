@@ -124,7 +124,7 @@ pub fn set_trust(channel_id: &str, trusted: bool) -> Result<(), BErr> {
              and applies if such a channel appears (known channels: roster server channel ls)"
         );
     }
-    discord::set_channel_trust(channel_id, trusted);
+    discord::set_channel_trust(channel_id, trusted)?;
     println!(
         "channel {channel_id} → {}",
         if trusted { "trusted" } else { "untrusted" }
@@ -186,11 +186,11 @@ pub fn set(channel_id: &str, key: &str, value: &str) -> Result<(), BErr> {
             if value != "all" && value != "mention" {
                 return Err("mode must be \"all\" or \"mention\"".into());
             }
-            discord::set_channel_mode(channel_id, value);
+            discord::set_channel_mode(channel_id, value)?;
         }
         "memory" => {
             let enabled = on_off(value)?;
-            discord::set_channel_memory(channel_id, enabled);
+            discord::set_channel_memory(channel_id, enabled)?;
         }
         "memory-inferred" => {
             let auto = match value {
@@ -198,11 +198,11 @@ pub fn set(channel_id: &str, key: &str, value: &str) -> Result<(), BErr> {
                 "review" => false,
                 _ => return Err("memory-inferred must be \"auto\" or \"review\"".into()),
             };
-            discord::set_channel_memory_inferred_auto(channel_id, auto);
+            discord::set_channel_memory_inferred_auto(channel_id, auto)?;
         }
         "memory-kinds" => {
             let kinds = parse_memory_kinds(value)?;
-            discord::set_channel_memory_allowed_kinds(channel_id, kinds);
+            discord::set_channel_memory_allowed_kinds(channel_id, kinds)?;
         }
         "memory-retention" => {
             let days = match value {
@@ -214,7 +214,7 @@ pub fn set(channel_id: &str, key: &str, value: &str) -> Result<(), BErr> {
                         .ok_or("retention wants a positive number of days, or default")?,
                 ),
             };
-            discord::set_channel_memory_retention_days(channel_id, days);
+            discord::set_channel_memory_retention_days(channel_id, days)?;
         }
         // The recall budget is stored as one (notes, chars) pair; setting one
         // half keeps the other as currently configured.
@@ -225,12 +225,12 @@ pub fn set(channel_id: &str, key: &str, value: &str) -> Result<(), BErr> {
                 channel_id,
                 notes,
                 current.memory_recall_char_budget,
-            );
+            )?;
         }
         "memory-chars" => {
             let chars = budget_value(value)?;
             let current = current_settings(channel_id);
-            discord::set_channel_memory_budget(channel_id, current.memory_recall_max_notes, chars);
+            discord::set_channel_memory_budget(channel_id, current.memory_recall_max_notes, chars)?;
         }
         other => {
             return Err(format!("unknown channel setting \"{other}\" (keys: {SET_KEYS})").into())

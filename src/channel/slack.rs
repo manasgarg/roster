@@ -232,7 +232,10 @@ async fn handle_message(
     }
     let is_dm = event["channel_type"].as_str() == Some("im");
     if is_dm {
-        set_channel_trust(channel_id, true); // DMs are always trusted (1:1, sought-out)
+        // DMs are always trusted (1:1, sought-out).
+        if let Err(e) = set_channel_trust(channel_id, true) {
+            eprintln!("slack: could not mark DM channel {channel_id} trusted: {e}");
+        }
     }
     let role = if is_dm {
         "trusted"

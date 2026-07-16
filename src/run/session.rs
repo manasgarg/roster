@@ -41,7 +41,10 @@ pub async fn chat(worker: &str, idle: u64) -> Result<(), BErr> {
     )
     .await?;
     reader.abort();
-    println!("session ended — transcript: state/runs/{run_id}/stdout.jsonl");
+    println!(
+        "session ended — transcript: {}",
+        crate::paths::run_dir(&run_id).join("stdout.jsonl").display()
+    );
     Ok(())
 }
 

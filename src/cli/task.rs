@@ -18,12 +18,18 @@ pub fn add(
     if prompt.trim().is_empty() {
         return Err("task add needs a prompt".into());
     }
-    // Absolute path so the worktree resolves from the daemon's cwd.
-    let repo = repo.map(|p| {
-        std::fs::canonicalize(&p)
-            .map(|c| c.display().to_string())
-            .unwrap_or(p)
-    });
+    // Absolute path so the worktree resolves from the daemon's cwd. Fail loudly
+    // on a bad path rather than storing a relative string that the daemon would
+    // resolve against its own cwd (wrong repo) or fail to find at run time.
+    let repo = match repo {
+        Some(p) => Some(
+            std::fs::canonicalize(&p)
+                .map_err(|e| -> BErr { format!("--repo \"{p}\": {e}").into() })?
+                .display()
+                .to_string(),
+        ),
+        None => None,
+    };
     let base = repo.as_ref().map(|_| base.to_string());
     let kind = if reorganize {
         "reorganization"

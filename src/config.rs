@@ -191,6 +191,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
     let mut worker_context = std::collections::HashMap::new();
     let mut worker_storage = std::collections::HashMap::new();
 
+    warn_rule_shape(&org, "org.toml", &mut errors);
     for g in array(&org, "grant") {
         rules.push(with_scope(g, "org"));
     }
@@ -273,6 +274,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                 }
                 Err(e) => errors.push(format!("{name} [knowledge]: {e}")),
             }
+            warn_rule_shape(&w, &name, &mut errors);
             for g in array(&w, "grant") {
                 rules.push(with_scope(g, &scope));
             }
@@ -290,11 +292,20 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                     "{name}: [[trigger]] has retired — set heartbeat = \"30m\" and move cadences into the worker's recurring tasks (talk to it, or roster worker task ls)"
                 ));
             }
-            let heartbeat = w
-                .get("heartbeat")
-                .and_then(|v| v.as_str())
-                .unwrap_or("every 30m")
-                .to_string();
+            let heartbeat = match w.get("heartbeat") {
+                None => "every 30m".to_string(),
+                Some(v) => match v.as_str() {
+                    Some(s) => s.to_string(),
+                    // Present but wrong-typed (e.g. `heartbeat = 60`) — don't
+                    // silently substitute the default; say so.
+                    None => {
+                        errors.push(format!(
+                            "{name}: heartbeat must be a string like \"30m\" or \"off\", not {v}"
+                        ));
+                        "every 30m".to_string()
+                    }
+                },
+            };
             if heartbeat != "off" && crate::work::tms::parse_interval(&heartbeat).is_none() {
                 errors.push(format!(
                     "{name}: heartbeat must be an interval (\"every 30m\") or \"off\", not \"{heartbeat}\""
@@ -879,6 +890,19 @@ fn array<'a>(v: &'a toml::Value, key: &str) -> Vec<&'a toml::Value> {
         .and_then(|x| x.as_array())
         .map(|a| a.iter().collect())
         .unwrap_or_default()
+}
+
+/// Flag the common `[grant]` (single table) written where `[[grant]]` (array of
+/// tables) was meant: array() silently ignores the former, so the rule just
+/// never exists and `validate` would otherwise call the config good.
+fn warn_rule_shape(v: &toml::Value, ctx: &str, errors: &mut Vec<String>) {
+    for key in ["grant", "action", "trust", "expose"] {
+        if v.get(key).map(|x| !x.is_array()).unwrap_or(false) {
+            errors.push(format!(
+                "{ctx}: [{key}] must be a table array — write [[{key}]] (double brackets), not [{key}]"
+            ));
+        }
+    }
 }
 
 fn to_json(v: &toml::Value) -> Value {

@@ -92,6 +92,22 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
     }
 
     let name = alias.unwrap_or_else(|| service.clone());
+    // The name and service become bare TOML keys ([name], [service]) and file
+    // names; a space/quote/bracket would corrupt providers.toml (whose parse
+    // failure silently drops the WHOLE overlay) or write a bad path. Reject up
+    // front rather than escaping a header that references elsewhere wouldn't match.
+    for (label, v) in [("connection name", &name), ("service", &service)] {
+        let bare = !v.is_empty()
+            && v.as_bytes()[0] != b'-'
+            && v.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+        if !bare {
+            return Err(format!(
+                "{label} must be lowercase letters, digits, - or _ (a bare identifier): \"{v}\""
+            )
+            .into());
+        }
+    }
     let path = crate::paths::connections_dir().join(format!("{name}.toml"));
     let existing: Option<toml::Value> = std::fs::read_to_string(&path)
         .ok()

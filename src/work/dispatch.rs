@@ -311,11 +311,34 @@ fn finalize(task: tms::Task, outcome: Result<boxed::Outcome, String>) {
             }
         }
     };
+    // Tell the person who filed it, on their reply route, when a task fails —
+    // otherwise a Discord/Slack user who queued work just watches it vanish.
+    if next == "failed" {
+        if let Some((provider, channel)) = reply_route(&task) {
+            let reason = error.clone().unwrap_or_else(|| "the run did not complete".into());
+            let (worker, task_id) = (task.worker.clone(), task.id.clone());
+            let text = format!("⚠️ I couldn't finish task `{task_id}` — {reason}");
+            tokio::spawn(async move {
+                crate::action::deliver_notice(&provider, &channel, &worker, &text).await;
+            });
+        }
+    }
     if let Err(e) = tms::finish_with(&task.worker, &task.id, next, error) {
         eprintln!("supervise: could not update task {}: {e}", task.id);
     } else {
         eprintln!("task {} → {next}", task.id);
     }
+}
+
+/// Where to reach the person who filed a task: its routing tags, or failing
+/// that a Discord context carried on the task. None ⇒ nothing to notify (an
+/// agent- or recurrence-spawned task with no human waiting on a channel).
+fn reply_route(task: &tms::Task) -> Option<(String, String)> {
+    if let (Some(provider), Some(channel)) = (&task.tags.provider, &task.tags.channel) {
+        return Some((provider.clone(), channel.clone()));
+    }
+    let channel = task.context.get("discord")?.get("channel_id")?.as_str()?;
+    Some(("discord".into(), channel.to_string()))
 }
 
 fn first_line(s: &str) -> String {

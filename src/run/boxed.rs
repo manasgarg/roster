@@ -130,7 +130,7 @@ pub struct CodeSpec {
 
 /// Where pi + the box extensions come from.
 enum Engine {
-    /// Baked into the roster-box image at /opt/roster/engine (the default).
+    /// Baked into the box image at /opt/roster/engine (the default).
     /// `run-pi` in the image expands the baked extensions itself, so the host
     /// never inspects image contents.
     Baked,
@@ -256,7 +256,10 @@ pub async fn adopt(run_id: &str) -> Result<Outcome, String> {
         .output()
         .await
         .map_err(|e| format!("docker wait {container}: {e}"))?;
-    let exit_code = String::from_utf8_lossy(&out.stdout).trim().parse::<i32>().ok();
+    let exit_code = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<i32>()
+        .ok();
     Ok(Outcome {
         run_id: run_id.to_string(),
         ended_by: "exit",
@@ -701,6 +704,7 @@ async fn provision_box(
 ) -> Result<Provisioned, BErr> {
     let config = crate::config::snapshot().map_err(|e| format!("config invalid:\n{e}"))?;
     ensure_lockdown(&config.box_policy).await?;
+    ensure_image(&config.box_image).await?;
 
     let home = home_dir();
     let host_ca = crate::paths::ca_dir().join("ca.crt");
@@ -936,7 +940,7 @@ async fn provision_box(
     } else {
         WORKSPACE_MOUNT
     };
-    args.extend(["-w".into(), cwd.into(), "roster-box".into()]);
+    args.extend(["-w".into(), cwd.into(), config.box_image.clone()]);
 
     Ok(Provisioned {
         args,
@@ -1168,6 +1172,55 @@ fn ipt(args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+/// Make sure the box image is present — and, for a registry image, current:
+/// `docker pull` refreshes it so a `:latest` deployment picks up published
+/// updates. Once per image per process (the daemon re-pulls on restart, not
+/// per run). Offline or a registry outage degrades to the local copy with a
+/// note; a missing image with no way to get one is the only hard failure.
+pub async fn ensure_image(image: &str) -> Result<(), BErr> {
+    static ENSURED: tokio::sync::Mutex<std::collections::BTreeSet<String>> =
+        tokio::sync::Mutex::const_new(std::collections::BTreeSet::new());
+    // Held across the pull on purpose: concurrent runs wait for one download
+    // instead of racing their own.
+    let mut ensured = ENSURED.lock().await;
+    if ensured.contains(image) {
+        return Ok(());
+    }
+    let present = docker_ok(&["image", "inspect", image]);
+    if !image.contains('/') {
+        // A bare local tag has no registry to pull from — it exists or it
+        // doesn't (the [engine] image override for local Dockerfile work).
+        if !present {
+            return Err(format!(
+                "the box image \"{image}\" is not present — build it from a roster checkout: \
+                 docker build -t {image} -f box/Dockerfile ."
+            )
+            .into());
+        }
+    } else {
+        eprintln!("pulling the box image {image} …");
+        let pulled = tokio::process::Command::new("docker")
+            .args(["pull", image])
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !pulled {
+            if !present {
+                return Err(format!(
+                    "could not pull the box image {image} and no local copy exists — \
+                     check network/registry access, or point [engine] image in org.toml \
+                     at a locally built image"
+                )
+                .into());
+            }
+            eprintln!("note: could not pull {image} — running the local copy");
+        }
+    }
+    ensured.insert(image.to_string());
+    Ok(())
+}
+
 fn docker_ok(args: &[&str]) -> bool {
     std::process::Command::new("docker")
         .args(args)
@@ -1190,7 +1243,9 @@ async fn docker_kill(container: &str) {
     {
         Ok(s) if s.success() => {}
         Ok(s) => eprintln!("run: docker kill {container} exited {s} — box may still be running"),
-        Err(e) => eprintln!("run: could not docker kill {container} ({e}) — box may still be running"),
+        Err(e) => {
+            eprintln!("run: could not docker kill {container} ({e}) — box may still be running")
+        }
     }
 }
 
@@ -1217,7 +1272,10 @@ fn prepare_pihome(pihome: &Path, home: &Path) -> Result<bool, BErr> {
             continue;
         }
         if let Some(cred) = crate::credential::vault::get_credential(name) {
-            sentinel.insert(name.to_string(), sentinelize_known_fields(&Value::Object(cred)));
+            sentinel.insert(
+                name.to_string(),
+                sentinelize_known_fields(&Value::Object(cred)),
+            );
         }
     }
     let has_auth = !sentinel.is_empty();

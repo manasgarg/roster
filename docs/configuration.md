@@ -32,6 +32,7 @@ judge is the security floor; budgets are an opt-in ceiling).
 
 | key | default | meaning |
 |---|---|---|
+| `image` | `ghcr.io/manasgarg/roster-box:latest` | The box image workers run in. The server pulls it at start (re-pulled on every restart, so `:latest` stays current). Point it at a locally built tag (e.g. `roster-box`) to run your own build — a bare tag with no registry component is never pulled, only expected to exist. |
 | `dir` | unset | Dev override: mount this checkout read-only over the engine baked into the box image. Unset is the normal, production posture. |
 
 ### `[[grant]]` — egress rules

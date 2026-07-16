@@ -2,9 +2,9 @@
 //! and content here; this module reads scoped sources, renders deterministic
 //! prompts, and durably records the exact bytes before delivery to pi.
 
-use crate::worker::memory::{MemoryBasis, MemoryNote, RunContext};
 use crate::paths;
 use crate::util::now_rfc3339;
+use crate::worker::memory::{MemoryBasis, MemoryNote, RunContext};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -339,7 +339,10 @@ fn compile_with_policy(
     // interaction context) is the one that can WRITE knowledge, so it gets no
     // memory recall — person-space must not ride into the world-store via
     // notes. Tainted runs recall as before; their knowledge mount is read-only.
-    let clean_room = crate::worker::storage::load(&request.worker).knowledge.write_from == "clean-room";
+    let clean_room = crate::worker::storage::load(&request.worker)
+        .knowledge
+        .write_from
+        == "clean-room";
     let recall_suppressed = clean_room && !request.run_context.tainted();
     let candidates = if terminal_is_present(request) && !recall_suppressed {
         Some(crate::worker::memory::recall_candidates(
@@ -489,7 +492,10 @@ fn build_briefing(request: &ContextRequest, max_chars: usize) -> Option<Compiled
     }
     let subject = format!(
         "org/{}",
-        request.worker.strip_prefix("org/").unwrap_or(&request.worker)
+        request
+            .worker
+            .strip_prefix("org/")
+            .unwrap_or(&request.worker)
     );
     let mut open = crate::action::gate::for_worker(&subject)
         .into_iter()
@@ -836,13 +842,17 @@ fn build_cache_plan(worker: &str, system_blocks: &[CompiledBlock]) -> CachePlan 
     }
 }
 
-/// The roster-box image id, once per process — the engine identity when pi is
-/// baked in (no engine dir to hash). Empty when docker is unavailable.
+/// The box image id, once per process — the engine identity when pi is
+/// baked in (no engine dir to hash). Empty when docker is unavailable or the
+/// image has not been pulled yet.
 fn box_image_id() -> &'static str {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     ID.get_or_init(|| {
+        let image = crate::config::snapshot()
+            .map(|c| c.box_image.clone())
+            .unwrap_or_else(|_| crate::config::DEFAULT_BOX_IMAGE.to_string());
         std::process::Command::new("docker")
-            .args(["image", "inspect", "--format", "{{.Id}}", "roster-box"])
+            .args(["image", "inspect", "--format", "{{.Id}}", &image])
             .output()
             .ok()
             .filter(|o| o.status.success())

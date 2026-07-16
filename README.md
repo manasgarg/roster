@@ -6,141 +6,94 @@
 [![crates.io](https://img.shields.io/crates/v/digital-roster.svg)](https://crates.io/crates/digital-roster)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
-[![status](https://img.shields.io/badge/status-alpha-yellow.svg)](#where-this-is)
+[![status](https://img.shields.io/badge/status-alpha-yellow.svg)](#status)
 
-Roster runs **workers**: software colleagues that keep working when you're not
-watching. A worker researches things, keeps an eye on topics you care about,
-drafts messages, tidies what it has learned. It talks to you in your terminal,
-Discord, or Slack — and it manages its own task list, on its own schedule,
-inside a budget you set.
+Roster runs **workers**: AI colleagues that keep working when you're not
+watching — researching, tracking topics, drafting messages, doing code tasks.
+You talk to them in your terminal, Discord, or Slack.
 
-The model doing the thinking is rented — today's best one, swapped out
-whenever a better one shows up. Everything that decides what a worker is
-*allowed to do* stays yours: plain files on your machine, in your git history,
-running under your control. That's the whole idea. You rent the brain; you own
-the leash.
+Each worker runs in a container with no credentials and no route to the
+internet, except through one gateway you control. Nothing is allowed by
+default, every decision is logged, and anything with real consequences — an
+email, a chat post, a pull request — waits for your approval until the worker
+has earned trust for that kind of action.
 
-## How a worker is kept honest
+## What you need
 
-A worker lives in a container with **no passwords and no way out to the
-internet** — except one door you control.
+- **Rust** and **Docker**
+- An **Anthropic or OpenAI account** — the worker rents the model; you log in
+  on first start
 
-That door is a gateway. Every request the worker makes goes through it, and the
-gateway decides: allowed, or not. Nothing is allowed by default; you say what
-is. It also keeps count, so a worker can't quietly run up a huge bill, and it
-writes down every decision it made, forever.
-
-Passwords never go inside the container. The worker carries a fake one. When a
-request is allowed to reach, say, GitHub, the gateway swaps in the real token
-on the way out. So there is nothing worth stealing inside the box — even if
-the worker is tricked, and even if the code it runs is malicious.
-
-Anything with real consequences — sending an email, posting a message, opening
-a pull request, changing what the worker is — doesn't just happen. The worker
-*proposes* it, and a human approves. As a worker builds a track record, you can
-let it stop asking for the routine things. Trust is earned, one action type at
-a time.
-
-Two other things worth knowing:
-
-- **What it learns about the world** is kept in a git repository. The worker
-  writes notes; the trusted side checks them and makes the commit. History
-  can't be rewritten by the worker.
-- **What it remembers about people** is kept separately, and people can see it,
-  correct it, and ask it to forget. A worker can never write person-notes into
-  its world-knowledge, because a conversation gives it read-only access there.
-  A separate, clean run does the writing.
-
-## Try it
-
-You need Rust and Docker.
+## Run it in the terminal
 
 ```bash
-cargo install digital-roster                     # installs the `roster` binary
-docker build -t roster-box -f box/Dockerfile .   # the container workers run in
-                                                 # (clone the repo for box/)
-
-roster server start             # the one daemon; first run walks you through
-                                # a model login. No init step — folders and a
-                                # starter config appear on their own.
+cargo install digital-roster
+roster server start
 ```
 
-Then, in another terminal:
+The first start creates the config folders, pulls the container image workers
+run in, and walks you through the model login. Leave it running — this is the
+daemon.
+
+In a second terminal:
 
 ```bash
-roster talk                     # a conversation with a worker, right here
-                                # (creates one called elf if you have none)
+roster talk
 ```
 
-Talk is a real channel: your messages and the worker's replies are recorded,
-results from background tasks land back in it, and `/help` lists the admin
-commands — approve actions, file tasks, inspect runs — without leaving the
-conversation. The same works from Discord and Slack. A few more, from the
+That opens a chat with a worker (a fresh install creates one called `elf`).
+Type `/help` inside the chat for admin commands. A few useful ones from the
 shell:
 
 ```bash
-roster worker task add yuko "find three recent papers on X and summarize them"
-roster worker ls                # your workers, at a glance
-roster server approvals ls      # anything waiting for your approval
-roster server runs ls           # everything that has run, ever
+roster worker task add elf "find three recent papers on X and summarize them"
+roster server approvals ls     # actions waiting for your approval
+roster server runs ls          # every session that has run
 ```
 
-To let a worker use a service (GitHub, Slack, Notion, …):
+## Put it on Discord
+
+Create a bot in the Discord developer portal, invite it to your server, and
+copy its bot token. Then:
 
 ```bash
-roster connection add github --worker yuko   # log in once; that's the whole setup
-# Or connect any token-authenticated API:
-roster connection add acme --host api.acme.com --worker yuko
+roster connection add discord --worker elf
 ```
 
-To put a worker in a chat, run `roster connection add discord` (or `slack`) and
-add one line to its config. It shows up, listens, and answers — with every
-action it takes still going through the same gate.
+The wizard takes the token, stores it in the vault (it never enters the
+worker's container), and binds the worker to the bot. Restart
+`roster server start` and the worker connects, listens, and answers.
 
-## Where this is
+Channels start untrusted — the worker's replies wait at the approval desk
+until you promote a channel:
+
+```bash
+roster server channel trust <channel-id>
+```
+
+DMs are always trusted. Details in [docs/channels.md](docs/channels.md).
+
+## Status
 
 Alpha, and honest about it: it runs every day, but it's young and the details
-still move. Built in small steps, each one tested live before the next starts.
-
-Working today: the locked-down container and the gateway in front of it;
-default-deny rules, credential injection, budgets, and a permanent audit log;
-a task system each worker curates for itself — scheduled tasks, cron
-recurrences, dependencies, a heartbeat — with results routed back to the
-channel that asked; the approval desk and the earned-trust ladder; terminal,
-Discord, and Slack conversations with warm sessions; per-person memory with
-consent; git-backed knowledge; and code tasks that end in a pull request you
-approve.
-
-## How it's built
-
-One rule shapes the whole codebase: **the trusted side and the untrusted side
-are different languages, so they can never blur together.**
-
-- Everything trusted is **Rust** — a single `roster` binary. It holds the
-  passwords, makes the decisions, and writes the audit log.
-- Everything inside the container is **TypeScript** — the agent engine and its
-  tools. It's assumed to be compromised, and given nothing worth taking.
-- The worker's container is deliberately **capable**: real tools, a real
-  toolchain, `gh` and friends. Being useful is not the same as being
-  trusted — capability lives inside, authority lives at the edge.
-
-Your config and data never live with the code. Config goes in
-`~/.config/roster`, durable data in `~/.local/share/roster`, throwaway state
-in `~/.local/state/roster`. Edit a config file and it takes effect on the next
-read — there is nothing to deploy. If you break it, everything fails closed
-rather than open.
-
-The source is organized the way the system actually works: `gateway/` (the one
-door), `credential/` (passwords, never in the box), `action/` (propose, approve,
-execute), `work/` (the task system), `run/` (starting containers), `worker/` (identity,
-memory, knowledge), `channel/` (Discord, Slack), and `cli/`.
+still move.
 
 ## Docs
 
-Full documentation lives in [docs/](docs/README.md): getting started, the
-architecture and security model, and a page for each piece — the gateway,
-actions and trust, work and scheduling, channels, the box, memory,
-knowledge, and the configuration and CLI references.
+Everything else lives in [docs/](docs/README.md): the architecture and
+security model, connecting workers to services like GitHub, budgets, work and
+scheduling, Slack, memory, and knowledge.
+
+## Credits
+
+Roster builds on ideas proven elsewhere first:
+
+- [OpenClaw](https://github.com/openclaw/openclaw) — showed what an
+  always-on personal AI assistant living in your chat apps can be.
+- [NanoClaw](https://github.com/nanocoai/nanoclaw) — agents in OS-enforced
+  containers, with a core small enough to actually read.
+- [OneCLI](https://github.com/onecli/onecli) — the credential-gateway
+  pattern: agents carry placeholders, real keys are injected in transit.
 
 ## License
 

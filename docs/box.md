@@ -69,9 +69,11 @@ instead (see [channels.md](channels.md)).
 
 ## The toolbelt
 
-The image (`box/Dockerfile`, tag `roster-box`) is `node:24-bookworm-slim`
-plus the tools a worker actually reaches for. On a dead network, more
-binaries add no egress power — the cost is only image size:
+The image (`box/Dockerfile`, published as `ghcr.io/manasgarg/roster-box` —
+the server pulls `:latest` automatically and re-pulls on every restart) is
+`node:24-bookworm-slim` plus the tools a worker actually reaches for. On a
+dead network, more binaries add no egress power — the cost is only image
+size:
 
 - **VCS / GitHub**: git, `gh`, git-lfs
 - **Transfer & archives**: curl, wget, rsync, unzip, zip, xz, zstd
@@ -80,12 +82,13 @@ binaries add no egress power — the cost is only image size:
 - **Python**: python3, pip, venv, `uv`
 - **Node**: node 24, npm, pnpm/yarn via corepack
 - **Build**: build-essential, pkg-config (native pip/npm extensions)
+- **Documents & media**: pandoc, imagemagick, ffmpeg
 - **Misc**: openssl, procps, moreutils, tzdata
 
-`--build-arg TIER2=1` adds pandoc, imagemagick, and ffmpeg for
-document/media work. Go and Rust toolchains and a headless browser are
-deliberately not defaults — add them per deployment if a worker's job needs
-them.
+Go and Rust toolchains and a headless browser are deliberately not
+defaults — add them per deployment if a worker's job needs them: build your
+own image from `box/Dockerfile` and point `[engine] image` in `org.toml` at
+its tag.
 
 ## The engine and its tools
 

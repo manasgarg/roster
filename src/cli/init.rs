@@ -8,10 +8,12 @@ const STARTER_ORG: &str = r#"# Roster org config — ADMIN-ONLY. Applies to ever
 # per-worker overlays live in workers/<name>/worker.toml. Config loads live:
 # check edits with `roster server validate`.
 
-# pi + the box extensions are baked into the roster-box image. Developers
-# iterating on them can mount a checkout over the baked engine instead:
+# pi + the box extensions are baked into the box image, which the server
+# pulls automatically (ghcr.io/manasgarg/roster-box:latest). Overrides, for
+# developers iterating on the image or the engine:
 # [engine]
-# dir = "/path/to/roster"
+# image = "roster-box"      # a locally built image (docker build -t roster-box -f box/Dockerfile .)
+# dir = "/path/to/roster"   # mount a checkout over the baked engine
 
 # Egress grants shared by all workers, e.g.:
 # [[grant]]

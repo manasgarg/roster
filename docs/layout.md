@@ -45,7 +45,7 @@ Design notes:
 - **The box mounts none of this.** Isolation by absence: the container sees
   only its own run directory, its channel history (read-only), its
   knowledge checkout, and the CA certificate and trust bundle. pi and the
-  extensions are baked into the roster-box image (`[engine] dir` is an
+  extensions are baked into the box image (`[engine] dir` is an
   optional dev override that mounts a checkout over them).
 - **Worker-first data**: a worker's whole footprint is one subtree under
   `data/workers/<name>/` — export is that subtree plus its spec. Runs stay

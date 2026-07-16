@@ -130,6 +130,6 @@ src/
   channel/     Discord, Slack, listener supervision, relay
   cli/         every subcommand
 box/
-  Dockerfile   the roster-box image: toolbelt + baked engine
+  Dockerfile   the box image: toolbelt + baked engine
   extensions/  the box-side tools (actions.ts, web.ts)
 ```

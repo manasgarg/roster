@@ -62,6 +62,7 @@ pub async fn post_message(token: &str, channel_id: &str, text: &str) -> Result<S
 /// Post a message of any length: split at Discord's 2000-char limit on line
 /// boundaries and send the chunks in order. Returns the last message id.
 pub async fn post_chunked(token: &str, channel_id: &str, text: &str) -> Result<String, String> {
+    stop_typing(token, channel_id);
     let mut last = String::new();
     for chunk in crate::util::chunk_message(text, 2000) {
         last = post_message(token, channel_id, &chunk).await?;
@@ -622,15 +623,47 @@ async fn route_to_session(
     });
 }
 
-/// Show the typing indicator for a while after a message (the reply clears it).
+/// The in-flight typing loop per (bot, channel), so posting a reply can abort
+/// it instead of letting it re-light the indicator after the message landed.
+/// Keyed by token as well as channel because two workers (two bots) can share
+/// a channel, and one bot's reply must not stop the other's indicator.
+fn typing_tasks() -> &'static Mutex<HashMap<String, tokio::task::AbortHandle>> {
+    static T: OnceLock<Mutex<HashMap<String, tokio::task::AbortHandle>>> = OnceLock::new();
+    T.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn typing_key(token: &str, channel_id: &str) -> String {
+    format!("{token}\u{1f}{channel_id}")
+}
+
+/// Show the typing indicator while the worker thinks (each trigger lasts ~10s,
+/// so the loop keeps it lit for ~30s). Posting a reply aborts the loop via
+/// `stop_typing`; without that, a fast reply would be followed by the next
+/// trigger re-lighting the indicator on an already-answered channel.
 fn spawn_typing(channel_id: &str, token: &str) {
     let (ch, tok) = (channel_id.to_string(), token.to_string());
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         for _ in 0..4 {
             trigger_typing(&ch, &tok).await;
             tokio::time::sleep(Duration::from_secs(8)).await;
         }
     });
+    let mut map = typing_tasks().lock().unwrap();
+    map.retain(|_, h| !h.is_finished());
+    if let Some(prev) = map.insert(typing_key(token, channel_id), handle.abort_handle()) {
+        prev.abort();
+    }
+}
+
+/// Abort the channel's typing loop, if one is running.
+fn stop_typing(token: &str, channel_id: &str) {
+    if let Some(h) = typing_tasks()
+        .lock()
+        .unwrap()
+        .remove(&typing_key(token, channel_id))
+    {
+        h.abort();
+    }
 }
 
 async fn trigger_typing(channel_id: &str, token: &str) {
@@ -1162,5 +1195,97 @@ async fn download_attachments(channel_id: &str, attachments: &Value) {
                 let _ = std::fs::write(dir.join(&safe), &bytes);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A minimal Discord REST stand-in: counts typing triggers, answers message
+    /// posts with an id. One connection per request (the client is per-call).
+    async fn mock_discord(typing_posts: Arc<AtomicUsize>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let counter = typing_posts.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 1024];
+                    // Read to the header terminator; these requests are small
+                    // enough that any body arrives in the same segment.
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match sock.read(&mut tmp).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&buf);
+                    let reply = if head.contains("/typing") {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        "HTTP/1.1 204 No Content\r\ncontent-length: 0\r\n\r\n".to_string()
+                    } else {
+                        let body = r#"{"id":"123"}"#;
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                            body.len()
+                        )
+                    };
+                    let _ = sock.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn reply_stops_the_typing_loop() {
+        let typing_posts = Arc::new(AtomicUsize::new(0));
+        let base = mock_discord(typing_posts.clone()).await;
+        std::env::set_var("DISCORD_API_BASE", &base);
+
+        spawn_typing("chan1", "tok");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while typing_posts.load(Ordering::SeqCst) == 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "typing never triggered"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let handle = typing_tasks()
+            .lock()
+            .unwrap()
+            .get(&typing_key("tok", "chan1"))
+            .expect("typing task registered")
+            .clone();
+
+        let id = post_chunked("tok", "chan1", "hello").await.unwrap();
+        assert_eq!(id, "123");
+        assert!(
+            typing_tasks()
+                .lock()
+                .unwrap()
+                .get(&typing_key("tok", "chan1"))
+                .is_none(),
+            "reply should clear the typing task entry"
+        );
+        // Without the abort the loop runs ~30s more; finishing well inside the
+        // 8s to its next trigger proves the reply stopped it.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !handle.is_finished() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "typing loop survived the reply"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(typing_posts.load(Ordering::SeqCst), 1);
     }
 }

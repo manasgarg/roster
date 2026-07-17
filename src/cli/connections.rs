@@ -199,7 +199,9 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
     let methods = if method_overrides.is_empty() {
         let existing_methods = toml_strings(existing.as_ref(), "methods");
         if existing_methods.is_empty() {
-            vec!["GET".to_string()]
+            // Full access by default: connecting a service means the worker can
+            // use it. `--method` (or editing the file) narrows it afterwards.
+            vec!["*".to_string()]
         } else {
             existing_methods
         }
@@ -651,8 +653,8 @@ pub fn ensure_model_connection(
         &path,
         format!(
             "# Model connection — workers' boxes may call {service}'s model API; the\n\
-             # gateway injects the credential in transit. Hosts and methods derive from\n\
-             # the provider registry; override with hosts = [..] / methods = [..].\n\
+             # gateway injects the credential in transit. Hosts derive from the provider\n\
+             # registry; all methods are allowed — narrow with hosts = [..] / methods = [..].\n\
              # ADMIN-OWNED after creation: edit or delete this file to change access.\n\
              provider = \"{service}\"\n\
              {scope_line}\n"
@@ -787,7 +789,7 @@ fn interview_unknown(service: &str) -> Result<Declared, BErr> {
     }
     let header = ask_default("header template", "Authorization: Bearer {token}")?;
     let env = ask_default("env var the box sees", &default_env(service))?;
-    let methods: Vec<String> = ask_default("allowed methods (comma-separated)", "GET")?
+    let methods: Vec<String> = ask_default("allowed methods (comma-separated, * = all)", "*")?
         .split(',')
         .map(|s| s.trim().to_ascii_uppercase())
         .filter(|s| !s.is_empty())
@@ -950,12 +952,22 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         }));
     }
     for (name, kind) in vault_entries() {
-        if !seen.contains(&name) {
-            rows.push(serde_json::json!({
-                "name": name, "use": Value::Null, "type": kind, "state": "unbound",
-                "detail": format!("{kind} secret — nothing references it"),
-            }));
+        if seen.contains(&name) {
+            continue;
         }
+        // The email executor consumes the vault entry named "smtp" directly
+        // (exec_email) — a host-side use no config surface records.
+        if name == "smtp" {
+            rows.push(serde_json::json!({
+                "name": name, "use": "channel", "type": kind, "state": "active",
+                "detail": "smtp — consumed host-side by the email executor",
+            }));
+            continue;
+        }
+        rows.push(serde_json::json!({
+            "name": name, "use": Value::Null, "type": kind, "state": "unbound",
+            "detail": format!("{kind} secret — nothing references it"),
+        }));
     }
     rows.sort_by(|a, b| {
         (a["name"].as_str(), a["use"].as_str()).cmp(&(b["name"].as_str(), b["use"].as_str()))

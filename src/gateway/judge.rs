@@ -13,6 +13,29 @@ pub fn judge(req: &GovernedRequest, policy: &Policy) -> (Verdict, Option<String>
     (Verdict::Deny, None)
 }
 
+/// When nothing matched, the deny is often one predicate away from an allow:
+/// the host is governed, the verb isn't. Report the first in-scope allow rule
+/// that fails ONLY on the HTTP method — (rule name, its allowed methods) — so
+/// the 403 can say how to widen the grant instead of "policy said no".
+pub fn method_near_miss(req: &GovernedRequest, policy: &Policy) -> Option<(String, Vec<String>)> {
+    let subject = req.worker.as_deref().unwrap_or("org");
+    for rule in &policy.rules {
+        if rule.verdict != Verdict::Allow || !crate::gateway::scope::applies(&rule.scope, subject) {
+            continue;
+        }
+        if !method_allowed(&rule.r#match, req) && matches_except_method(&rule.r#match, req) {
+            let methods = rule
+                .r#match
+                .method
+                .as_ref()
+                .map(|m| m.values().into_iter().cloned().collect())
+                .unwrap_or_default();
+            return Some((rule.name.clone(), methods));
+        }
+    }
+    None
+}
+
 /// Collapse `.`/`..`/empty segments in a URL path so a prefix check can't be
 /// fooled by dot-segments that an upstream would later resolve. Purely lexical
 /// (no filesystem), matching how servers normalize request-targets.
@@ -31,6 +54,23 @@ fn normalize_path(path: &str) -> String {
 }
 
 fn matches(m: &Match, req: &GovernedRequest) -> bool {
+    method_allowed(m, req) && matches_except_method(m, req)
+}
+
+/// The HTTP-method predicate alone: absent = any; `*` = any.
+fn method_allowed(m: &Match, req: &GovernedRequest) -> bool {
+    match &m.method {
+        None => true,
+        Some(meth) => meth
+            .values()
+            .iter()
+            .any(|v| v.as_str() == "*" || v.eq_ignore_ascii_case(&req.method)),
+    }
+}
+
+/// Every predicate except the HTTP method — split out so method_near_miss can
+/// tell "wrong verb" apart from "wrong host" without re-listing the checks.
+fn matches_except_method(m: &Match, req: &GovernedRequest) -> bool {
     if let Some(p) = &m.protocol {
         if !p.values().iter().any(|v| v.as_str() == req.protocol) {
             return false;
@@ -43,15 +83,6 @@ fn matches(m: &Match, req: &GovernedRequest) -> bool {
     }
     if let Some(port) = &m.port {
         if !port.values().iter().any(|v| **v == req.port) {
-            return false;
-        }
-    }
-    if let Some(meth) = &m.method {
-        if !meth
-            .values()
-            .iter()
-            .any(|v| v.eq_ignore_ascii_case(&req.method))
-        {
             return false;
         }
     }
@@ -208,6 +239,44 @@ mod tests {
         get.method = "GET".into();
         assert_eq!(judge(&get, &pm).0, Verdict::Deny);
         assert_eq!(judge(&req(), &pm).0, Verdict::Allow);
+    }
+
+    #[test]
+    fn method_star_matches_any_verb() {
+        let p = policy(
+            r#"{"rules":[{"name":"full","match":{"host":"chatgpt.com","method":"*"},"verdict":"allow"}]}"#,
+        );
+        for verb in ["GET", "POST", "PATCH", "DELETE", "HEAD"] {
+            let mut r = req();
+            r.method = verb.into();
+            assert_eq!(judge(&r, &p).0, Verdict::Allow, "{verb}");
+        }
+    }
+
+    #[test]
+    fn near_miss_names_the_method_blocked_rule() {
+        let p = policy(
+            r#"{"rules":[
+                {"name":"connection:github","match":{"host":"api.github.com","method":["GET"]},"verdict":"allow"},
+                {"name":"other","match":{"host":"example.com"},"verdict":"allow"}]}"#,
+        );
+        let mut post = req();
+        post.host = "api.github.com".into();
+        assert_eq!(judge(&post, &p), (Verdict::Deny, None));
+        let (rule, methods) = method_near_miss(&post, &p).unwrap();
+        assert_eq!(rule, "connection:github");
+        assert_eq!(methods, vec!["GET"]);
+        // Wrong host entirely: no near-miss to report.
+        let mut elsewhere = req();
+        elsewhere.host = "evil.com".into();
+        assert!(method_near_miss(&elsewhere, &p).is_none());
+        // Out-of-scope rules stay out of the hint too.
+        let scoped = policy(
+            r#"{"rules":[{"name":"w1","match":{"host":"api.github.com","method":"GET"},"verdict":"allow","scope":"org/w1"}]}"#,
+        );
+        let mut other_worker = post.clone();
+        other_worker.worker = Some("org/w2".into());
+        assert!(method_near_miss(&other_worker, &scoped).is_none());
     }
 
     #[test]

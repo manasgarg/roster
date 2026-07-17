@@ -196,7 +196,7 @@ stem is the vault credential name.
 | `provider` | yes | registry entry (login flow + inject template), or any name if inline inject is given |
 | `workers` / `scope` | one of the two | `workers = ["yuko"]` grants per-worker; `scope = "org"` grants fleet-wide |
 | `hosts` | yes | allowed hostnames |
-| `methods` | no (default `["GET"]`) | allowed HTTP methods — writes are a deliberate edit |
+| `methods` | no (default `["*"]` — all) | allowed HTTP methods; list verbs (e.g. `["GET"]`) to narrow the grant |
 | `env` | yes | the sentinel env var the box sees |
 | `inject_header` / `inject_value` | together | custom injection, e.g. `"private-token"` / `"{token}"` |
 

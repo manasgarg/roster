@@ -567,22 +567,18 @@ fn compile_connection(
     }
 
     // A model provider's connection is a grant by default: hosts come from
-    // the registry's model_hosts, the model API's verbs are allowed, and
-    // there is no env exposure — the box authenticates through sentinel
-    // logins and the gateway injects the real credential in transit.
+    // the registry's model_hosts and there is no env exposure — the box
+    // authenticates through sentinel logins and the gateway injects the real
+    // credential in transit.
     let model_hosts = model_hosts_of(&provider);
     let is_model = model_hosts.is_some();
     let hosts = strings("hosts").or(model_hosts).unwrap_or_default();
     if hosts.is_empty() {
         errors.push(format!("{ctx}: needs hosts = [\"api.example.com\", ..]"));
     }
-    let methods = strings("methods").unwrap_or_else(|| {
-        if is_model {
-            vec!["GET".into(), "POST".into()]
-        } else {
-            vec!["GET".into()]
-        }
-    });
+    // No methods key = no method limit ("*"): a connection grants the service,
+    // not a verb subset. A methods = [..] line in the file narrows it.
+    let methods = strings("methods").unwrap_or_else(|| vec!["*".into()]);
     let env = v
         .get("env")
         .and_then(|x| x.as_str())
@@ -967,7 +963,7 @@ mod tests {
         let (c, rules, exposes, warning) =
             compile_connection("github", &v, &workers, |_| true, |_| true, |_| None).unwrap();
         assert!(c.enabled);
-        assert_eq!(c.methods, vec!["GET"]); // the default
+        assert_eq!(c.methods, vec!["*"]); // the default: full access
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0]["scope"], "org/yuko");
         assert_eq!(rules[0]["name"], "connection:github");
@@ -1021,7 +1017,7 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0]["scope"], "org");
         assert_eq!(rules[0]["match"]["host"][0], "api.anthropic.com");
-        assert_eq!(rules[0]["match"]["method"][1], "POST");
+        assert_eq!(rules[0]["match"]["method"][0], "*");
         assert_eq!(rules[0]["inject"]["credential"], "anthropic");
         assert!(exposes.is_empty(), "models expose no env var");
         assert!(warning.is_none());

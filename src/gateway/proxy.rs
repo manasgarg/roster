@@ -4,7 +4,7 @@
 
 use crate::credential::vault;
 use crate::gateway::ca::Ca;
-use crate::gateway::judge::judge;
+use crate::gateway::judge::{judge, method_near_miss};
 use crate::gateway::schema::{GovernedRequest, Mcp, Policy, Verdict};
 use crate::paths;
 use crate::util::now_rfc3339;
@@ -297,16 +297,19 @@ fn resolve_identity(proxy_auth: Option<&hyper::header::HeaderValue>) -> (String,
 
 /// A policy denial a CLI can read: the status line carries the verdict and
 /// rule in headers (for clients that print nothing else), the body carries
-/// them again plus a hint that this is governance, not an outage.
-fn deny_response(verdict: Verdict, rule: Option<&str>) -> Response<Body> {
-    let rule_json = rule
-        .map(|r| format!("\"{r}\""))
-        .unwrap_or_else(|| "null".into());
-    let mut resp = Response::new(full(&format!(
-        "{{\"error\":\"denied by gateway ({})\",\"rule\":{},\"hint\":\"policy said no — retrying won't change the answer; propose an action or ask your lead\"}}",
-        verdict.as_str(),
-        rule_json
-    )));
+/// them again plus a hint that this is governance, not an outage. A near-miss
+/// hint (right host, wrong verb) replaces the generic one when there is one.
+fn deny_response(verdict: Verdict, rule: Option<&str>, hint: Option<String>) -> Response<Body> {
+    let hint = hint.unwrap_or_else(|| {
+        "policy said no — retrying won't change the answer; propose an action or ask your lead"
+            .into()
+    });
+    let body = json!({
+        "error": format!("denied by gateway ({})", verdict.as_str()),
+        "rule": rule,
+        "hint": hint,
+    });
+    let mut resp = Response::new(full(&body.to_string()));
     *resp.status_mut() = StatusCode::FORBIDDEN;
     let headers = resp.headers_mut();
     headers.insert("x-roster-verdict", "deny".parse().unwrap());
@@ -589,16 +592,36 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
         }
     }
 
+    // A no-match deny that is really "right host, wrong verb" gets named — in
+    // the audit record and the 403 body — with the edit that would widen it.
+    let near_miss = if verdict != Verdict::Allow && rule.is_none() {
+        method_near_miss(gr, &policy).map(|(rule_name, methods)| {
+            let widen = match rule_name.strip_prefix("connection:") {
+                Some(conn) => format!("widen methods = [..] in connections/{conn}.toml"),
+                None => format!("widen match.method on the \"{rule_name}\" grant"),
+            };
+            format!(
+                "{} {} is blocked by method, not host: \"{}\" allows {} — the admin can {}",
+                gr.method,
+                gr.host,
+                rule_name,
+                methods.join(", "),
+                widen
+            )
+        })
+    } else {
+        None
+    };
     record(
         gr,
         verdict,
         rule.as_deref(),
         injected_names.as_deref(),
         &spend,
-        None,
+        near_miss.as_deref(),
     );
     if verdict != Verdict::Allow {
-        return Gate::Deny(deny_response(verdict, rule.as_deref()));
+        return Gate::Deny(deny_response(verdict, rule.as_deref(), near_miss));
     }
     // The spend was already reserved in the counters above; persist it durably.
     crate::gateway::ledger::record_usage(subject, &spend, now);

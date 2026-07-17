@@ -90,7 +90,6 @@ pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<
         ceiling_min,
         code: None,
         run_context: &run_context,
-        knowledge_mode: "append",
     };
     let (run_id, run_dir, ended_by, exit_code) = match run_box(&compiled, &spec).await {
         Ok(outcome) => outcome,
@@ -157,7 +156,6 @@ pub struct RunSpec<'a> {
     pub ceiling_min: f64,
     pub code: Option<&'a CodeSpec>,
     pub run_context: &'a crate::worker::memory::RunContext,
-    pub knowledge_mode: &'a str,
 }
 
 /// Run one box session for a queued task (the supervisor's entry point). Same
@@ -167,13 +165,7 @@ pub async fn dispatch(
     spec: RunSpec<'_>,
     task: crate::worker::context::TaskInput,
 ) -> Result<Outcome, BErr> {
-    let kind = if spec.knowledge_mode == "reorganization" {
-        "reorganization"
-    } else if spec.code.is_some() {
-        "code"
-    } else {
-        "task"
-    };
+    let kind = if spec.code.is_some() { "code" } else { "task" };
     crate::run::runlog::start(spec.run_id, spec.worker, kind, Some(spec.task_id))?;
     let request = crate::worker::context::ContextRequest {
         run_id: spec.run_id.to_string(),
@@ -303,7 +295,6 @@ async fn run_box(
         task_id,
         spec.code,
         spec.run_context,
-        spec.knowledge_mode,
         Some(ceiling_min),
     )
     .await?;
@@ -425,7 +416,7 @@ pub async fn run_session(
         run_dir,
         engine,
         mut storage,
-    } = match provision_box(worker, run_id, "", None, &start_context, "append", None).await {
+    } = match provision_box(worker, run_id, "", None, &start_context, None).await {
         Ok(provisioned) => provisioned,
         Err(error) => {
             crate::run::runlog::fail(run_id, Some(&error.to_string()));
@@ -699,7 +690,6 @@ async fn provision_box(
     task_id: &str,
     code: Option<&CodeSpec>,
     run_context: &crate::worker::memory::RunContext,
-    knowledge_mode: &str,
     ceiling_min: Option<f64>,
 ) -> Result<Provisioned, BErr> {
     let config = crate::config::snapshot().map_err(|e| format!("config invalid:\n{e}"))?;
@@ -729,8 +719,7 @@ async fn provision_box(
     let pihome = run_dir.join(".pihome");
     std::fs::create_dir_all(&workspace)?;
     std::fs::create_dir_all(&session)?;
-    let storage =
-        crate::worker::knowledge::provision(worker, run_id, knowledge_mode, run_context.tainted())?;
+    let storage = crate::worker::knowledge::provision(worker, run_id, run_context.tainted())?;
 
     // Code task: a writable git worktree on a fresh per-run branch.
     let worktree: Option<PathBuf> = match code {
@@ -830,11 +819,7 @@ async fn provision_box(
         format!("{}:{PIHOME_MOUNT}", pihome.display()),
     ]);
     if let Some(knowledge) = storage.knowledge.as_ref() {
-        let ro = if knowledge.mode == crate::worker::knowledge::KnowledgeMode::Read {
-            ":ro"
-        } else {
-            ""
-        };
+        let ro = if knowledge.writable { "" } else { ":ro" };
         args.extend([
             "-v".into(),
             format!(
@@ -842,6 +827,13 @@ async fn provision_box(
                 knowledge.path.display(),
                 knowledge.knowledge_mount()
             ),
+        ]);
+        // The canonical bare repo as a live, read-only origin: `git fetch
+        // origin` works in the box; ref writes are a filesystem error.
+        let bare = crate::worker::knowledge::bare_repo(worker);
+        args.extend([
+            "-v".into(),
+            format!("{}:{}:ro", bare.display(), knowledge.origin_mount()),
         ]);
     }
     if let Some(channel) = run_context.channel_id.as_deref() {
@@ -894,15 +886,10 @@ async fn provision_box(
             "-e".into(),
             format!("ROSTER_KNOWLEDGE_BASE={}", knowledge.base_commit),
             "-e".into(),
-            format!("ROSTER_KNOWLEDGE_MODE={}", knowledge.mode.as_str()),
+            format!("ROSTER_KNOWLEDGE_MODE={}", knowledge.mode_str()),
+            "-e".into(),
+            format!("ROSTER_KNOWLEDGE_BRANCH={}", knowledge.branch()),
         ]);
-        // Read-only checkouts have no write contract, so no namespace.
-        if knowledge.mode != crate::worker::knowledge::KnowledgeMode::Read {
-            args.extend([
-                "-e".into(),
-                format!("ROSTER_RECORD_NAMESPACE={}", knowledge.record_namespace),
-            ]);
-        }
     }
     if !task_id.is_empty() {
         args.extend(["-e".into(), format!("ROSTER_TASK_ID={task_id}")]);
@@ -957,40 +944,13 @@ async fn provision_box(
     })
 }
 
-fn finalize_storage(storage: &mut crate::worker::knowledge::RunStorage, clean: bool) {
+/// However the run ended, park whatever it didn't land: the backstop
+/// snapshots the worktree onto refs/quarantine/run-<id> when it differs from
+/// the last landed state, and the next run's briefing points at it. Exits
+/// never integrate — landing is only ever a deliberate knowledge_push.
+fn finalize_storage(storage: &mut crate::worker::knowledge::RunStorage, _clean: bool) {
     if let Some(checkout) = storage.knowledge.as_ref() {
-        if checkout.mode == crate::worker::knowledge::KnowledgeMode::Read {
-            // Consultation only: nothing to integrate, nothing to quarantine.
-        } else if clean && checkout.knowledge_policy.checkpoint_on_clean_exit {
-            match crate::worker::knowledge::checkpoint(checkout) {
-                Ok(result) if result.files > 0 => eprintln!(
-                    "knowledge {}: integrated {} file(s) at {}",
-                    checkout.run_id,
-                    result.files,
-                    result.commit.as_deref().unwrap_or("-")
-                ),
-                Ok(_) => {}
-                Err(error) => eprintln!(
-                    "knowledge {}: checkpoint rejected: {error}",
-                    checkout.run_id
-                ),
-            }
-        } else if clean {
-            let _ = crate::run::runlog::update_knowledge(
-                &checkout.run_id,
-                "uncheckpointed",
-                None,
-                Some("automatic checkpoint disabled by policy"),
-            );
-        } else {
-            crate::worker::knowledge::quarantine(checkout, "run did not exit cleanly");
-        }
-    }
-    if let Err(error) = crate::worker::knowledge::release_reorganization(storage) {
-        eprintln!(
-            "knowledge {}: could not journal reorganization lease release: {error}",
-            storage.run_id
-        );
+        crate::worker::knowledge::backstop(checkout);
     }
 }
 

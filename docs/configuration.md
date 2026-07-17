@@ -66,8 +66,8 @@ wake_on_resolve = true       # file a continuation task when the gate resolves
 ```
 
 Executors: `message-user`, `email`, `git-pr`, `identity`, `purpose`,
-`discord`, `slack`, `task`, `note`. An intent with no grant is refused, not
-gated. See [actions-and-trust.md](actions-and-trust.md).
+`discord`, `slack`, `task`, `note`, `knowledge`. An intent with no grant is
+refused, not gated. See [actions-and-trust.md](actions-and-trust.md).
 
 ### `[[trust]]` — the ladder
 
@@ -138,11 +138,9 @@ Mandatory blocks fail rather than truncate; see [context.md](context.md).
 |---|---|---|
 | `enabled` | `true` | |
 | `write_from` | `"clean-room"` | `"clean-room"`: only runs without person-data may write; `"any-run"`: scan-only legacy behavior |
-| `normal_mode` | `"append"` | the only supported value |
-| `max_file_chars` | 200000 | per-record cap |
+| `max_file_chars` | 200000 | per-file cap |
 | `max_repo_bytes` | 1000000000 | repo size cap |
-| `checkpoint_on_clean_exit` | `true` | integrate on clean exit |
-| `reorganization_requires_exclusive_lease` | `true` | must stay `true` |
+| `max_deletions_ungated` | 20 | a `knowledge_push` deleting more files than this waits for a human gate |
 
 ### `[memory]`
 

@@ -346,9 +346,6 @@ enum TaskCmd {
         /// File as proactive: waits out spent budget windows (owner-filed work always runs)
         #[arg(long)]
         proactive: bool,
-        /// An exclusive knowledge-reorganization session (no other work alongside it)
-        #[arg(long, conflicts_with = "repo")]
-        reorganize: bool,
         /// Code task in a worktree of this git repo
         #[arg(long)]
         repo: Option<String>,
@@ -666,19 +663,10 @@ async fn main() {
                     worker,
                     ceiling,
                     proactive,
-                    reorganize,
                     repo,
                     base,
                     prompt,
-                }) => cli::task::add(
-                    &worker,
-                    ceiling,
-                    proactive,
-                    reorganize,
-                    repo,
-                    &base,
-                    prompt.join(" "),
-                ),
+                }) => cli::task::add(&worker, ceiling, proactive, repo, &base, prompt.join(" ")),
                 Some(TaskCmd::Relay {
                     worker,
                     from,

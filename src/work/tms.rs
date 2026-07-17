@@ -77,9 +77,6 @@ pub struct Task {
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
-    /// append | reorganization
-    #[serde(default = "default_knowledge_mode")]
-    pub knowledge_mode: String,
     /// Why a failed task failed — attested with the outcome, journaled with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -149,9 +146,6 @@ fn default_ceiling() -> f64 {
 }
 fn default_recurring_ceiling() -> f64 {
     20.0
-}
-fn default_knowledge_mode() -> String {
-    "append".into()
 }
 fn tags_empty(t: &Tags) -> bool {
     t.provider.is_none() && t.channel.is_none() && t.user.is_none()
@@ -397,8 +391,6 @@ fn migrate_legacy_queue(worker: &str) {
         repo: Option<String>,
         #[serde(default)]
         base: Option<String>,
-        #[serde(default = "default_knowledge_mode")]
-        knowledge_mode: String,
     }
     let mut p = read_partition(worker);
     let shelf = qdir.with_extension("migrated");
@@ -447,7 +439,6 @@ fn migrate_legacy_queue(worker: &str) {
             updated_at: l.updated_at,
             repo: l.repo,
             base: l.base,
-            knowledge_mode: l.knowledge_mode,
             error: None,
         };
         if t.live() {
@@ -476,7 +467,6 @@ pub struct Draft {
     pub depends_on: Vec<String>,
     pub repo: Option<String>,
     pub base: Option<String>,
-    pub knowledge_mode: String,
     pub recurring_id: Option<String>,
 }
 
@@ -493,7 +483,6 @@ impl Default for Draft {
             depends_on: Vec::new(),
             repo: None,
             base: None,
-            knowledge_mode: default_knowledge_mode(),
             recurring_id: None,
         }
     }
@@ -531,29 +520,10 @@ pub fn add(worker: &str, draft: Draft) -> Result<Task, BErr> {
     if draft.prompt.trim().is_empty() {
         return Err("a task needs a prompt".into());
     }
-    if !matches!(draft.knowledge_mode.as_str(), "append" | "reorganization") {
-        return Err(format!("unknown knowledge mode \"{}\"", draft.knowledge_mode).into());
-    }
-    if draft.knowledge_mode == "reorganization" && draft.repo.is_some() {
-        return Err("a knowledge reorganization cannot also be a code task".into());
-    }
     check_scheduled_at(&draft.scheduled_at)?;
     check_ceiling(draft.ceiling_min).map_err(|e| -> BErr { e.into() })?;
     let _guard = lock_worker(worker)?;
     let mut p = load(worker);
-    if draft.knowledge_mode == "reorganization" {
-        if let Some(active) = p
-            .tasks
-            .iter()
-            .find(|t| t.knowledge_mode == "reorganization" && t.live())
-        {
-            return Err(format!(
-                "worker {worker} already has reorganization task {} in state {}",
-                active.id, active.state
-            )
-            .into());
-        }
-    }
     let now = now_rfc3339();
     let t = Task {
         id: new_task_id(),
@@ -573,7 +543,6 @@ pub fn add(worker: &str, draft: Draft) -> Result<Task, BErr> {
         updated_at: now,
         repo: draft.repo,
         base: draft.base,
-        knowledge_mode: draft.knowledge_mode,
         error: None,
     };
     p.tasks.push(t.clone());
@@ -701,37 +670,6 @@ pub fn set_tasks(
         if let Err(e) = check_ceiling(t.ceiling_min) {
             return Err(reject(format!("task {}: {e}", t.id), &current));
         }
-        if !matches!(t.knowledge_mode.as_str(), "append" | "reorganization") {
-            return Err(reject(
-                format!(
-                    "task {}: unknown knowledge mode \"{}\"",
-                    t.id, t.knowledge_mode
-                ),
-                &current,
-            ));
-        }
-        if t.knowledge_mode == "reorganization" && t.repo.is_some() {
-            return Err(reject(
-                format!(
-                    "task {}: a knowledge reorganization cannot also be a code task",
-                    t.id
-                ),
-                &current,
-            ));
-        }
-    }
-    // At most one reorganization may be live at a time (matches add()); the
-    // supervisor also serializes them, but reject the shape up front.
-    if tasks
-        .iter()
-        .filter(|t| t.knowledge_mode == "reorganization" && t.live())
-        .count()
-        > 1
-    {
-        return Err(reject(
-            "at most one reorganization task may be live at a time".into(),
-            &current,
-        ));
     }
 
     // System templates (the heartbeat) are host-owned, byte for byte.
@@ -1126,15 +1064,10 @@ fn window_state(w: &Option<Window>, now: &str) -> &'static str {
 }
 
 /// The claimable set of one partition: pending, time due, dependencies met
-/// (an edge to a non-live id blocks), at most one reorganization in flight.
+/// (an edge to a non-live id blocks).
 fn claimable(p: &Partition, now: &str) -> Vec<Task> {
     let live: HashSet<&str> = p.tasks.iter().map(|t| t.id.as_str()).collect();
-    let reorg_open = p.tasks.iter().any(|t| {
-        t.knowledge_mode == "reorganization"
-            && matches!(t.state.as_str(), "claimed" | "needs-review")
-    });
     let mut out: Vec<Task> = Vec::new();
-    let mut reorg_offered = false;
     let mut sorted: Vec<&Task> = p.tasks.iter().collect();
     sorted.sort_by(|a, b| {
         (a.standing == "proactive")
@@ -1152,12 +1085,6 @@ fn claimable(p: &Partition, now: &str) -> Vec<Task> {
             // Dangling edge: the dependency failed or was canceled. Blocked
             // until the agent or an admin curates it.
             continue;
-        }
-        if t.knowledge_mode == "reorganization" {
-            if reorg_open || reorg_offered {
-                continue;
-            }
-            reorg_offered = true;
         }
         out.push(t.clone());
     }
@@ -1248,7 +1175,6 @@ fn run_recurrence(worker: &str, p: &mut Partition, now_str: &str, now: i64) -> b
             updated_at: now_str.to_string(),
             repo: None,
             base: None,
-            knowledge_mode: "append".into(),
             error: None,
         };
         eprintln!("tms: recurrence {} → task {} for {worker}", r.id, child.id);
@@ -1733,7 +1659,6 @@ mod tests {
             updated_at: String::new(),
             repo: None,
             base: None,
-            knowledge_mode: "append".into(),
             error: None,
         });
         let next = set_tasks("w4", p.version, tasks, vec![], &ctx("host-op", None)).unwrap();

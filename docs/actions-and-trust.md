@@ -148,12 +148,13 @@ sees. The admin binds intents to executors in config; the built-in set:
 | `identity` | Overwrite the worker's identity file (always human-gated) |
 | `purpose` | Overwrite a channel's purpose file |
 | `task` | File a task on the worker's own queue (`file_task` — the bridge from conversations to clean-room research) |
+| `knowledge` | Land a run's committed knowledge branch: validate the pushed range, fast-forward the repo's `main` ([knowledge.md](knowledge.md)) |
 | `note` | Interaction-memory operations: remember, forget, correct, pin, and the rest |
 
 And the box-side tools that propose through them: `message_user`,
 `discord_send`, `slack_send`, `send_email`, `propose_changes` (one intent
-covering commit, push, and PR), `propose_purpose_edit`, `file_task`, and the
-memory tools. Task runs also carry `task_complete`/`task_fail` — not granted
+covering commit, push, and PR), `propose_purpose_edit`, `file_task`,
+`knowledge_push`, and the memory tools. Task runs also carry `task_complete`/`task_fail` — not granted
 actions but part of the task protocol: the worker's outcome report, recorded
 as evidence for the host's attestation (see [work.md](work.md)).
 

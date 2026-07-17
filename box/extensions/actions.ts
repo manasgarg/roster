@@ -457,6 +457,65 @@ export default function rosterActionTools(api: PiToolApi): void {
     });
   }
 
+  // knowledge_push — land the committed knowledge branch on the shared main.
+  // Only registered when this run holds a writable knowledge clone.
+  if (process.env.ROSTER_KNOWLEDGE_MODE === "write" && process.env.ROSTER_KNOWLEDGE_DIR) {
+    const KNOWLEDGE_DIR = process.env.ROSTER_KNOWLEDGE_DIR;
+    const git = async (...args: string[]): Promise<{ ok: boolean; out: string }> => {
+      const { execFile } = await import("node:child_process");
+      return new Promise((resolve) => {
+        execFile("git", ["-C", KNOWLEDGE_DIR, ...args], { timeout: 60_000 }, (error, stdout, stderr) => {
+          resolve({ ok: !error, out: (error ? `${stdout}\n${stderr}` : stdout).trim() });
+        });
+      });
+    };
+    api.registerTool({
+      name: "knowledge_push",
+      label: "knowledge_push",
+      description:
+        "Land your committed knowledge changes on the shared main branch. Commit your work in " +
+        `${KNOWLEDGE_DIR} first (git add/commit); this bundles your branch and submits it — the host ` +
+        "validates the push and fast-forwards main. If it answers \"stale: main moved\", run " +
+        "`git fetch origin && git rebase origin/main`, resolve any conflicts, and call this again. " +
+        "A push that deletes many files is refused with instructions to re-propose with " +
+        "confirm_bulk_delete — that path waits for your lead's approval.",
+      promptSnippet: "knowledge_push([rationale]): land committed knowledge on main (rebase + retry if stale)",
+      parameters: {
+        type: "object",
+        properties: {
+          rationale: { type: "string", description: "One line on what this push adds or changes." },
+          confirm_bulk_delete: {
+            type: "string",
+            enum: ["yes"],
+            description: "Pass \"yes\" ONLY when re-proposing a push the host refused for bulk deletion — it will be held for human approval.",
+          },
+        },
+        additionalProperties: false,
+      },
+      async execute(_id, params) {
+        const say = (text: string) => ({ content: [{ type: "text" as const, text }] });
+        const dirty = await git("status", "--porcelain");
+        if (!dirty.ok) return say(`Could not inspect the knowledge clone: ${dirty.out}`);
+        if (dirty.out !== "") return say("Uncommitted changes in the knowledge clone — git add and commit them first, then push.");
+        const head = await git("rev-parse", "HEAD");
+        if (!head.ok) return say(`Could not resolve HEAD: ${head.out}`);
+        const range = await git("rev-list", "--count", "origin/main..HEAD");
+        if (range.ok && range.out === "0") return say("Nothing to push — your branch has no commits beyond origin/main.");
+        const bundle = await git("bundle", "create", ".git/roster-push.bundle", "origin/main..HEAD");
+        if (!bundle.ok) return say(`Could not bundle the branch: ${bundle.out}`);
+        const s = await submit(
+          "knowledge-push",
+          {
+            head: head.out,
+            ...(params.confirm_bulk_delete === "yes" ? { confirm_bulk_delete: "yes" } : {}),
+          },
+          (params.rationale as string) ?? "",
+        );
+        return say(describe(s));
+      },
+    });
+  }
+
   api.registerTool({
     name: "send_email",
     label: "send_email",

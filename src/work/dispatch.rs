@@ -145,7 +145,6 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
                         ceiling_min: t.ceiling_min,
                         code: code.as_ref(),
                         run_context: &memory_context,
-                        knowledge_mode: &t.knowledge_mode,
                     };
                     let out = boxed::dispatch(spec, context_task)
                         .await

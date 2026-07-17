@@ -9,7 +9,6 @@ pub fn add(
     worker: &str,
     ceiling: f64,
     proactive: bool,
-    reorganize: bool,
     repo: Option<String>,
     base: &str,
     prompt: String,
@@ -31,9 +30,7 @@ pub fn add(
         None => None,
     };
     let base = repo.as_ref().map(|_| base.to_string());
-    let kind = if reorganize {
-        "reorganization"
-    } else if repo.is_some() {
+    let kind = if repo.is_some() {
         "code"
     } else if proactive {
         "proactive"
@@ -49,12 +46,6 @@ pub fn add(
             ceiling_min: ceiling,
             repo,
             base,
-            knowledge_mode: if reorganize {
-                "reorganization"
-            } else {
-                "append"
-            }
-            .into(),
             ..Default::default()
         },
     )
@@ -145,7 +136,6 @@ pub fn show(id: &str) -> Result<(), BErr> {
         println!("recurring {r}");
     }
     println!("ceiling  {} min", t.ceiling_min);
-    println!("knowledge {}", t.knowledge_mode);
     if let Some(run) = &t.run_id {
         println!("run      {run}   (details: roster server runs show {run})");
     }

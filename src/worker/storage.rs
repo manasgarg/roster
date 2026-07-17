@@ -9,13 +9,14 @@ use std::collections::HashMap;
 #[serde(default)]
 pub struct KnowledgePolicy {
     pub enabled: bool,
-    pub normal_mode: String,
     pub max_file_chars: usize,
     pub max_repo_bytes: u64,
-    pub checkpoint_on_clean_exit: bool,
-    pub reorganization_requires_exclusive_lease: bool,
+    /// A knowledge_push whose diff deletes more than this many files needs a
+    /// human gate (confirm_bulk_delete). History makes deletion recoverable;
+    /// a quiet bulk wipe still deserves a speed bump.
+    pub max_deletions_ungated: usize,
     /// The memory/knowledge boundary (docs/knowledge.md):
-    /// "clean-room" — only untainted runs get a writable knowledge mount
+    /// "clean-room" — only untainted runs get a writable knowledge clone
     /// (tainted runs read-only, clean runs recall-free); "any-run" — legacy
     /// behavior, participant scanning only.
     pub write_from: String,
@@ -25,11 +26,9 @@ impl Default for KnowledgePolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            normal_mode: "append".into(),
             max_file_chars: 200_000,
             max_repo_bytes: 1_000_000_000,
-            checkpoint_on_clean_exit: true,
-            reorganization_requires_exclusive_lease: true,
+            max_deletions_ungated: 20,
             write_from: "clean-room".into(),
         }
     }
@@ -61,14 +60,8 @@ pub fn load(worker: &str) -> StoragePolicy {
 }
 
 pub fn validate(policy: &StoragePolicy) -> Result<(), String> {
-    if policy.knowledge.normal_mode != "append" {
-        return Err("knowledge.normal_mode currently supports only \"append\"".into());
-    }
     if policy.knowledge.max_file_chars == 0 || policy.knowledge.max_repo_bytes == 0 {
         return Err("knowledge size limits must be positive".into());
-    }
-    if !policy.knowledge.reorganization_requires_exclusive_lease {
-        return Err("knowledge reorganization must require an exclusive lease".into());
     }
     if !matches!(
         policy.knowledge.write_from.as_str(),
@@ -89,11 +82,9 @@ pub fn validate_worker_overlay(base: &StoragePolicy, worker: &StoragePolicy) -> 
     if worker.knowledge.enabled && !base.knowledge.enabled {
         return Err("worker cannot enable knowledge disabled by org policy".into());
     }
-    if worker.knowledge.checkpoint_on_clean_exit && !base.knowledge.checkpoint_on_clean_exit {
-        return Err("worker cannot enable checkpoints disabled by org policy".into());
-    }
     if worker.knowledge.max_file_chars > base.knowledge.max_file_chars
         || worker.knowledge.max_repo_bytes > base.knowledge.max_repo_bytes
+        || worker.knowledge.max_deletions_ungated > base.knowledge.max_deletions_ungated
     {
         return Err("worker knowledge limits cannot exceed org limits".into());
     }
@@ -117,6 +108,10 @@ mod tests {
         assert!(validate_worker_overlay(&base, &worker).is_ok());
 
         worker.knowledge.max_repo_bytes = base.knowledge.max_repo_bytes + 1;
+        assert!(validate_worker_overlay(&base, &worker).is_err());
+
+        worker.knowledge.max_repo_bytes = base.knowledge.max_repo_bytes;
+        worker.knowledge.max_deletions_ungated = base.knowledge.max_deletions_ungated + 1;
         assert!(validate_worker_overlay(&base, &worker).is_err());
     }
 }

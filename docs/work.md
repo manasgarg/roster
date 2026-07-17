@@ -103,13 +103,12 @@ opens the pull request. The box never holds the push credential.
 ## Reorganization tasks
 
 ```bash
-roster worker task add yuko --reorganize "rebuild the topic index"
+roster worker task add yuko "reorganize the knowledge repo around topics"
 ```
 
-Takes the worker's exclusive knowledge-reorganization lease: the run may
-rebuild `organization/` in the knowledge repo while ordinary append runs
-continue alongside. One reorganization at a time per worker; see
-[knowledge.md](knowledge.md).
+Restructuring knowledge is an ordinary task now: every clean run gets its
+own branch of the knowledge repo and full agency over the layout; pushes
+land serialized, fast-forward only. See [knowledge.md](knowledge.md).
 
 ## Runs: the permanent record
 
@@ -126,7 +125,7 @@ roster server runs recall <run>          # why each memory was included
 ```
 
 A run record answers how the session ended (`done`, `ceiling`, `error`,
-`idle`), what knowledge mode it had and what commit it produced, what it
+`idle`), its knowledge access and what commit it pushed, what it
 proposed, and what everything cost. The per-worker journal threads the story
 across runs: what the box did, what was gated, who decided, what the
 executor reported. Nothing here is model-written; it's all computed from

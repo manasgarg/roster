@@ -97,7 +97,6 @@ pub fn show(id: &str) -> Result<(), BErr> {
             println!("knowledge {}", knowledge.state);
             println!("  mode    {}", knowledge.mode);
             println!("  base    {}", knowledge.base_commit);
-            println!("  records {}", knowledge.record_namespace);
             if let Some(commit) = &knowledge.produced_commit {
                 println!("  commit  {commit}");
             }

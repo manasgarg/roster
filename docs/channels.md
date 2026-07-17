@@ -142,7 +142,7 @@ own shell, the definition of a sought-out 1:1), history recorded under
 (worker + channel + your user scope), and warm-session turns with the same
 lockdown and governance. The one difference is delivery: there is no send
 tool — the worker's reply text prints directly in your terminal. And like
-every conversation, the knowledge shelf is read-only; durable research goes
+every conversation, the knowledge repository is read-only; durable research goes
 through `file_task`.
 
 ## History on disk

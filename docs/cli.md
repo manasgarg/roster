@@ -53,7 +53,7 @@ worker trust      <name> [--json]
 worker run        <name> [--ceiling M] "<prompt>"
 worker rm         <name> [--yes]
 worker chat       <name> [--idle SECS]
-worker task       add <worker> [--ceiling M] [--proactive|--reorganize]
+worker task       add <worker> [--ceiling M] [--proactive]
                       [--repo P --base R] "<prompt>"
                   | relay <worker> [--from WHO] "<message>"
                   | ls [--json] | show <id> | requeue <id>
@@ -181,10 +181,8 @@ much quiet (default 20).
 **`worker task`** manages the worker's durable queue:
 
 - `add` files a task. `--proactive` marks it budget-gated at dispatch
-  (admin-filed work always runs); `--reorganize` requests the exclusive
-  knowledge-reorganization lease; `--repo P --base R` makes it a code task
+  (admin-filed work always runs); `--repo P --base R` makes it a code task
   in a git worktree of that repo (`--base` defaults to `main`).
-  `--reorganize` and `--repo` are mutually exclusive.
 - `relay` files an inbound message as a task with untrusted-content framing;
   `--from` records the sender label.
 - `ls`, `show`, `requeue` — inspect and re-run.

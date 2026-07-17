@@ -574,9 +574,33 @@ pub async fn run_executor(
             "set-tasks" => exec_set_tasks(worker, payload, run_id),
             _ => exec_file_task(worker, payload, run_id),
         },
+        "knowledge" => exec_knowledge_push(worker, run_id, payload),
         "note" => crate::worker::memory::execute(worker, intent, payload, run_id),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
+}
+
+/// `knowledge_push` — land the run's committed knowledge branch on main
+/// (docs/plans/knowledge-branch-per-run.md). The heavy lifting — bundle
+/// quarantine, validation, ff-only advance in the integration lane — lives in
+/// `worker::knowledge::push`; this maps the envelope and demands a trusted
+/// run. A stale or refused push comes back as the action error, in-run, so
+/// the agent can rebase and try again.
+fn exec_knowledge_push(worker: &str, run_id: &str, payload: &Value) -> Result<Value, String> {
+    if run_id.is_empty() {
+        return Err("knowledge_push needs a trusted run context".into());
+    }
+    let head = payload
+        .get("head")
+        .and_then(Value::as_str)
+        .ok_or("knowledge_push needs \"head\" (the commit sha to land)")?;
+    let confirmed = payload.get("confirm_bulk_delete").and_then(Value::as_str) == Some("yes");
+    let outcome = crate::worker::knowledge::push(worker, run_id, head, confirmed)?;
+    Ok(json!({
+        "landed": outcome.commit,
+        "files": outcome.files,
+        "deletions": outcome.deletions,
+    }))
 }
 
 /// Deliver a note from the worker to its lead: a Discord DM when a bot token +

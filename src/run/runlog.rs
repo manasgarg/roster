@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnowledgeRunRecord {
     pub base_commit: String,
+    /// "write" | "read" (older records: "append" | "reorganization" | "read").
     pub mode: String,
-    pub record_namespace: String,
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub produced_commit: Option<String>,

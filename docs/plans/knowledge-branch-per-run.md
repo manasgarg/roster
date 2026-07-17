@@ -1,6 +1,7 @@
 # Plan: branch-per-run knowledge — full agency, host-owned main
 
-Status: decisions locked (2026-07-17) — implementation not started
+Status: implemented (2026-07-17) — WP1–WP4 landed; needs a daemon restart and
+a rebuilt box image (or an `[engine] dir` dev mount) to take effect
 Scope: replace the knowledge mode system (append / reorganization / read,
 namespaces, lease) with one workflow: every run works on a real git branch
 and lands it through a gated push. The clean-room taint boundary is

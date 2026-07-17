@@ -46,7 +46,7 @@ roster triggers), stores the secret, and follows through per use:
   prints the snippet). One credential serves one worker's listener —
   use `--name` for a second bot.
 - **model** — a grant by default: scaffolds a connection file whose hosts
-  and methods derive from the provider registry, compiling into an
+  derive from the provider registry, compiling into an
   allow-and-inject rule for the model API (org-wide unless `--worker`
   narrows it, no env exposure). The file is admin-owned after creation —
   edit or delete it to change access; a hand-written `[[grant]]` injecting
@@ -93,21 +93,23 @@ conventional env var.
 
 Presets, not a restriction — connect any token-authenticated API by naming
 its host. Roster prompts for the token without echoing it and defaults to
-`Authorization: Bearer {token}`, GET-only, and an env var derived from the
-name:
+`Authorization: Bearer {token}`, all methods (`methods = ["*"]` — connecting
+a service grants the service, not a verb subset), and an env var derived
+from the name:
 
 ```bash
 roster connection add acme --host api.acme.com --worker yuko
 ```
 
-Override the defaults for APIs with different conventions:
+Override the defaults for APIs with different conventions — `--method`
+narrows the grant (e.g. read-only):
 
 ```bash
 roster connection add gitlab-internal \
   --host gitlab.example.com \
   --header 'Private-Token: {token}' \
   --env GITLAB_TOKEN \
-  --method GET --method POST \
+  --method GET \
   --worker yuko
 ```
 

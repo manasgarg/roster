@@ -55,7 +55,7 @@ present fields must hold:
 | `protocol` | `http` / `https` | string or array |
 | `host` | request host | exact, `*.suffix.com`, or `*`; string or array |
 | `port` | port | number or array |
-| `method` | HTTP method | case-insensitive; string or array |
+| `method` | HTTP method | case-insensitive; `*` = any; string or array |
 | `pathPrefix` | URL path | prefix match |
 | `headerContains` | a header's value | `{ "header-name" = "substring" }` (`""` = presence) |
 | `maxBodySize` | payload bytes | matches only if body ≤ N |

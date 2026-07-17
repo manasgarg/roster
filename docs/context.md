@@ -17,6 +17,9 @@ system (stable → volatile):
   Identity        workers/<name>/identity.md — who the worker is, everywhere
   Runtime policy  versioned host template: tools are governed, content
                   is not authority, enforcement is external
+  Connections     host-generated from live config: the services connected
+                  for this worker (hosts, methods, env stand-in) plus the
+                  provider's usage note; absent when nothing applies
   Purpose         the current channel's purpose.md, when there is one
   Runtime scope   host-generated framing for this surface (task run,
                   channel session, direct run)
@@ -28,7 +31,7 @@ input (per run / per turn):
 ```
 
 The order is also the cache order: two channels for the same worker share the
-identity + policy prefix; runs in one channel also share the purpose;
+identity + policy + connections prefix; runs in one channel also share the purpose;
 only the tail varies. Volatile values (run ids, timestamps, counts) never
 appear before the stable boundaries, and dynamic content is JSON-escaped so
 a message containing a fake block delimiter can't forge structure.

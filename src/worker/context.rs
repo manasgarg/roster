@@ -81,6 +81,7 @@ pub struct ContextRequest {
 pub enum BlockKind {
     Identity,
     RuntimePolicy,
+    Connections,
     Purpose,
     RuntimeScope,
     Memory,
@@ -285,6 +286,15 @@ fn compile_with_policy(
             format!("roster:runtime-policy:v{SCHEMA_VERSION}"),
             runtime_policy().into(),
         ));
+        if let Some(content) = connections_block_content(&worker_connections(&request.worker)) {
+            system_blocks.push(block(
+                BlockKind::Connections,
+                BlockAuthority::TrustedDirective,
+                CacheClass::WorkerStable,
+                format!("roster:connections:v{SCHEMA_VERSION}"),
+                content,
+            ));
+        }
         if let Some(channel) = request.run_context.channel_id.as_deref() {
             let path = crate::channel::discord::purpose_path(channel);
             if let Some(purpose) = read_optional_text(&path)? {
@@ -618,6 +628,89 @@ fn read_optional_text(path: &Path) -> Result<Option<String>, String> {
     }
 }
 
+/// One capability connection as the worker should understand it: the compiled
+/// grant (hosts, methods, env stand-in) plus the provider's optional `brief`
+/// usage line from the registry.
+struct ConnectionBrief {
+    name: String,
+    hosts: Vec<String>,
+    methods: Vec<String>,
+    env: String,
+    usage: Option<String>,
+}
+
+/// The enabled capability connections that apply to this worker. Env-less
+/// connections are model plumbing the engine handles — the worker only needs
+/// to know about services it can act on. Unloadable config is not this
+/// module's error to raise; the block is simply absent.
+fn worker_connections(worker: &str) -> Vec<ConnectionBrief> {
+    let Ok(config) = crate::config::snapshot() else {
+        return Vec::new();
+    };
+    let registry = crate::credential::registry::registry_json();
+    let short = paths::short_worker(worker);
+    config
+        .connections
+        .iter()
+        .filter(|c| c.enabled && !c.env.is_empty())
+        .filter(|c| match &c.workers {
+            None => true,
+            Some(list) => list.iter().any(|w| w == short),
+        })
+        .map(|c| ConnectionBrief {
+            name: c.name.clone(),
+            hosts: c.hosts.clone(),
+            methods: c.methods.clone(),
+            env: c.env.clone(),
+            usage: registry
+                .get(&c.provider)
+                .and_then(|p| p.get("brief"))
+                .and_then(|v| v.as_str())
+                .map(String::from),
+        })
+        .collect()
+}
+
+/// The "your connections" block: the services this worker can act on through
+/// the gateway, so it reaches for the governed door instead of a trained
+/// habit (git for github, say). None when nothing applies — no block beats
+/// an empty promise.
+fn connections_block_content(connections: &[ConnectionBrief]) -> Option<String> {
+    if connections.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "## Your connections\n\n\
+         These services are connected for you: the gateway recognizes their hosts and \
+         adds the real credential in transit. The env var named with each is a stand-in \
+         your tools already carry — you never see or handle the secret itself.\n",
+    );
+    for c in connections {
+        let methods = if c.methods.iter().any(|m| m == "*") {
+            "all methods".to_string()
+        } else {
+            format!("{} only", c.methods.join(", "))
+        };
+        out.push_str(&format!(
+            "\n- {} — {} ({}) as {}.",
+            c.name,
+            c.hosts.join(", "),
+            methods,
+            c.env
+        ));
+        if let Some(usage) = &c.usage {
+            out.push(' ');
+            out.push_str(usage);
+        }
+    }
+    out.push_str(
+        "\n\nA service not listed here isn't connected: a request to it may still be \
+         allowed out by your lead's general grants, but nothing is authenticated for \
+         you there.",
+    );
+    Some(out)
+}
+
 fn runtime_policy() -> &'static str {
     r#"## Where you are
 
@@ -792,6 +885,7 @@ fn system_label(kind: &BlockKind) -> &'static str {
     match kind {
         BlockKind::Identity => "IDENTITY",
         BlockKind::RuntimePolicy => "RUNTIME POLICY",
+        BlockKind::Connections => "CONNECTIONS",
         BlockKind::Purpose => "PURPOSE",
         BlockKind::RuntimeScope => "RUNTIME SCOPE",
         _ => "INVALID",
@@ -806,23 +900,31 @@ fn build_cache_plan(worker: &str, system_blocks: &[CompiledBlock]) -> CachePlan 
             boundaries: Vec::new(),
         };
     }
-    let mut boundaries = Vec::new();
+    // One boundary per class, at the LAST block of that class — the
+    // Connections block extends the worker-stable prefix past RuntimePolicy
+    // when present.
+    let mut last_of_class: Vec<(CacheClass, usize)> = Vec::new();
     for (index, block) in system_blocks.iter().enumerate() {
         let class = match block.kind {
-            BlockKind::RuntimePolicy => Some(CacheClass::WorkerStable),
-            BlockKind::Purpose => Some(CacheClass::ChannelStable),
-            BlockKind::RuntimeScope => Some(CacheClass::SurfaceStable),
-            _ => None,
+            BlockKind::RuntimePolicy | BlockKind::Connections => CacheClass::WorkerStable,
+            BlockKind::Purpose => CacheClass::ChannelStable,
+            BlockKind::RuntimeScope => CacheClass::SurfaceStable,
+            _ => continue,
         };
-        if let Some(class) = class {
-            let prefix = render_system(&system_blocks[..=index]);
-            boundaries.push(CacheBoundary {
-                class,
-                after_block: block.kind.clone(),
-                prefix_chars: char_count(&prefix),
-                prefix_sha256: hash(&prefix),
-            });
+        match last_of_class.iter_mut().find(|(c, _)| *c == class) {
+            Some(entry) => entry.1 = index,
+            None => last_of_class.push((class, index)),
         }
+    }
+    let mut boundaries = Vec::new();
+    for (class, index) in last_of_class {
+        let prefix = render_system(&system_blocks[..=index]);
+        boundaries.push(CacheBoundary {
+            class,
+            after_block: system_blocks[index].kind.clone(),
+            prefix_chars: char_count(&prefix),
+            prefix_sha256: hash(&prefix),
+        });
     }
     let worker_hash = boundaries
         .iter()
@@ -1050,6 +1152,137 @@ mod tests {
         .unwrap();
         assert!(terminal.content.contains("\\n[ROSTER SYSTEM BLOCK"));
         assert!(!terminal.content.contains("\n[ROSTER SYSTEM BLOCK"));
+    }
+
+    #[test]
+    fn connections_brief_renders_grants_and_usage() {
+        assert!(connections_block_content(&[]).is_none());
+        let briefs = vec![
+            ConnectionBrief {
+                name: "github".into(),
+                hosts: vec!["api.github.com".into()],
+                methods: vec!["*".into()],
+                env: "GH_TOKEN".into(),
+                usage: Some("Work GitHub through its API.".into()),
+            },
+            ConnectionBrief {
+                name: "acme".into(),
+                hosts: vec!["api.acme.com".into()],
+                methods: vec!["GET".into()],
+                env: "ACME_TOKEN".into(),
+                usage: None,
+            },
+        ];
+        let content = connections_block_content(&briefs).unwrap();
+        assert!(content.contains("github — api.github.com (all methods) as GH_TOKEN."));
+        assert!(content.contains("Work GitHub through its API."));
+        assert!(content.contains("acme — api.acme.com (GET only) as ACME_TOKEN."));
+        // The boundary sentence: unlisted services carry no credentials.
+        assert!(content.contains("nothing is authenticated"));
+    }
+
+    #[test]
+    fn worker_connections_gather_scope_and_registry_brief() {
+        let guard = crate::statefile::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ROSTER_ROOT", dir.path());
+        let config = dir.path().join("config");
+        std::fs::create_dir_all(config.join("connections")).unwrap();
+        std::fs::create_dir_all(config.join("workers/yuko")).unwrap();
+        std::fs::write(config.join("workers/yuko/worker.toml"), "name = \"yuko\"\n").unwrap();
+        std::fs::write(
+            config.join("workers/yuko/identity.md"),
+            "You are yuko, a test worker.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config.join("connections/github.toml"),
+            "provider = \"github\"\nworkers = [\"yuko\"]\nhosts = [\"api.github.com\"]\nenv = \"GH_TOKEN\"\n",
+        )
+        .unwrap();
+        let vault = dir.path().join("data/vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(
+            vault.join("github.json"),
+            "{\"type\":\"api_key\",\"key\":\"x\"}",
+        )
+        .unwrap();
+
+        let yuko = worker_connections("yuko");
+        assert_eq!(yuko.len(), 1);
+        assert_eq!(yuko[0].name, "github");
+        assert_eq!(yuko[0].methods, vec!["*"]); // compile default
+                                                // The registry's brief rides along for the shipped provider.
+        assert!(yuko[0].usage.as_deref().unwrap().contains("gh CLI"));
+        // Scoped to yuko — another worker gets no brief (and no block).
+        assert!(worker_connections("other").is_empty());
+
+        // And through the real compiler: the block lands in the system prompt,
+        // labeled, between runtime policy and runtime scope.
+        let compiled = compile(&request("yuko", None, "task text")).unwrap();
+        let policy_at = compiled
+            .system_prompt
+            .find("[ROSTER SYSTEM BLOCK: RUNTIME POLICY]")
+            .unwrap();
+        let connections_at = compiled
+            .system_prompt
+            .find("[ROSTER SYSTEM BLOCK: CONNECTIONS]")
+            .unwrap();
+        let scope_at = compiled
+            .system_prompt
+            .find("[ROSTER SYSTEM BLOCK: RUNTIME SCOPE]")
+            .unwrap();
+        assert!(policy_at < connections_at && connections_at < scope_at);
+        assert!(compiled
+            .system_prompt
+            .contains("github — api.github.com (all methods) as GH_TOKEN."));
+
+        std::env::remove_var("ROSTER_ROOT");
+        drop(guard);
+    }
+
+    #[test]
+    fn worker_stable_boundary_covers_the_connections_block() {
+        let blocks = |brief: &str| {
+            vec![
+                block(
+                    BlockKind::RuntimePolicy,
+                    BlockAuthority::TrustedDirective,
+                    CacheClass::WorkerStable,
+                    "runtime".into(),
+                    runtime_policy().into(),
+                ),
+                block(
+                    BlockKind::Connections,
+                    BlockAuthority::TrustedDirective,
+                    CacheClass::WorkerStable,
+                    "connections".into(),
+                    brief.into(),
+                ),
+                block(
+                    BlockKind::RuntimeScope,
+                    BlockAuthority::TrustedDirective,
+                    CacheClass::SurfaceStable,
+                    "scope".into(),
+                    "scope".into(),
+                ),
+            ]
+        };
+        let plan = build_cache_plan("yuko", &blocks("github: api"));
+        // One worker-stable boundary, and it sits AFTER the connections block
+        // so the cached prefix includes it.
+        let worker_bounds: Vec<_> = plan
+            .boundaries
+            .iter()
+            .filter(|b| b.class == CacheClass::WorkerStable)
+            .collect();
+        assert_eq!(worker_bounds.len(), 1);
+        assert_eq!(worker_bounds[0].after_block, BlockKind::Connections);
+        // A connections change rotates the worker-stable prefix and route key.
+        let changed = build_cache_plan("yuko", &blocks("github+slack: api"));
+        assert_ne!(plan.route_key, changed.route_key);
     }
 
     #[test]

@@ -212,7 +212,9 @@ capabilities), `slack` (channel *and* capability from one login), and
 `discord`, `smtp` (host-side channel/email infrastructure). An entry's
 supported uses come from its `use` array when present and are inferred
 otherwise (a `connection` block → capability; channel auth kinds →
-channel; else model); `hidden = true` keeps an entry compiling without
+channel; else model). An optional `brief` string is surfaced to workers in
+their run context's connections brief — the place to say how the service
+is meant to be used (see [context.md](context.md)); `hidden = true` keeps an entry compiling without
 showing it in the catalog. `providers.toml` overlays the registry — one
 top-level table per provider, each entry **replacing** that provider's
 default wholesale (`roster connection add --declare` writes these for

@@ -41,6 +41,11 @@ roster triggers), stores the secret, and follows through per use:
   compiled result. Per-worker is the default posture: a connection is a
   capability granted to an identity, not to the fleet. `--name` gives the
   connection its own name — the idiom for per-worker service identities.
+  The worker is told: every run's system context carries a compiled
+  connections brief — each applicable connection's hosts, methods, and env
+  stand-in, plus the provider's `brief` usage line from the registry (e.g.
+  github's says to work through the API; plain `git` isn't authenticated).
+  Override or add `brief` per provider in providers.toml.
 - **channel** — offers the `[channels]` binding and writes it into the
   chosen worker's spec (`--worker` answers non-interactively; declining
   prints the snippet). One credential serves one worker's listener —

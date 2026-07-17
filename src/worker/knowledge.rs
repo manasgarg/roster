@@ -139,7 +139,22 @@ pub fn provision(worker: &str, run_id: &str, tainted: bool) -> Result<RunStorage
             path.display()
         ));
     }
-    clone_repo(&repo, &path)?;
+    // --no-hardlinks is load-bearing: a default local clone hardlinks object
+    // files, so the run clone (bind-mounted rw into the box, running as the
+    // host uid) would share inodes with the canonical store — a box could
+    // chmod +w a pack and corrupt canonical bytes THROUGH its own clone,
+    // bypassing the read-only origin mount. Copying severs that alias; the
+    // host-only transient clones elsewhere keep the cheap default.
+    run_git_owned(
+        Path::new("."),
+        vec![
+            "clone".into(),
+            "--quiet".into(),
+            "--no-hardlinks".into(),
+            repo.display().to_string(),
+            path.display().to_string(),
+        ],
+    )?;
     let base_commit = run_git(&path, &["rev-parse", "HEAD"])?;
     run_git_owned(
         &path,
@@ -894,6 +909,22 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
+    fn walkdir(root: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    out.push(path);
+                }
+            }
+        }
+        out
+    }
+
     /// A canonical repo + a "box" clone, exercising the real push path:
     /// provisioning shape, bundle transfer, validation, ff-only advance.
     fn scaffold(dir: &Path) -> (PathBuf, PathBuf) {
@@ -1115,6 +1146,20 @@ mod tests {
             run_git(&co.path, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap(),
             "run/run1"
         );
+        // The box-mounted clone must share NO inodes with the canonical store:
+        // a hardlinked object would let the box corrupt canonical bytes
+        // through its own rw mount, bypassing the read-only origin mount.
+        {
+            use std::os::unix::fs::MetadataExt;
+            for entry in walkdir(&co.path.join(".git").join("objects")) {
+                assert_eq!(
+                    std::fs::metadata(&entry).unwrap().nlink(),
+                    1,
+                    "hardlinked object in the run clone: {}",
+                    entry.display()
+                );
+            }
+        }
 
         // Commit and land, exactly as the box tool would.
         let head = commit_file(&co.path, "topics/llms.md", "# LLMs\n", "add a topic");

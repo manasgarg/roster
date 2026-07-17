@@ -131,6 +131,59 @@ impl rustyline::highlight::Highlighter for SlashHelper {}
 impl rustyline::validate::Validator for SlashHelper {}
 impl rustyline::Helper for SlashHelper {}
 
+/// Worker deliveries the operator hasn't seen: strictly newer than the seen
+/// marker. Before any marker exists (first run after upgrade), fall back to
+/// the old heuristic — everything after the operator's last own message.
+fn missed_deliveries<'a>(
+    history: &'a [serde_json::Value],
+    seen: Option<&str>,
+) -> Vec<&'a serde_json::Value> {
+    let is_worker =
+        |m: &serde_json::Value| m.get("role").and_then(|v| v.as_str()) == Some("worker");
+    let Some(seen) = seen.and_then(parse_ts) else {
+        let last_human = history
+            .iter()
+            .rposition(|m| m.get("role").and_then(|v| v.as_str()) == Some("host-op"));
+        return history
+            .iter()
+            .skip(last_human.map(|i| i + 1).unwrap_or(0))
+            .filter(|m| is_worker(m))
+            .collect();
+    };
+    history
+        .iter()
+        .filter(|m| {
+            is_worker(m)
+                && m.get("ts")
+                    .and_then(|v| v.as_str())
+                    .and_then(parse_ts)
+                    .is_some_and(|ts| ts > seen)
+        })
+        .collect()
+}
+
+/// Rfc3339 fractional seconds vary in length, so compare parsed instants,
+/// never strings.
+fn parse_ts(value: &str) -> Option<time::OffsetDateTime> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+}
+
+fn seen_marker(channel_id: &str) -> Option<String> {
+    std::fs::read_to_string(crate::paths::talk_seen_file(channel_id))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The terminal displayed everything up to now — advance the replay cursor.
+fn mark_seen(channel_id: &str) {
+    let path = crate::paths::talk_seen_file(channel_id);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, crate::util::now_rfc3339());
+}
+
 /// The terminal line discipline, snapshotted before the editor thread starts:
 /// that thread may sit inside readline's raw mode when the session ends
 /// elsewhere (idle timeout), and exiting through it would leave the shell raw.
@@ -230,16 +283,11 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
     );
 
     // Task runs deliver results to this channel while nobody is watching
-    // (term_send). Surface whatever arrived since the operator's last turn.
+    // (term_send). Surface whatever arrived since the terminal last displayed
+    // this channel — a durable cursor, so a report read but not replied to
+    // doesn't replay on every open.
     let history = crate::channel::discord::recent_messages(&channel_id, 200);
-    let last_human = history
-        .iter()
-        .rposition(|m| m.get("role").and_then(|v| v.as_str()) == Some("host-op"));
-    let missed: Vec<&serde_json::Value> = history
-        .iter()
-        .skip(last_human.map(|i| i + 1).unwrap_or(0))
-        .filter(|m| m.get("role").and_then(|v| v.as_str()) == Some("worker"))
-        .collect();
+    let missed = missed_deliveries(&history, seen_marker(&channel_id).as_deref());
     if !missed.is_empty() {
         println!("while you were away:");
         for m in missed {
@@ -249,6 +297,7 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
             );
         }
     }
+    mark_seen(&channel_id);
 
     let saved_termios = stdin_termios();
     let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<String>(32);
@@ -340,14 +389,21 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
                     seen = lines.len(); // rotated/truncated: adopt
                     continue;
                 }
+                let mut delivered = false;
                 for l in &lines[seen..] {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
                         if v.get("role").and_then(|r| r.as_str()) == Some("worker") {
                             if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
                                 let _ = reply_tx.send(content.to_string()).await;
+                                delivered = true;
                             }
                         }
                     }
+                }
+                if delivered {
+                    // Displayed live — advance the replay cursor so the next
+                    // `roster talk` doesn't show it again.
+                    mark_seen(&channel_id);
                 }
                 seen = lines.len();
             }
@@ -444,4 +500,32 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
     }
     eprintln!("\nleft the conversation — resume: roster talk {worker}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn msg(role: &str, ts: &str, content: &str) -> serde_json::Value {
+        json!({ "role": role, "ts": ts, "content": content })
+    }
+
+    #[test]
+    fn replay_shows_only_deliveries_newer_than_the_cursor() {
+        let history = vec![
+            msg("host-op", "2026-07-17T04:00:00Z", "do the thing"),
+            msg("worker", "2026-07-17T04:10:00.5Z", "report A"),
+            msg("worker", "2026-07-17T04:12:00Z", "report B"),
+        ];
+        // Cursor after A (shorter fractional form on purpose): only B replays.
+        let missed = missed_deliveries(&history, Some("2026-07-17T04:11:00.25Z"));
+        assert_eq!(missed.len(), 1);
+        assert_eq!(missed[0]["content"], "report B");
+        // Cursor after everything: a read-but-unanswered report never replays.
+        assert!(missed_deliveries(&history, Some("2026-07-17T04:13:00Z")).is_empty());
+        // No cursor yet (first run after upgrade): the old last-host-op heuristic.
+        let missed = missed_deliveries(&history, None);
+        assert_eq!(missed.len(), 2);
+    }
 }

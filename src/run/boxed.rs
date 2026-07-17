@@ -1036,8 +1036,20 @@ async fn ensure_lockdown(box_policy: &crate::config::BoxPolicy) -> Result<(), BE
     Ok(())
 }
 
+/// The residual-reach note: legible, not nagging. Every `roster talk` is a
+/// fresh process, so a per-process `Once` would print it on every box start —
+/// a durable marker shows it at most once a day per deployment.
 fn warn_open_host_egress(gateway_port: u16) {
     static WARNED: std::sync::Once = std::sync::Once::new();
+    let marker = crate::paths::egress_note_marker();
+    let recently = std::fs::metadata(&marker)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < Duration::from_secs(24 * 3600));
+    if recently {
+        return;
+    }
     WARNED.call_once(|| {
         eprintln!(
             "note: the box can't reach the internet, but the host stays reachable on all ports \
@@ -1045,6 +1057,10 @@ fn warn_open_host_egress(gateway_port: u16) {
              bypass the gateway. Set `[box] egress_lockdown = true` in org.toml to pin box egress \
              to the gateway on :{gateway_port} (needs root / CAP_NET_ADMIN for iptables)."
         );
+        if let Some(parent) = marker.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&marker, "");
     });
 }
 
@@ -1132,12 +1148,27 @@ fn ipt(args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-/// Make sure the box image is present — and, for a registry image, current:
-/// `docker pull` refreshes it so a `:latest` deployment picks up published
-/// updates. Once per image per process (the daemon re-pulls on restart, not
-/// per run). Offline or a registry outage degrades to the local copy with a
-/// note; a missing image with no way to get one is the only hard failure.
+/// How long a CLI-started run trusts the last pull before re-checking the
+/// registry. The daemon force-pulls on every restart regardless.
+const IMAGE_PULL_TTL: Duration = Duration::from_secs(24 * 3600);
+
+/// Make sure the box image is present and reasonably current, quietly: pull a
+/// registry image at most once per TTL (recorded durably — every `roster
+/// talk` is a fresh process), with docker's output captured so an up-to-date
+/// image prints nothing. Offline or a registry outage degrades to the local
+/// copy with a note; a missing image with no way to get one is the only hard
+/// failure.
 pub async fn ensure_image(image: &str) -> Result<(), BErr> {
+    ensure_image_inner(image, false).await
+}
+
+/// The daemon's variant: always pull (a `:latest` deployment picks up
+/// published updates on restart), still quiet when nothing changed.
+pub async fn pull_image(image: &str) -> Result<(), BErr> {
+    ensure_image_inner(image, true).await
+}
+
+async fn ensure_image_inner(image: &str, force: bool) -> Result<(), BErr> {
     static ENSURED: tokio::sync::Mutex<std::collections::BTreeSet<String>> =
         tokio::sync::Mutex::const_new(std::collections::BTreeSet::new());
     // Held across the pull on purpose: concurrent runs wait for one download
@@ -1157,28 +1188,67 @@ pub async fn ensure_image(image: &str) -> Result<(), BErr> {
             )
             .into());
         }
-    } else {
-        eprintln!("pulling the box image {image} …");
-        let pulled = tokio::process::Command::new("docker")
+    } else if force || !present || !pulled_recently(image) {
+        if !present {
+            eprintln!("downloading the box image {image} …");
+        }
+        let output = tokio::process::Command::new("docker")
             .args(["pull", image])
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !pulled {
-            if !present {
-                return Err(format!(
-                    "could not pull the box image {image} and no local copy exists — \
-                     check network/registry access, or point [engine] image in org.toml \
-                     at a locally built image"
-                )
-                .into());
+            .output()
+            .await;
+        let (pulled, stdout) = match &output {
+            Ok(o) => (
+                o.status.success(),
+                String::from_utf8_lossy(&o.stdout).to_string(),
+            ),
+            Err(_) => (false, String::new()),
+        };
+        if pulled {
+            if stdout.contains("Downloaded newer image") {
+                eprintln!("box image updated: {image}");
             }
+            record_pull(image);
+        } else if !present {
+            return Err(format!(
+                "could not pull the box image {image} and no local copy exists — \
+                 check network/registry access, or point [engine] image in org.toml \
+                 at a locally built image"
+            )
+            .into());
+        } else {
             eprintln!("note: could not pull {image} — running the local copy");
         }
     }
     ensured.insert(image.to_string());
     Ok(())
+}
+
+/// Was this image pulled successfully within the TTL? Recorded in state so
+/// per-invocation CLI processes share the answer.
+fn pulled_recently(image: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(crate::paths::image_pulls_file()) else {
+        return false;
+    };
+    serde_json::from_str::<Map<String, Value>>(&text)
+        .ok()
+        .and_then(|m| m.get(image).and_then(Value::as_i64))
+        .is_some_and(|at| {
+            let age = now_ms().saturating_sub(at);
+            age >= 0 && (age as u128) < IMAGE_PULL_TTL.as_millis()
+        })
+}
+
+fn record_pull(image: &str) {
+    let path = crate::paths::image_pulls_file();
+    let mut map = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Map<String, Value>>(&t).ok())
+        .unwrap_or_default();
+    map.insert(image.to_string(), json!(now_ms()));
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, serde_json::to_string(&map).unwrap_or_default());
 }
 
 fn docker_ok(args: &[&str]) -> bool {

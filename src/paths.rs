@@ -240,6 +240,25 @@ pub fn talk_history_file() -> PathBuf {
     state_root().join("talk-history")
 }
 
+/// When the operator's terminal last displayed a channel's deliveries —
+/// drives the `while you were away` replay cursor. Prunable.
+pub fn talk_seen_file(channel_id: &str) -> PathBuf {
+    state_root()
+        .join("talk-seen")
+        .join(format!("{channel_id}.txt"))
+}
+
+/// When each box image was last successfully pulled — lets CLI-started runs
+/// skip a per-invocation `docker pull` that the daemon already keeps fresh.
+pub fn image_pulls_file() -> PathBuf {
+    state_root().join("image-pulls.json")
+}
+
+/// When the open-host-egress note was last shown to the operator. Prunable.
+pub fn egress_note_marker() -> PathBuf {
+    state_root().join("egress-note-shown")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

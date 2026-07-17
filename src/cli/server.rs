@@ -58,7 +58,7 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: Option<&str>) ->
     // the first run never waits on a download mid-dispatch. Absent AND
     // unpullable means no box can run — refuse to boot, loudly.
     if let Ok(c) = crate::config::snapshot() {
-        crate::run::boxed::ensure_image(&c.box_image).await?;
+        crate::run::boxed::pull_image(&c.box_image).await?;
     }
 
     let addrs = crate::gateway::resolve_bind_addrs(addr);

@@ -109,7 +109,7 @@ in a git repository the box never sees — runs get a plain checkout, and the
 trusted side validates and commits. Runs that contained conversation content
 get that checkout read-only: person-data cannot be laundered into the
 hard-to-erase world store, because the mount — not a text filter — enforces
-the boundary. See [knowledge.md](knowledge.md).
+the boundary. See [repos.md](repos.md).
 
 **Everything on the record.** Every gateway decision, action disposition,
 credential refresh, and spend line appends to audit logs that nothing

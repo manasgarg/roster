@@ -134,16 +134,11 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
                 };
                 let t = task.clone();
                 set.spawn(async move {
-                    let code = t.repo.as_ref().map(|r| boxed::CodeSpec {
-                        repo: r.clone(),
-                        base: t.base.clone().unwrap_or_else(|| "main".into()),
-                    });
                     let spec = boxed::RunSpec {
                         worker: &t.worker,
                         run_id: &run_id,
                         task_id: &t.id,
                         ceiling_min: t.ceiling_min,
-                        code: code.as_ref(),
                         run_context: &memory_context,
                     };
                     let out = boxed::dispatch(spec, context_task)

@@ -44,6 +44,11 @@ RUN curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linu
   && chmod +x /usr/local/bin/yq
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
+# roster-lock — the named-lock helper for store/ writes (flock on
+# store/.locks/<name>; the host's backup pass honors the same locks).
+COPY box/roster-lock /usr/local/bin/roster-lock
+RUN chmod +x /usr/local/bin/roster-lock
+
 # pnpm/yarn shims via corepack (ships with node).
 RUN corepack enable
 

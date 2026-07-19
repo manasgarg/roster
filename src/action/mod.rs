@@ -137,21 +137,6 @@ pub async fn handle_action(
             StatusCode::OK,
             json!({ "events": journal::tail(worker, 30) }),
         ),
-        ("GET", "/memory") => {
-            let memories = crate::worker::memory::visible_to_current_actor(worker, trusted_run_id);
-            let user_settings =
-                crate::worker::memory::current_user_settings(worker, trusted_run_id);
-            journal::append(
-                worker,
-                trusted_run_id,
-                "memory-read",
-                json!({ "note_ids": memories.iter().map(|n| n.id.as_str()).collect::<Vec<_>>() }),
-            );
-            reply(
-                StatusCode::OK,
-                json!({ "memories": memories, "user_settings": user_settings }),
-            )
-        }
         _ => reply(
             StatusCode::NOT_FOUND,
             json!({ "status": "error", "error": "unknown action endpoint" }),
@@ -259,25 +244,7 @@ async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Bod
     );
 
     let (executed, denied) = gate::history(worker, &env.intent);
-    let level = if grant.executor == "note" {
-        let context = crate::worker::memory::load_run_context(&run_id);
-        match crate::worker::memory::action_trust(worker, &env.intent, &env.payload, &context) {
-            Ok(level) => level.to_string(),
-            Err(reason) => {
-                journal::append(
-                    worker,
-                    &run_id,
-                    "action-refused",
-                    json!({ "intent": env.intent, "reason": reason }),
-                );
-                audit(worker, &env.intent, "refused", None, None);
-                return reply(
-                    StatusCode::FORBIDDEN,
-                    json!({ "status": "denied", "reason": reason }),
-                );
-            }
-        }
-    } else if grant.executor == "identity" {
+    let level = if grant.executor == "identity" {
         // Identity is worker-wide — always hard-gated (D10).
         "gate".to_string()
     } else if (grant.executor == "discord"
@@ -564,7 +531,6 @@ pub async fn run_executor(
     match executor {
         "message-user" => exec_message_user(worker, payload).await,
         "email" => exec_email(worker, payload).await,
-        "git-pr" => exec_git_pr(worker, run_id, payload),
         "identity" => exec_identity(worker, payload),
         "purpose" => exec_purpose(payload),
         "discord" => exec_discord(worker, payload).await,
@@ -575,27 +541,32 @@ pub async fn run_executor(
             _ => exec_file_task(worker, payload, run_id),
         },
         "knowledge" => exec_knowledge_push(worker, run_id, payload),
-        "note" => crate::worker::memory::execute(worker, intent, payload, run_id),
+        "self" => exec_file_update(worker, payload),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
 }
 
-/// `knowledge_push` — land the run's committed knowledge branch on main
-/// (docs/plans/knowledge-branch-per-run.md). The heavy lifting — bundle
+/// `repo_push` — land the run's committed branch on a gated repo's main
+/// (docs/plans/worker-environment.md). The heavy lifting — bundle
 /// quarantine, validation, ff-only advance in the integration lane — lives in
 /// `worker::knowledge::push`; this maps the envelope and demands a trusted
 /// run. A stale or refused push comes back as the action error, in-run, so
-/// the agent can rebase and try again.
+/// the agent can rebase and try again. `connection` defaults to "knowledge"
+/// so the legacy `knowledge-push` grant keeps its exact meaning.
 fn exec_knowledge_push(worker: &str, run_id: &str, payload: &Value) -> Result<Value, String> {
     if run_id.is_empty() {
-        return Err("knowledge_push needs a trusted run context".into());
+        return Err("repo_push needs a trusted run context".into());
     }
+    let connection = payload
+        .get("connection")
+        .and_then(Value::as_str)
+        .unwrap_or("knowledge");
     let head = payload
         .get("head")
         .and_then(Value::as_str)
-        .ok_or("knowledge_push needs \"head\" (the commit sha to land)")?;
+        .ok_or("repo_push needs \"head\" (the commit sha to land)")?;
     let confirmed = payload.get("confirm_bulk_delete").and_then(Value::as_str) == Some("yes");
-    let outcome = crate::worker::knowledge::push(worker, run_id, head, confirmed)?;
+    let outcome = crate::worker::knowledge::push(worker, run_id, connection, head, confirmed)?;
     Ok(json!({
         "landed": outcome.commit,
         "files": outcome.files,
@@ -610,7 +581,7 @@ fn exec_knowledge_push(worker: &str, run_id: &str, payload: &Value) -> Result<Va
 /// run queues durable work instead of writing records. The filed task is
 /// worker-only by construction (context: null — no channel, no participants),
 /// so it runs clean with a writable knowledge mount. The prompt is the entire
-/// crossing, and the participant scan polices it (docs/knowledge.md).
+/// crossing, and the participant scan polices it (docs/repos.md).
 fn exec_file_task(worker: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
     if run_id.is_empty() {
         return Err("file-task needs a trusted run context".into());
@@ -704,6 +675,86 @@ fn exec_term_send(worker: &str, payload: &Value) -> Result<Value, String> {
     Ok(json!({ "delivered": "terminal", "channel_id": channel }))
 }
 
+/// `file_update` — the generic check-and-set write over the worker's own
+/// editable files (docs/plans/worker-environment.md). The token is a content
+/// hash, so an out-of-band hand edit on the host invalidates any stale token
+/// a worker holds. Allowlist is server-side and deliberately short:
+/// `config/worker.toml` to start. The schedule has set_tasks (structured,
+/// versioned) and identity.md has the hard-gated identity action — this
+/// path refuses both rather than offering a weaker write route.
+///
+/// After the write the whole config must still parse, or the edit is
+/// reverted and rejected — a worker cannot break the deployment, only
+/// change it (fail closed, exactly like a hand edit).
+fn exec_file_update(worker: &str, payload: &Value) -> Result<Value, String> {
+    use sha2::{Digest, Sha256};
+    let hash = |bytes: &[u8]| -> String {
+        let mut h = Sha256::new();
+        h.update(bytes);
+        format!("{:x}", h.finalize())
+    };
+    let short = crate::paths::short_worker(worker);
+    let rel = payload
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or("file_update needs \"path\" (as listed under $HOME/self/)")?;
+    let base_hash = payload
+        .get("base_hash")
+        .and_then(Value::as_str)
+        .ok_or("file_update needs \"base_hash\" (sha256 of the content you read)")?;
+    let content = payload
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or("file_update needs \"content\" (the full new file)")?;
+    let real = match rel {
+        "config/worker.toml" => crate::paths::worker_dir(short).join("worker.toml"),
+        "config/identity.md" => {
+            return Err(
+                "identity.md is not written this way — propose the identity action; it waits for \
+                 your lead's approval"
+                    .into(),
+            )
+        }
+        "schedule.json" => return Err("the schedule is written with set_tasks, not file_update".into()),
+        other => {
+            return Err(format!(
+                "\"{other}\" is not worker-editable — editable: config/worker.toml"
+            ))
+        }
+    };
+    let _lock = crate::statefile::FileLock::acquire(&format!("selfedit-{short}"))
+        .map_err(|e| format!("lock: {e}"))?;
+    let current = crate::statefile::read_if_present(&real)
+        .map_err(|e| format!("read {rel}: {e}"))?
+        .unwrap_or_default();
+    let current_hash = hash(current.as_bytes());
+    if current_hash != base_hash {
+        return Err(format!(
+            "stale base_hash — the file changed since you read it (current sha256 {current_hash}); \
+             re-read $HOME/self/{rel} and retry"
+        ));
+    }
+    if content == current {
+        return Ok(json!({ "status": "unchanged", "sha256": current_hash }));
+    }
+    crate::statefile::write_atomic(&real, content.as_bytes())
+        .map_err(|e| format!("write {rel}: {e}"))?;
+    if let Err(errors) = crate::config::load() {
+        let revert = crate::statefile::write_atomic(&real, current.as_bytes());
+        let reverted = if revert.is_ok() {
+            "reverted"
+        } else {
+            "REVERT FAILED — tell your lead"
+        };
+        return Err(format!(
+            "rejected — the edit breaks config validation ({reverted}):\n{}",
+            errors.join("\n")
+        ));
+    }
+    eprintln!("file-update [{worker}] {rel} ({} bytes)", content.len());
+    Ok(json!({ "status": "ok", "sha256": hash(content.as_bytes()) }))
+}
+
 /// `set_tasks` — the agent's curation write over its own TMS partition
 /// (docs/work.md): one optimistically-concurrent document
 /// swap, validated host-side; a rejection tells the agent to re-read the
@@ -715,7 +766,7 @@ fn exec_set_tasks(worker: &str, payload: &Value, run_id: &str) -> Result<Value, 
     let base_version = payload
         .get("base_version")
         .and_then(|v| v.as_u64())
-        .ok_or("set-tasks needs \"base_version\" (read it from /opt/roster/tasks.json)")?;
+        .ok_or("set-tasks needs \"base_version\" (read it from $HOME/self/schedule.json)")?;
     let tasks: Vec<crate::work::tms::Task> =
         serde_json::from_value(payload.get("tasks").cloned().unwrap_or_else(|| json!([])))
             .map_err(|e| format!("tasks: {e}"))?;
@@ -739,7 +790,7 @@ fn exec_set_tasks(worker: &str, payload: &Value, run_id: &str) -> Result<Value, 
             Ok(json!({ "status": "ok", "version": p.version }))
         }
         Err(rej) => Err(format!(
-            "set_tasks rejected: {} — re-read /opt/roster/tasks.json (now version {}) and retry",
+            "set_tasks rejected: {} — re-read $HOME/self/schedule.json (now version {}) and retry",
             rej.reason, rej.current.version
         )),
     }
@@ -977,71 +1028,6 @@ fn smtp_config() -> Option<crate::action::smtp::SmtpConfig> {
     })
 }
 
-/// Land a code task's worktree as a pushed branch (and a PR where possible). The
-/// box edited files in runs/<run_id>/worktree; here — only after approval — we
-/// commit, push to the repo's origin, and open a PR. git push is direct (the
-/// gateway can't govern git's wire protocol); the box never touches any of it.
-fn exec_git_pr(worker: &str, run_id: &str, payload: &Value) -> Result<Value, String> {
-    if run_id.is_empty() {
-        return Err("code-change has no run_id — cannot find the worktree".into());
-    }
-    let wt = paths::run_dir(run_id).join("worktree");
-    if !wt.exists() {
-        return Err(format!("no worktree at {}", wt.display()));
-    }
-    let wt = wt.display().to_string();
-    let message = payload
-        .get("message")
-        .and_then(|v| v.as_str())
-        .unwrap_or("changes proposed by worker");
-    let title = payload
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or(message);
-    let body = payload.get("body").and_then(|v| v.as_str()).unwrap_or("");
-
-    git(&["-C", &wt, "add", "-A"])?;
-    // Nothing staged → the proposal was empty; surface that rather than a git error.
-    let clean = std::process::Command::new("git")
-        .args(["-C", &wt, "diff", "--cached", "--quiet"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if clean {
-        return Err("no changes in the worktree to commit".into());
-    }
-    let author = format!("user.name=roster worker {worker}");
-    git(&[
-        "-C",
-        &wt,
-        "-c",
-        "user.email=worker@roster.local",
-        "-c",
-        &author,
-        "commit",
-        "-m",
-        message,
-    ])?;
-    let branch = git(&["-C", &wt, "rev-parse", "--abbrev-ref", "HEAD"])?;
-    let commit = git(&["-C", &wt, "rev-parse", "--short", "HEAD"])?;
-    git(&["-C", &wt, "push", "-u", "origin", &branch])?;
-
-    // Open a PR if the GitHub CLI is available and authenticated; otherwise the
-    // branch is pushed and the PR is opened out of band.
-    let pr = match std::process::Command::new("gh")
-        .args([
-            "pr", "create", "--head", &branch, "--title", title, "--body", body,
-        ])
-        .current_dir(&wt)
-        .output()
-    {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => "branch pushed; open the PR from it".to_string(),
-    };
-    eprintln!("git-pr [{worker}] pushed {branch} ({commit})");
-    Ok(json!({ "branch": branch, "commit": commit, "pushed": true, "pr": pr }))
-}
-
 /// Overwrite a worker's identity, only after an admin approved the exact text
 /// (D10). Trusted-side; the box never writes here (its repo mount is read-only).
 fn exec_identity(worker: &str, payload: &Value) -> Result<Value, String> {
@@ -1096,20 +1082,6 @@ fn write_atomic(path: &std::path::Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn git(args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(format!(
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
 
 /// A current-vs-proposed unified diff of a file (for `gates show` on an
 /// identity/purpose gate — the reviewer sees exactly what would change).
@@ -1145,21 +1117,6 @@ fn file_diff(current: &std::path::Path, proposed: &str) -> Option<String> {
     }
 }
 
-/// The diff the box produced in a run's worktree (for `gates show` on a code
-/// gate — the human reviews the actual change, rendered live, not stored).
-pub fn worktree_diff(run_id: &str) -> Option<String> {
-    let wt = paths::run_dir(run_id).join("worktree");
-    if !wt.exists() {
-        return None;
-    }
-    let wt = wt.display().to_string();
-    // Stage nothing; show working-tree changes against HEAD, including new files.
-    let _ = std::process::Command::new("git")
-        .args(["-C", &wt, "add", "-A", "-N"])
-        .status();
-    git(&["-C", &wt, "diff", "HEAD"]).ok()
-}
-
 // ── audit ────────────────────────────────────────────────────────────────────
 
 /// Append an action decision to the shared audit log, alongside egress decisions.
@@ -1188,5 +1145,90 @@ fn audit(
     }
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(f, "{rec}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sandbox() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
+        let guard = crate::statefile::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ROSTER_ROOT", dir.path());
+        // A minimal deployment that config::load() accepts.
+        std::fs::create_dir_all(crate::paths::config_root()).unwrap();
+        std::fs::write(crate::paths::org_file(), "").unwrap();
+        std::fs::create_dir_all(crate::paths::worker_dir("yuko")).unwrap();
+        std::fs::write(
+            crate::paths::worker_dir("yuko").join("worker.toml"),
+            "name = \"yuko\"\n",
+        )
+        .unwrap();
+        (guard, dir)
+    }
+
+    fn sha(s: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(s.as_bytes());
+        format!("{:x}", h.finalize())
+    }
+
+    #[test]
+    fn file_update_cas_accepts_stales_and_reverts() {
+        let _sb = sandbox();
+        let path = crate::paths::worker_dir("yuko").join("worker.toml");
+
+        // Correct hash lands the edit.
+        let ok = exec_file_update(
+            "org/yuko",
+            &json!({ "path": "config/worker.toml", "base_hash": sha("name = \"yuko\"\n"),
+                     "content": "name = \"yuko\" # edited\n" }),
+        )
+        .unwrap();
+        assert_eq!(ok["status"], "ok");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "name = \"yuko\" # edited\n"
+        );
+
+        // A stale hash is a clean conflict, not a write.
+        let err = exec_file_update(
+            "org/yuko",
+            &json!({ "path": "config/worker.toml", "base_hash": sha("name = \"yuko\"\n"),
+                     "content": "clobber\n" }),
+        )
+        .unwrap_err();
+        assert!(err.contains("stale base_hash"), "{err}");
+
+        // An edit that breaks config validation is reverted.
+        let err = exec_file_update(
+            "org/yuko",
+            &json!({ "path": "config/worker.toml", "base_hash": sha("name = \"yuko\" # edited\n"),
+                     "content": "not = valid = toml\n" }),
+        )
+        .unwrap_err();
+        assert!(err.contains("reverted"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "name = \"yuko\" # edited\n"
+        );
+
+        // Paths with their own write channels are refused by name.
+        for (p, hint) in [
+            ("config/identity.md", "identity"),
+            ("schedule.json", "set_tasks"),
+            ("journal/journal.jsonl", "not worker-editable"),
+        ] {
+            let err = exec_file_update(
+                "org/yuko",
+                &json!({ "path": p, "base_hash": "x", "content": "y" }),
+            )
+            .unwrap_err();
+            assert!(err.contains(hint), "{p}: {err}");
+        }
     }
 }

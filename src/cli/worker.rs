@@ -10,7 +10,6 @@ use crate::paths;
 use crate::util::now_ms;
 use crate::util::BErr;
 use crate::work::tms;
-use crate::worker::memory;
 use std::collections::BTreeMap;
 
 fn knowledge_head(worker: &str) -> Option<String> {
@@ -44,7 +43,6 @@ pub fn ls(json: bool) -> Result<(), BErr> {
                     "name": name,
                     "queue": queue_counts(name),
                     "gates_pending": gate::for_worker(name).iter().filter(|g| g.state == "pending").count(),
-                    "memory_notes": memory::list(name).len(),
                     "knowledge_head": knowledge_head(name),
                 })
             })
@@ -57,8 +55,8 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         return Ok(());
     }
     println!(
-        "{:<12}  {:<24}  {:<6}  {:<7}  KNOWLEDGE",
-        "WORKER", "QUEUE", "GATES", "MEMORY"
+        "{:<12}  {:<24}  {:<6}  KNOWLEDGE",
+        "WORKER", "QUEUE", "GATES"
     );
     for name in names {
         let counts = queue_counts(&name);
@@ -76,11 +74,10 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             .filter(|g| g.state == "pending")
             .count();
         println!(
-            "{:<12}  {:<24}  {:<6}  {:<7}  {}",
+            "{:<12}  {:<24}  {:<6}  {}",
             name,
             queue_line,
             gates,
-            memory::list(&name).len(),
             knowledge_head(&name).unwrap_or_else(|| "-".into())
         );
     }
@@ -123,7 +120,6 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
         .and_then(|c| c.heartbeats.get(name).cloned())
         .unwrap_or_else(|| "every 30m".into());
     let counts = queue_counts(name);
-    let memory_notes = memory::list(name).len();
     let knowledge = crate::worker::knowledge::repo_path(name).ok();
 
     if json {
@@ -136,7 +132,6 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
                 "currency": l.currency, "window": l.window.label(), "used": used, "max": l.max, "scope": l.scope,
             })).collect::<Vec<_>>(),
             "heartbeat": heartbeat,
-            "memory_notes": memory_notes,
             "knowledge": knowledge.as_ref().map(|p| p.display().to_string()),
             "knowledge_head": knowledge_head(name),
         });
@@ -185,7 +180,6 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
         }
     }
     println!("heartbeat {heartbeat}");
-    println!("memory    {memory_notes} note(s)");
     if let Some(repo) = knowledge {
         println!(
             "knowledge {}  @ {}",
@@ -289,6 +283,89 @@ pub fn rm(name: &str, yes: bool) -> Result<(), BErr> {
 /// Per-action trust, read-only: what the worker may propose, the default level,
 /// the owner's ladder rules, and the earned history behind them. Trust is never
 /// set here — it is earned through gate outcomes; grants live in the specs.
+/// `roster migrate` — one-time, idempotent upgrade to the store/connections
+/// worker environment (docs/plans/worker-environment.md). No data moves and
+/// nothing is deleted: stores are provisioned and seeded with a copy of each
+/// worker's memory.jsonl, an initial snapshot is taken, and the knowledge
+/// repo keeps working as the implicit gated connection named "knowledge".
+pub fn migrate() -> Result<(), BErr> {
+    let c = crate::config::snapshot().map_err(|e| format!("config invalid:\n{e}"))?;
+    if c.workers.is_empty() {
+        println!("no workers — nothing to migrate");
+        return Ok(());
+    }
+    for w in &c.workers {
+        let store = crate::worker::store::provision(w)?;
+        let memory = crate::paths::worker_memory_file(w);
+        let seeded = store.join("memory").join("memory.jsonl");
+        if memory.is_file() && !seeded.exists() {
+            std::fs::create_dir_all(seeded.parent().unwrap())?;
+            std::fs::copy(&memory, &seeded)?;
+            println!("{w}: seeded store/memory/memory.jsonl from the host memory file (a copy — the original is untouched)");
+        }
+        let keep = crate::worker::storage::load(w).store.snapshots;
+        match crate::worker::store::snapshot(w, None, keep) {
+            Ok(Some(o)) => println!("{w}: store ready, first snapshot taken ({} entries)", o.changes),
+            Ok(None) => println!("{w}: store ready (already snapshotted)"),
+            Err(e) => println!("{w}: store ready, snapshot failed — {e}"),
+        }
+        let knowledge = crate::paths::worker_knowledge_dir(w).join("repo.git");
+        if knowledge.join("HEAD").is_file() {
+            println!(
+                "{w}: knowledge repo stays at {} as the implicit gated connection \"knowledge\"",
+                knowledge.display()
+            );
+        }
+    }
+    // The box's repo_push tool submits the "repo-push" intent; a deployment
+    // granted only "knowledge-push" should add the new name too.
+    let has_repo_push = c.actions.actions.iter().any(|a| a.name == "repo-push");
+    let has_knowledge_push = c.actions.actions.iter().any(|a| a.name == "knowledge-push");
+    if has_knowledge_push && !has_repo_push {
+        println!(
+            "\nadd this to org.toml so the renamed push tool keeps working (org.toml is yours — roster never edits it):\n\
+             [[action]]\n\
+             name = \"repo-push\"\n\
+             executor = \"knowledge\"\n\
+             trust = \"auto\""
+        );
+    }
+    println!("\ndone — idempotent; safe to run again");
+    Ok(())
+}
+
+/// `roster worker restore <name> [--from <snapshot>] [--list]` — the whole
+/// payoff of the snapshot rotation. Restoring first snapshots the current
+/// state, so a restore is always undoable by another restore.
+pub fn restore(name: &str, from: Option<&str>, list: bool) -> Result<(), BErr> {
+    crate::worker::require_worker(name)?;
+    if list {
+        let snaps = crate::worker::store::list_snapshots(name);
+        if snaps.is_empty() {
+            println!("no snapshots yet — they appear after the first writable run");
+            return Ok(());
+        }
+        for s in snaps {
+            println!("{s}");
+        }
+        return Ok(());
+    }
+    let (src, undo) = crate::worker::store::restore(name, from)?;
+    println!(
+        "restored {} from {}",
+        crate::paths::worker_store_dir(name).display(),
+        src.display()
+    );
+    match undo {
+        Some(u) => println!(
+            "the pre-restore state was kept as {} — another restore undoes this one",
+            u.file_name().unwrap_or_default().to_string_lossy()
+        ),
+        None => println!("(the store already matched its newest snapshot — nothing was overwritten)"),
+    }
+    Ok(())
+}
+
 pub fn trust(name: &str, json: bool) -> Result<(), BErr> {
     crate::worker::require_worker(name)?;
     // A broken config makes load_action_policy() return an empty policy, so an

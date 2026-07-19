@@ -144,10 +144,16 @@ pub fn worker_memory_file(worker: &str) -> PathBuf {
     worker_data_dir(worker).join("memory.jsonl")
 }
 
-/// Pre-`memory.jsonl` interaction-memory log; read-only fallback until
-/// `worker memory compact` finishes the physical migration.
-pub fn worker_notes_legacy_file(worker: &str) -> PathBuf {
-    worker_data_dir(worker).join("notes-legacy.jsonl")
+/// The worker's durable store — the auto-provisioned rw host-dir connection
+/// every worker gets, mounted at `$HOME/store` in every run.
+pub fn worker_store_dir(worker: &str) -> PathBuf {
+    worker_data_dir(worker).join("store")
+}
+
+/// Rotating rsync snapshots of the store (backups protect against bad runs,
+/// not disk loss — see docs/plans/worker-environment.md).
+pub fn worker_store_snapshots_dir(worker: &str) -> PathBuf {
+    worker_data_dir(worker).join("store-snapshots")
 }
 
 pub fn worker_knowledge_dir(worker: &str) -> PathBuf {

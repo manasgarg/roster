@@ -923,6 +923,41 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             },
         }));
     }
+    // The built-in store: every worker's auto-provisioned rw host-dir grant.
+    for w in &c.workers {
+        rows.push(serde_json::json!({
+            "name": format!("store:{w}"), "use": "mount", "kind": "host-dir",
+            "workers": [w], "path": crate::paths::worker_store_dir(w),
+            "state": "active",
+            "detail": format!("{w}: built-in rw store at $HOME/store (snapshotted, restorable)"),
+        }));
+    }
+    for m in &c.host_mounts {
+        seen.insert(m.name.clone());
+        let scope = match &m.workers {
+            None => "org".to_string(),
+            Some(l) => l.join(","),
+        };
+        let (kind, access) = match &m.kind {
+            crate::config::HostMountKind::Dir { rw } => {
+                ("host-dir", if *rw { "rw".to_string() } else { "ro".to_string() })
+            }
+            crate::config::HostMountKind::Repo { gated, branch } => (
+                "host-repo",
+                if *gated {
+                    format!("gated → {branch}")
+                } else {
+                    "ro".to_string()
+                },
+            ),
+        };
+        rows.push(serde_json::json!({
+            "name": m.name, "use": "mount", "kind": kind,
+            "workers": m.workers, "path": m.path,
+            "state": "active",
+            "detail": format!("{scope}: {} ({access}) at $HOME/mnt/{}", m.path.display(), m.name),
+        }));
+    }
     for (worker, platform, credential) in &c.listeners {
         seen.insert(credential.clone());
         rows.push(serde_json::json!({

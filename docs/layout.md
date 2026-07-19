@@ -8,16 +8,20 @@ denies, dispatch pauses, `server start` refuses to boot).
 The deployment follows the XDG Base Directory standard:
 
 ```
-$XDG_CONFIG_HOME/roster/       ~/.config/roster — hand-edited, never machine-written
-  org.toml                      grants, actions, trust, budgets, policies
-  providers.toml                optional overlay on the built-in provider registry
-  connections/<name>.toml       service connections (wizard-scaffolded)
-  workers/<name>/               worker.toml + identity.md
+$XDG_CONFIG_HOME/roster/       ~/.config/roster — hand-edited (one exception:
+  org.toml                      grants, actions, trust, budgets, policies    a granted
+  providers.toml                optional overlay on the provider registry    file_update action
+  connections/<name>.toml       service + host-dir/host-repo connections    lets a worker CAS-
+  workers/<name>/               worker.toml + identity.md                   edit its worker.toml)
 
 $XDG_DATA_HOME/roster/         ~/.local/share/roster — durable; THE BACKUP SET
   vault/                        credentials (0600), injected in transit
   ca/                           the TLS-interception keypair
   workers/<name>/               one worker's whole footprint:
+    store/                      the durable rw dir every run mounts at $HOME/store
+    store-snapshots/            rotating rsync snapshots of store/ (bad-run
+                                recovery, NOT disk-loss protection — that stays
+                                the operator's backup of data/)
     queue/  journal/  gates/{pending,resolved}/
     memory.jsonl  knowledge/repo.git
   channels/<id>/                trust designation, settings, purpose, history, files
@@ -25,7 +29,9 @@ $XDG_DATA_HOME/roster/         ~/.local/share/roster — durable; THE BACKUP SET
     decisions.jsonl  usage.jsonl  credentials.jsonl  messages.jsonl
 
 $XDG_STATE_HOME/roster/        ~/.local/state/roster — reconstructible/prunable
-  runs/<run-id>/                transcripts + workspaces + context traces
+  runs/<run-id>/                home/ (the run's $HOME: workspace, session
+                                transcript), repos/ (gated-repo clones), self/
+                                (composed read view), context traces
   identity/                     single-use per-run box tokens
   locks/                        listener locks
   outbox/                       offline email sink (ROSTER_EMAIL_SINK testing)
@@ -42,11 +48,16 @@ Design notes:
 - **No compile step.** Consumers parse the TOML straight into the runtime's
   own types; the snapshot is mtime-cached, so edits are live.
   `roster server validate` runs the same loader and prints every error.
-- **The box mounts none of this.** Isolation by absence: the container sees
-  only its own run directory, its channel history (read-only), its
-  knowledge checkout, and the CA certificate and trust bundle. pi and the
-  extensions are baked into the box image (`[engine] dir` is an
-  optional dev override that mounts a checkout over them).
+- **The box mounts only what was granted.** The container sees one tree
+  under its per-run `$HOME`: its durable `store/`, granted host-dir /
+  host-repo connections under `mnt/`, the read-only `self/` view of its own
+  footprint, its active channel at `channel/` (read-only), plus the CA
+  certificate and trust bundle — and nothing else of the deployment
+  (docs/box.md has the full tree). Everything host-written mounts
+  read-only; everything worker-written mounts read-write; there is no
+  third category. pi and the extensions are baked into the box image
+  (`[engine] dir` is an optional dev override that mounts a checkout over
+  them).
 - **Worker-first data**: a worker's whole footprint is one subtree under
   `data/workers/<name>/` — export is that subtree plus its spec. Runs stay
   global (`state/runs/`) because run ids are cross-worker handles; a run's

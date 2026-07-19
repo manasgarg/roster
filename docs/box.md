@@ -52,12 +52,30 @@ No real credential enters the box, ever:
   environment leaks placeholders.
 - Bot tokens, SMTP credentials, and the CA private key are host-side only.
 
-And nothing to tamper with: the box mounts none of the deployment — not
-config, not data, not state. It sees only its own run directories
-(workspace, session, home — read-write), its knowledge checkout (read-write
-or read-only by provenance, see [knowledge.md](knowledge.md)), its
-channel's history when it has one (read-only), a code worktree for code
-tasks, and the CA certificates (read-only).
+And nothing to tamper with beyond what was deliberately granted. The box
+sees one legible tree under its per-run `$HOME`, and the rule that governs
+every entry is **who wrote it decides the mode**: host-written mounts
+read-only, worker-written mounts read-write.
+
+```
+$HOME                      rw   fresh every run: workspace/, session/, dotfiles
+├── store/                 rw   the worker's durable dir — survives runs,
+│                               worker-managed layout, host-snapshotted
+├── mnt/<connection>/           granted host-dir / host-repo connections
+│                               (ro or rw per grant; gated repos appear as
+│                               per-run clones — see repos.md)
+├── self/                  ro   the worker's own footprint: config/, identity,
+│                               schedule.json, journal/ — edits via actions only
+└── channel/               ro   the active channel's history and files, when
+                                the run serves one — the only per-channel mount
+```
+
+Plus the CA certificates (read-only) and nothing else of the deployment:
+not the vault, not org.toml, not the audit logs, not any other worker's
+footprint, not any other channel's history. `$HOME` itself is ephemeral
+**by design** — a run cannot plant a `.bashrc` or `.gitconfig` for a
+future run to execute; only `store/` persists, and nothing in it
+auto-executes.
 
 `/tmp` is a private 2 GiB tmpfs that vanishes with the container —
 downloads and scratch work go there and are never mistaken for durable
@@ -77,6 +95,8 @@ size:
 
 - **VCS / GitHub**: git, `gh`, git-lfs
 - **Transfer & archives**: curl, wget, rsync, unzip, zip, xz, zstd
+- **Coordination**: `roster-lock <name> -- <cmd>` — run a command holding
+  a named store lock (see [store.md](store.md))
 - **Data**: sqlite3, jq, `yq`, poppler-utils (pdftotext)
 - **Search & files**: ripgrep, fd, tree, file, less
 - **Python**: python3, pip, venv, `uv`
@@ -103,12 +123,10 @@ The extensions are the worker's hands, in two files under `box/extensions/`:
   search) and `fetch_pages` (fetch and extract readable markdown). Plain
   HTTP through the proxy; every request judged and logged.
 - **`actions.ts`** — proposals, not powers: `message_user`, `discord_send`,
-  `slack_send`, `send_email`, `propose_changes`, `propose_purpose_edit`,
-  `file_task`, the memory tools (`remember`, `forget_memory`,
-  `correct_memory`, pin/disable variants, `read_memory`,
-  `set_memory_preferences`), and `check_gates`. Each submits a typed
-  envelope to the gateway's action host and obeys the verdict that comes
-  back — the tools shape behavior; they never enforce safety
+  `slack_send`, `send_email`, `propose_purpose_edit`, `file_task`,
+  `set_tasks`, `file_update`, `repo_push`, and `check_gates`. Each submits
+  a typed envelope to the gateway's action host and obeys the verdict that
+  comes back — the tools shape behavior; they never enforce safety
   (see [actions-and-trust.md](actions-and-trust.md)).
 
 Dropping a new `.ts` file into `box/extensions/` ships a new capability;

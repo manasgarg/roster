@@ -17,11 +17,12 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-const KNOWLEDGE_MOUNT: &str = "/opt/roster/knowledge";
-/// The canonical bare repo, bind-mounted read-only into the box as `origin` —
-/// so `git fetch origin` after a stale push sees the new main immediately,
-/// while ref writes from the box are a filesystem error, not a policy hope.
-const ORIGIN_MOUNT: &str = "/opt/roster/knowledge.git";
+/// Gated repos mount under the granted-connection tree: the run's clone at
+/// `mnt/<connection>`, the canonical repo read-only at
+/// `mnt/.origins/<connection>` as `origin` — so `git fetch origin` after a
+/// stale push sees the new main immediately, while a ref write from the box
+/// is a filesystem error, not a policy hope.
+const MNT_BASE: &str = "/pihome/mnt";
 /// Where the box's push tool writes the bundle: inside the clone's own .git,
 /// so the worktree stays clean. The host derives this path from the run id —
 /// never from box-supplied input.
@@ -34,23 +35,28 @@ const QUARANTINE_TTL_DAYS: u64 = 14;
 pub struct Checkout {
     pub worker: String,
     pub run_id: String,
+    /// The gated host-repo connection this checkout serves ("knowledge" for
+    /// the legacy per-worker repo, whether implicit or migrated to a file).
+    pub connection: String,
+    /// The canonical repo (bare) this clone landed from and pushes to.
+    pub bare: PathBuf,
     /// The run's clone (a real repository, `.git` included).
     pub path: PathBuf,
     pub base_commit: String,
     pub knowledge_policy: KnowledgePolicy,
     /// False for tainted runs under clean-room policy: the clone mounts
-    /// read-only and `knowledge_push` refuses. The enforcement point for the
+    /// read-only and the push refuses. The enforcement point for the
     /// person-space boundary is the ref write, backed by the ro mount.
     pub writable: bool,
 }
 
 impl Checkout {
-    pub fn knowledge_mount(&self) -> &'static str {
-        KNOWLEDGE_MOUNT
+    pub fn knowledge_mount(&self) -> String {
+        format!("{MNT_BASE}/{}", self.connection)
     }
 
-    pub fn origin_mount(&self) -> &'static str {
-        ORIGIN_MOUNT
+    pub fn origin_mount(&self) -> String {
+        format!("{MNT_BASE}/.origins/{}", self.connection)
     }
 
     pub fn branch(&self) -> String {
@@ -68,7 +74,34 @@ impl Checkout {
 
 #[derive(Debug)]
 pub struct RunStorage {
-    pub knowledge: Option<Checkout>,
+    /// One checkout per gated host-repo connection granted to the worker
+    /// ("knowledge" first when present — it's the one the briefing narrates).
+    pub repos: Vec<Checkout>,
+}
+
+/// The gated repos a worker's runs provision: every gated host-repo
+/// connection granted to it, plus the legacy per-worker knowledge repo as an
+/// implicit connection named "knowledge" while no connection file claims that
+/// name — so pre-migration deployments keep working untouched.
+fn gated_specs(worker: &str) -> Vec<(String, PathBuf)> {
+    let mut specs: Vec<(String, PathBuf)> = Vec::new();
+    if let Ok(config) = crate::config::snapshot() {
+        for m in &config.host_mounts {
+            if let crate::config::HostMountKind::Repo { gated: true, .. } = &m.kind {
+                if m.applies_to(worker) {
+                    specs.push((m.name.clone(), m.path.clone()));
+                }
+            }
+        }
+    }
+    let legacy = paths::worker_knowledge_dir(worker).join("repo.git");
+    if legacy.join("HEAD").is_file() && !specs.iter().any(|(n, _)| n == "knowledge") {
+        specs.insert(0, ("knowledge".into(), legacy));
+    } else if let Some(pos) = specs.iter().position(|(n, _)| n == "knowledge") {
+        let s = specs.remove(pos);
+        specs.insert(0, s);
+    }
+    specs
 }
 
 /// What a landed push did, reported back to the box as the action result.
@@ -126,78 +159,87 @@ pub fn provision(worker: &str, run_id: &str, tainted: bool) -> Result<RunStorage
     let writable = !(tainted && policy.knowledge.write_from == "clean-room");
 
     if !policy.knowledge.enabled {
-        crate::run::runlog::attach_storage(run_id, None)?;
-        return Ok(RunStorage { knowledge: None });
+        crate::run::runlog::attach_storage(run_id, Default::default())?;
+        return Ok(RunStorage { repos: Vec::new() });
     }
 
-    let repo = ensure_repo(worker)?;
-    prune_quarantine(&repo);
-    let path = paths::run_dir(run_id).join("knowledge");
-    if path.exists() {
-        return Err(format!(
-            "knowledge checkout already exists at {}",
-            path.display()
-        ));
-    }
-    // --no-hardlinks is load-bearing: a default local clone hardlinks object
-    // files, so the run clone (bind-mounted rw into the box, running as the
-    // host uid) would share inodes with the canonical store — a box could
-    // chmod +w a pack and corrupt canonical bytes THROUGH its own clone,
-    // bypassing the read-only origin mount. Copying severs that alias; the
-    // host-only transient clones elsewhere keep the cheap default.
-    run_git_owned(
-        Path::new("."),
-        vec![
-            "clone".into(),
-            "--quiet".into(),
-            "--no-hardlinks".into(),
-            repo.display().to_string(),
-            path.display().to_string(),
-        ],
-    )?;
-    let base_commit = run_git(&path, &["rev-parse", "HEAD"])?;
-    run_git_owned(
-        &path,
-        vec![
-            "checkout".into(),
-            "--quiet".into(),
-            "-b".into(),
-            run_branch(run_id),
-        ],
-    )?;
-    // The worker authors its own history; commits on main carry its name.
-    run_git(&path, &["config", "user.name", worker])?;
-    run_git_owned(
-        &path,
-        vec![
-            "config".into(),
-            "user.email".into(),
-            format!("{worker}@workers.roster.local"),
-        ],
-    )?;
-    // Inside the box, origin is the read-only bare mount — live, fetchable.
-    run_git(&path, &["remote", "set-url", "origin", ORIGIN_MOUNT])?;
-
-    crate::run::runlog::attach_storage(
-        run_id,
-        Some(KnowledgeRunRecord {
-            base_commit: base_commit.clone(),
-            mode: if writable { "write" } else { "read" }.into(),
-            state: if writable { "active" } else { "read-only" }.into(),
-            produced_commit: None,
-            error: None,
-        }),
-    )?;
-    Ok(RunStorage {
-        knowledge: Some(Checkout {
+    let mut repos: Vec<Checkout> = Vec::new();
+    let mut records: BTreeMap<String, KnowledgeRunRecord> = BTreeMap::new();
+    for (connection, bare) in gated_specs(worker) {
+        safe_component(&connection, "connection")?;
+        prune_quarantine(&bare);
+        let path = paths::run_dir(run_id).join("repos").join(&connection);
+        if path.exists() {
+            return Err(format!(
+                "repo checkout already exists at {}",
+                path.display()
+            ));
+        }
+        // --no-hardlinks is load-bearing: a default local clone hardlinks
+        // object files, so the run clone (bind-mounted rw into the box,
+        // running as the host uid) would share inodes with the canonical
+        // store — a box could chmod +w a pack and corrupt canonical bytes
+        // THROUGH its own clone, bypassing the read-only origin mount.
+        // Copying severs that alias; the host-only transient clones elsewhere
+        // keep the cheap default.
+        run_git_owned(
+            Path::new("."),
+            vec![
+                "clone".into(),
+                "--quiet".into(),
+                "--no-hardlinks".into(),
+                bare.display().to_string(),
+                path.display().to_string(),
+            ],
+        )?;
+        let base_commit = run_git(&path, &["rev-parse", "HEAD"])?;
+        run_git_owned(
+            &path,
+            vec![
+                "checkout".into(),
+                "--quiet".into(),
+                "-b".into(),
+                run_branch(run_id),
+            ],
+        )?;
+        // The worker authors its own history; commits on main carry its name.
+        run_git(&path, &["config", "user.name", worker])?;
+        run_git_owned(
+            &path,
+            vec![
+                "config".into(),
+                "user.email".into(),
+                format!("{worker}@workers.roster.local"),
+            ],
+        )?;
+        let checkout = Checkout {
             worker: worker.into(),
             run_id: run_id.into(),
-            path,
-            base_commit,
-            knowledge_policy: policy.knowledge,
+            connection: connection.clone(),
+            bare,
+            path: path.clone(),
+            base_commit: base_commit.clone(),
+            knowledge_policy: policy.knowledge.clone(),
             writable,
-        }),
-    })
+        };
+        // Inside the box, origin is the read-only mount of the canonical
+        // repo — live, fetchable; ref writes are a filesystem error.
+        let origin = checkout.origin_mount();
+        run_git(&path, &["remote", "set-url", "origin", &origin])?;
+        records.insert(
+            connection,
+            KnowledgeRunRecord {
+                base_commit,
+                mode: if writable { "write" } else { "read" }.into(),
+                state: if writable { "active" } else { "read-only" }.into(),
+                produced_commit: None,
+                error: None,
+            },
+        );
+        repos.push(checkout);
+    }
+    crate::run::runlog::attach_storage(run_id, records)?;
+    Ok(RunStorage { repos })
 }
 
 // ── the push: validate a bundled range, advance main ff-only ────────────────
@@ -210,56 +252,88 @@ pub fn provision(worker: &str, run_id: &str, tainted: bool) -> Result<RunStorage
 pub fn push(
     worker: &str,
     run_id: &str,
+    connection: &str,
     head: &str,
     confirmed_bulk_delete: bool,
 ) -> Result<PushOutcome, String> {
     let worker = short_worker(worker);
     safe_component(worker, "worker")?;
     safe_component(run_id, "run id")?;
+    safe_component(connection, "connection")?;
     if !head.bytes().all(|b| b.is_ascii_hexdigit()) || head.len() != 40 {
         return Err("head must be a full commit sha".into());
     }
     let record = crate::run::runlog::load(run_id)
-        .and_then(|record| record.knowledge)
-        .ok_or("this run has no knowledge clone")?;
+        .map(|record| record.repos)
+        .unwrap_or_default()
+        .remove(connection)
+        .ok_or_else(|| format!("this run has no \"{connection}\" repo checkout"))?;
     if record.mode != "write" {
-        return Err("this run's knowledge clone is read-only — durable research belongs in a clean task run (file_task)".into());
+        return Err("this run's repo checkout is read-only — durable research belongs in a clean task run (file_task)".into());
     }
+    let bare = gated_specs(worker)
+        .into_iter()
+        .find(|(n, _)| n == connection)
+        .map(|(_, p)| p)
+        .ok_or_else(|| format!("no gated repo connection \"{connection}\" for this worker"))?;
     let policy = crate::worker::storage::load(worker).knowledge;
-    match push_inner(worker, run_id, head, confirmed_bulk_delete, &policy) {
+    match push_inner(
+        worker,
+        run_id,
+        connection,
+        &bare,
+        head,
+        confirmed_bulk_delete,
+        &policy,
+    ) {
         Ok(outcome) => {
-            crate::run::runlog::update_knowledge(run_id, "pushed", Some(&outcome.commit), None)?;
+            crate::run::runlog::update_knowledge(
+                run_id,
+                connection,
+                "pushed",
+                Some(&outcome.commit),
+                None,
+            )?;
             Ok(outcome)
         }
         Err(error) => {
-            let _ =
-                crate::run::runlog::update_knowledge(run_id, "push-refused", None, Some(&error));
+            let _ = crate::run::runlog::update_knowledge(
+                run_id,
+                connection,
+                "push-refused",
+                None,
+                Some(&error),
+            );
             let _ = crate::worker::journal::append_required(
                 &journal_worker(worker),
                 run_id,
                 "knowledge-push-refused",
-                json!({ "head": head, "error": error }),
+                json!({ "connection": connection, "head": head, "error": error }),
             );
             Err(error)
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_inner(
     worker: &str,
     run_id: &str,
+    connection: &str,
+    bare: &Path,
     head: &str,
     confirmed_bulk_delete: bool,
     policy: &KnowledgePolicy,
 ) -> Result<PushOutcome, String> {
-    let repo = canonical_repo(worker);
+    let repo = bare.to_path_buf();
     let bundle = paths::run_dir(run_id)
-        .join("knowledge")
+        .join("repos")
+        .join(connection)
         .join(".git")
         .join(PUSH_BUNDLE);
     if !bundle.exists() {
         return Err(
-            "no push bundle found — the knowledge_push tool creates it from your committed branch"
+            "no push bundle found — the repo_push tool creates it from your committed branch"
                 .into(),
         );
     }
@@ -389,14 +463,16 @@ fn push_inner(
     if deletions > policy.max_deletions_ungated && !confirmed_bulk_delete {
         return Err(format!(
             "this push deletes {deletions} files — over the ungated limit of {}. If that is intended, \
-             propose knowledge_push again with confirm_bulk_delete: \"yes\" and a rationale; that path \
+             propose repo_push again with confirm_bulk_delete: \"yes\" and a rationale; that path \
              waits for human approval",
             policy.max_deletions_ungated
         ));
     }
 
     // The integration lane: land atomically, re-checking main under the lock.
-    let _lane = acquire_lease(&worker_dir.join("integrate.lock"))?;
+    // Keyed by the canonical repo's path, not the worker — an org-granted
+    // repo has ONE lane no matter how many workers push to it.
+    let _lane = acquire_lease(&lane_lock_path(&repo))?;
     let main = head_of(&repo)?;
     if head != main && !is_ancestor(&q, &main, head) {
         return Err(stale(&main));
@@ -422,6 +498,7 @@ fn push_inner(
         run_id,
         "knowledge-pushed",
         json!({
+            "connection": connection,
             "previous_main": main,
             "commit": head,
             "files": files,
@@ -448,6 +525,7 @@ pub fn backstop(checkout: &Checkout) {
     if let Err(error) = backstop_inner(checkout) {
         let _ = crate::run::runlog::update_knowledge(
             &checkout.run_id,
+            &checkout.connection,
             "backstop-failed",
             None,
             Some(&error),
@@ -462,11 +540,13 @@ pub fn backstop(checkout: &Checkout) {
 }
 
 fn backstop_inner(checkout: &Checkout) -> Result<(), String> {
-    let repo = canonical_repo(&checkout.worker);
+    let repo = checkout.bare.clone();
     // The last landed state this run is responsible for: its pushed head if a
     // push landed, else the commit it started from.
     let reference = crate::run::runlog::load(&checkout.run_id)
-        .and_then(|record| record.knowledge)
+        .map(|record| record.repos)
+        .unwrap_or_default()
+        .remove(&checkout.connection)
         .and_then(|k| k.produced_commit)
         .unwrap_or_else(|| checkout.base_commit.clone());
     let current = collect_files_lenient(&checkout.path)?;
@@ -529,19 +609,33 @@ fn backstop_inner(checkout: &Checkout) -> Result<(), String> {
             format!("HEAD:{quarantine_ref}"),
         ],
     )?;
-    crate::run::runlog::update_knowledge(&checkout.run_id, "backstopped", None, None)?;
+    crate::run::runlog::update_knowledge(
+        &checkout.run_id,
+        &checkout.connection,
+        "backstopped",
+        None,
+        None,
+    )?;
     crate::worker::journal::append_required(
         &journal_worker(&checkout.worker),
         &checkout.run_id,
         "knowledge-backstopped",
-        json!({ "ref": quarantine_ref, "reference": reference }),
+        json!({ "connection": checkout.connection, "ref": quarantine_ref, "reference": reference }),
     )?;
     Ok(())
 }
 
-/// Parked refs for a worker: (ref name, age in days) — the briefing's source.
-pub fn parked_runs(worker: &str) -> Vec<(String, u64)> {
-    parked_refs_of(&canonical_repo(short_worker(worker)))
+/// Parked refs across a worker's gated repos: (connection, ref name, age in
+/// days) — the briefing's source.
+pub fn parked_runs(worker: &str) -> Vec<(String, String, u64)> {
+    gated_specs(short_worker(worker))
+        .into_iter()
+        .flat_map(|(connection, bare)| {
+            parked_refs_of(&bare)
+                .into_iter()
+                .map(move |(name, age)| (connection.clone(), name, age))
+        })
+        .collect()
 }
 
 fn prune_quarantine(repo: &Path) {
@@ -690,10 +784,21 @@ fn collect_files_lenient(root: &Path) -> Result<BTreeMap<PathBuf, FileData>, Str
 
 // ── repo plumbing ─────────────────────────────────────────────────────────────
 
+/// The per-repo integration lane lock, keyed by the canonical repo's path
+/// under `state/locks/` — never a file beside the repo itself, which for a
+/// granted host repo would mean littering the operator's directory.
+fn lane_lock_path(bare: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bare.display().to_string().as_bytes());
+    let digest = format!("{:x}", h.finalize());
+    paths::lock_file(&format!("repo-lane-{}", &digest[..16]))
+}
+
 fn ensure_repo(worker: &str) -> Result<PathBuf, String> {
     let dir = worker_dir(worker);
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    let _lease = acquire_lease(&dir.join("integrate.lock"))?;
+    let _lease = acquire_lease(&lane_lock_path(&canonical_repo(worker)))?;
     let repo = canonical_repo(worker);
     if repo.join("refs/heads/main").exists() || head_of(&repo).is_ok() {
         return Ok(repo);
@@ -856,11 +961,6 @@ fn worker_dir(worker: &str) -> PathBuf {
 
 fn canonical_repo(worker: &str) -> PathBuf {
     worker_dir(worker).join("repo.git")
-}
-
-/// The canonical bare repo path — what the box mounts read-only as origin.
-pub fn bare_repo(worker: &str) -> PathBuf {
-    canonical_repo(short_worker(worker))
 }
 
 fn safe_component(value: &str, label: &str) -> Result<(), String> {
@@ -1140,7 +1240,8 @@ mod tests {
         initialize("yuko").unwrap();
         crate::run::runlog::start("run1", "yuko", "task", None).unwrap();
         let storage = provision("yuko", "run1", false).unwrap();
-        let co = storage.knowledge.as_ref().unwrap();
+        let co = storage.repos.first().unwrap();
+        assert_eq!(co.connection, "knowledge");
         assert!(co.writable);
         assert_eq!(
             run_git(&co.path, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap(),
@@ -1173,14 +1274,14 @@ mod tests {
             ],
         )
         .unwrap();
-        let outcome = push("yuko", "run1", &head, false).unwrap();
+        let outcome = push("yuko", "run1", "knowledge", &head, false).unwrap();
         assert_eq!((outcome.files, outcome.deletions), (1, 0));
         assert_eq!(head_of(&canonical_repo("yuko")).unwrap(), head);
 
         // A second run provisioned earlier goes stale, rebases, lands.
         crate::run::runlog::start("run2", "yuko", "task", None).unwrap();
         let storage2 = provision("yuko", "run2", false).unwrap();
-        let co2 = storage2.knowledge.as_ref().unwrap();
+        let co2 = storage2.repos.first().unwrap();
         // Pretend run2 cloned before run1 landed: rewind its view of main.
         let old_main = run_git(&co2.path, &["rev-list", "--max-parents=0", "HEAD"]).unwrap();
         run_git(&co2.path, &["reset", "--hard", &old_main]).unwrap();
@@ -1204,7 +1305,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let error = push("yuko", "run2", &stale_head, false).unwrap_err();
+        let error = push("yuko", "run2", "knowledge", &stale_head, false).unwrap_err();
         assert!(error.contains("stale"), "{error}");
         // Rebase against the canonical repo (in the box this is the ro mount).
         run_git_owned(
@@ -1233,7 +1334,7 @@ mod tests {
             ],
         )
         .unwrap();
-        push("yuko", "run2", &rebased, false).unwrap();
+        push("yuko", "run2", "knowledge", &rebased, false).unwrap();
         assert_eq!(head_of(&canonical_repo("yuko")).unwrap(), rebased);
 
         // Leftover uncommitted work parks on a quarantine ref; the next run's
@@ -1242,13 +1343,14 @@ mod tests {
         backstop(co2);
         let parked = parked_runs("yuko");
         assert_eq!(parked.len(), 1);
-        assert!(parked[0].0.ends_with("run-run2"), "{}", parked[0].0);
+        assert_eq!(parked[0].0, "knowledge");
+        assert!(parked[0].1.ends_with("run-run2"), "{}", parked[0].1);
 
         // A tainted run under clean-room gets a read-only clone; push refuses.
         crate::run::runlog::start("run3", "yuko", "task", None).unwrap();
         let storage3 = provision("yuko", "run3", true).unwrap();
-        assert!(!storage3.knowledge.as_ref().unwrap().writable);
-        let error = push("yuko", "run3", &rebased, false).unwrap_err();
+        assert!(!storage3.repos.first().unwrap().writable);
+        let error = push("yuko", "run3", "knowledge", &rebased, false).unwrap_err();
         assert!(error.contains("read-only"), "{error}");
 
         std::env::remove_var("ROSTER_ROOT");

@@ -71,7 +71,7 @@ pub fn render_show(id: &str) -> Result<String, BErr> {
         writeln!(out, "rationale {}", g.rationale)?;
     }
     // Render the change per executor: a charter gate shows a current-vs-proposed
-    // diff; a code gate shows the worktree diff; everything else shows its payload.
+    // diff; everything else shows its payload.
     match g.executor.as_str() {
         "identity" => {
             let proposed = g
@@ -108,19 +108,6 @@ pub fn render_show(id: &str) -> Result<String, BErr> {
                     out,
                     "\n(the proposed purpose is identical to the current one)"
                 )?,
-            }
-        }
-        "git-pr" => {
-            writeln!(
-                out,
-                "\npayload:\n{}",
-                serde_json::to_string_pretty(&g.payload)?
-            )?;
-            match action::worktree_diff(&g.run_id) {
-                Some(d) if !d.is_empty() => {
-                    writeln!(out, "\ndiff — what would be committed:\n{d}")?
-                }
-                _ => writeln!(out, "\ndiff — (no changes found in the worktree)")?,
             }
         }
         _ => writeln!(

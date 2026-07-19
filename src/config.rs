@@ -14,7 +14,6 @@ use crate::gateway::budget::BudgetPolicy;
 use crate::gateway::schema::Policy;
 use crate::paths;
 use crate::worker::context::{CompiledContextPolicy, ContextPolicy};
-use crate::worker::memory::{CompiledMemoryPolicy, MemoryPolicy};
 use crate::worker::storage::{CompiledStoragePolicy, StoragePolicy};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -41,6 +40,72 @@ pub struct Connection {
     pub env: String,
     /// Secret present in the vault?
     pub enabled: bool,
+    /// `[restrict]` — provider-declared scope dimensions narrowing the grant
+    /// (registry `scope_dims`; discord: servers/channels). One scope, every
+    /// enforcement point: listeners refuse attachment outside it, the gateway
+    /// compiles it into path predicates. Empty = unrestricted.
+    pub restrict: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl Connection {
+    /// The channel/server restriction a listener must enforce, if any.
+    /// None = unrestricted. Ids are Discord snowflakes as strings.
+    pub fn allows_surface(&self, server_id: Option<&str>, channel_id: &str) -> bool {
+        let servers = self.restrict.get("servers");
+        let channels = self.restrict.get("channels");
+        if servers.is_none() && channels.is_none() {
+            return true;
+        }
+        // A surface is in scope if EITHER dimension admits it: a listed
+        // channel is reachable even when its server isn't listed, and a
+        // listed server admits all its channels.
+        if let Some(list) = channels {
+            if list.iter().any(|c| c == channel_id) {
+                return true;
+            }
+        }
+        if let (Some(list), Some(sid)) = (servers, server_id) {
+            if list.iter().any(|s| s == sid) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// A host resource connection (`kind = "host-dir"` / `"host-repo"` in
+/// `connections/<name>.toml`): no secret, no gateway rules — granting one
+/// materializes it in the box filesystem under `$HOME/mnt/<name>`
+/// (docs/plans/worker-environment.md). The name doubles as the mount
+/// directory, so it is restricted to path-safe characters.
+#[derive(Clone, Debug)]
+pub struct HostMount {
+    pub name: String,
+    pub kind: HostMountKind,
+    pub path: PathBuf,
+    /// None = org-wide; Some = these workers only.
+    pub workers: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostMountKind {
+    /// `kind = "host-dir"` — a plain directory, `mode = "ro"` (default) or
+    /// `"rw"`. An rw grant on a dir roster doesn't back up warns at load:
+    /// no gate, no snapshots — a bad run's writes there are unrecoverable.
+    Dir { rw: bool },
+    /// `kind = "host-repo"` — a git repository, `write = "ro"` (default) or
+    /// `"gated"`: the run works on a branch and lands it through the
+    /// validated `repo_push` action; the host stays sole writer of `branch`.
+    Repo { gated: bool, branch: String },
+}
+
+impl HostMount {
+    pub fn applies_to(&self, worker: &str) -> bool {
+        match &self.workers {
+            None => true,
+            Some(list) => list.iter().any(|w| w == worker),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -132,7 +197,6 @@ pub struct Loaded {
     /// worker → heartbeat interval string ("every 30m" default; "off"
     /// disables). The TMS keeps each worker's system template in line.
     pub heartbeats: std::collections::HashMap<String, String>,
-    pub memory: CompiledMemoryPolicy,
     pub context: CompiledContextPolicy,
     pub storage: CompiledStoragePolicy,
     /// (worker, platform, vault credential) — `server start` starts one
@@ -145,6 +209,9 @@ pub struct Loaded {
     pub exposes: Vec<Expose>,
     /// Service connections, for `connection ls` and the wizard.
     pub connections: Vec<Connection>,
+    /// Host-dir / host-repo connections — materialized as box mounts at
+    /// provision time, never as gateway rules.
+    pub host_mounts: Vec<HostMount>,
     /// Non-fatal conditions (e.g. a disabled connection) — printed by
     /// `validate` and `server start`, never fail-closed.
     pub warnings: Vec<String>,
@@ -184,10 +251,6 @@ pub fn load() -> Result<Loaded, Vec<String>> {
     let mut exposes: Vec<Expose> = Vec::new();
     let mut workers: Vec<String> = Vec::new();
 
-    let default_memory = memory_policy(org.get("memory"), None).unwrap_or_else(|e| {
-        errors.push(format!("org.toml [memory]: {e}"));
-        MemoryPolicy::default()
-    });
     let default_context = context_policy(org.get("context"), None).unwrap_or_else(|e| {
         errors.push(format!("org.toml [context]: {e}"));
         ContextPolicy::default()
@@ -196,7 +259,6 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         errors.push(format!("org.toml [knowledge]: {e}"));
         StoragePolicy::default()
     });
-    let mut worker_memory = std::collections::HashMap::new();
     let mut worker_context = std::collections::HashMap::new();
     let mut worker_storage = std::collections::HashMap::new();
 
@@ -272,12 +334,6 @@ pub fn load() -> Result<Loaded, Vec<String>> {
             }
             let scope = format!("org/{name}");
             workers.push(name.clone());
-            match memory_policy(w.get("memory"), Some(&default_memory)) {
-                Ok(p) => {
-                    worker_memory.insert(name.clone(), p);
-                }
-                Err(e) => errors.push(format!("{name} [memory]: {e}")),
-            }
             match context_policy(w.get("context"), Some(&default_context)) {
                 Ok(p) => {
                     worker_context.insert(name.clone(), p);
@@ -377,6 +433,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
     // hand-written rule like `web-fetch` (GET on *).
     let mut warnings: Vec<String> = Vec::new();
     let mut connections: Vec<Connection> = Vec::new();
+    let mut host_mounts: Vec<HostMount> = Vec::new();
     let mut connection_rules: Vec<Value> = Vec::new();
     let registry = crate::credential::registry::registry_json();
     let mut connection_files: Vec<PathBuf> = std::fs::read_dir(paths::connections_dir())
@@ -400,6 +457,26 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                 continue;
             }
         };
+        let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("service");
+        match kind {
+            "service" => {}
+            "host-dir" | "host-repo" => {
+                match compile_host_mount(&name, kind, &v, &workers) {
+                    Ok((mount, mut warns)) => {
+                        warnings.append(&mut warns);
+                        host_mounts.push(mount);
+                    }
+                    Err(mut e) => errors.append(&mut e),
+                }
+                continue;
+            }
+            other => {
+                errors.push(format!(
+                    "connection \"{name}\": unknown kind \"{other}\" (service, host-dir, host-repo)"
+                ));
+                continue;
+            }
+        }
         match compile_connection(
             &name,
             &v,
@@ -415,6 +492,18 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                             .collect()
                     })
                 })
+            },
+            |p| {
+                registry
+                    .get(p)
+                    .and_then(|entry| entry.get("scope_dims").and_then(Value::as_array))
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default()
             },
         ) {
             Ok((connection, rules, connection_exposes, warning)) => {
@@ -462,10 +551,6 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         budget,
         actions,
         heartbeats,
-        memory: CompiledMemoryPolicy {
-            default: default_memory,
-            workers: worker_memory,
-        },
         context: CompiledContextPolicy {
             default: default_context,
             workers: worker_context,
@@ -477,6 +562,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         listeners,
         exposes,
         connections,
+        host_mounts,
         warnings,
         workers,
         engine_dir,
@@ -498,6 +584,7 @@ fn compile_connection(
     provider_exists: impl Fn(&str) -> bool,
     secret_exists: impl Fn(&str) -> bool,
     model_hosts_of: impl Fn(&str) -> Option<Vec<String>>,
+    scope_dims_of: impl Fn(&str) -> Vec<String>,
 ) -> Result<CompiledConnection, Vec<String>> {
     let mut errors = Vec::new();
     let ctx = format!("connection \"{name}\"");
@@ -587,6 +674,51 @@ fn compile_connection(
     if env.is_empty() && !is_model {
         errors.push(format!("{ctx}: needs env = \"<VAR the box sees>\""));
     }
+
+    // `[restrict]` — one scope declaration, validated against the provider's
+    // registry-declared dimensions. Unknown dimension = config error, not a
+    // silently ignored key: a restriction the operator believes exists MUST
+    // exist.
+    let mut restrict: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    if let Some(r) = v.get("restrict") {
+        match r.as_table() {
+            Some(table) => {
+                let dims = scope_dims_of(&provider);
+                for (dim, val) in table {
+                    if !dims.iter().any(|d| d == dim) {
+                        let declared = if dims.is_empty() {
+                            "it declares none".to_string()
+                        } else {
+                            format!("it declares: {}", dims.join(", "))
+                        };
+                        errors.push(format!(
+                            "{ctx}: provider \"{provider}\" has no scope dimension \"{dim}\" ({declared})"
+                        ));
+                        continue;
+                    }
+                    let ids: Vec<String> = val
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|s| s.as_str())
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if ids.is_empty() {
+                        errors.push(format!(
+                            "{ctx}: restrict.{dim} needs a non-empty list of id strings"
+                        ));
+                        continue;
+                    }
+                    restrict.insert(dim.clone(), ids);
+                }
+            }
+            None => errors.push(format!(
+                "{ctx}: [restrict] must be a table of <dimension> = [\"id\", ..]"
+            )),
+        }
+    }
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -600,6 +732,7 @@ fn compile_connection(
         methods: methods.clone(),
         env: env.clone(),
         enabled,
+        restrict: restrict.clone(),
     };
     if !enabled {
         // Disabled, not broken: no grant, no exposure, nothing to inject —
@@ -621,22 +754,68 @@ fn compile_connection(
         Some(list) => list.iter().map(|w| format!("org/{w}")).collect(),
         None => vec!["org".to_string()],
     };
-    let rules = scopes
-        .iter()
-        .map(|scope| {
-            let mut inject = json!({ "credential": name, "provider": provider });
-            if let (Some(header), Some(value)) = (&inject_header, &inject_value) {
-                inject["headers"] = json!([{ "header": header, "value": value }]);
+    let mut rules: Vec<Value> = Vec::new();
+    for scope in &scopes {
+        let mut inject = json!({ "credential": name, "provider": provider });
+        if let (Some(header), Some(value)) = (&inject_header, &inject_value) {
+            inject["headers"] = json!([{ "header": header, "value": value }]);
+        }
+        // A restricted discord connection compiles its scope into path
+        // predicates, first-match-wins: allow the scoped surfaces, deny the
+        // rest of that resource family, then the broad host allow for
+        // everything else the API needs (users/@me, the gateway URL, …).
+        //
+        // Known limit, by design: a servers-only restriction can't be fully
+        // enforced on `/channels/<id>` paths — Discord channel endpoints
+        // don't carry the guild id — so there the listener's attachment rule
+        // is the enforcement and the gateway stays broad. A channels
+        // restriction IS fully enforced here.
+        if provider == "discord" && !restrict.is_empty() {
+            for id in restrict.get("channels").into_iter().flatten() {
+                rules.push(json!({
+                    "scope": scope,
+                    "name": format!("connection:{name}:channel:{id}"),
+                    "match": { "host": hosts, "port": 443, "method": methods,
+                               "pathPrefix": format!("/api/v10/channels/{id}") },
+                    "verdict": "allow",
+                    "inject": inject,
+                }));
             }
-            json!({
+            for id in restrict.get("servers").into_iter().flatten() {
+                rules.push(json!({
+                    "scope": scope,
+                    "name": format!("connection:{name}:server:{id}"),
+                    "match": { "host": hosts, "port": 443, "method": methods,
+                               "pathPrefix": format!("/api/v10/guilds/{id}") },
+                    "verdict": "allow",
+                    "inject": inject,
+                }));
+            }
+            if restrict.contains_key("channels") && !restrict.contains_key("servers") {
+                rules.push(json!({
+                    "scope": scope,
+                    "name": format!("connection:{name}:deny-unscoped-channels"),
+                    "match": { "host": hosts, "port": 443,
+                               "pathPrefix": "/api/v10/channels" },
+                    "verdict": "deny",
+                }));
+            }
+            rules.push(json!({
                 "scope": scope,
-                "name": format!("connection:{name}"),
-                "match": { "host": hosts, "port": 443, "method": methods },
-                "verdict": "allow",
-                "inject": inject,
-            })
-        })
-        .collect();
+                "name": format!("connection:{name}:deny-unscoped-servers"),
+                "match": { "host": hosts, "port": 443,
+                           "pathPrefix": "/api/v10/guilds" },
+                "verdict": "deny",
+            }));
+        }
+        rules.push(json!({
+            "scope": scope,
+            "name": format!("connection:{name}"),
+            "match": { "host": hosts, "port": 443, "method": methods },
+            "verdict": "allow",
+            "inject": inject,
+        }));
+    }
     let exposes = if env.is_empty() {
         Vec::new()
     } else {
@@ -650,6 +829,143 @@ fn compile_connection(
             .collect()
     };
     Ok((connection, rules, exposes, None))
+}
+
+/// Compile a `kind = "host-dir"` / `"host-repo"` connection file. No secret,
+/// no rules — validation is about the path and the grant. Fail closed on a
+/// missing path: a mount that silently doesn't appear is worse than a boot
+/// refusal, because the worker was promised the resource.
+fn compile_host_mount(
+    name: &str,
+    kind: &str,
+    v: &toml::Value,
+    known_workers: &[String],
+) -> Result<(HostMount, Vec<String>), Vec<String>> {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let ctx = format!("connection \"{name}\"");
+
+    // The name becomes the container path `mnt/<name>` — path-safe only.
+    let name_ok = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+    if !name_ok {
+        errors.push(format!(
+            "{ctx}: host mount names must be lowercase [a-z0-9-_] (the name is the mount directory)"
+        ));
+    }
+
+    let path = v
+        .get("path")
+        .and_then(|x| x.as_str())
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    if !path.is_absolute() {
+        errors.push(format!("{ctx}: needs an absolute path = \"/…\""));
+    } else if !path.is_dir() {
+        errors.push(format!("{ctx}: path {} is not a directory", path.display()));
+    }
+
+    let strings = |key: &str| -> Option<Vec<String>> {
+        v.get(key).and_then(|x| x.as_array()).map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+    };
+    let org_scoped = v.get("scope").and_then(|x| x.as_str()) == Some("org");
+    let workers = strings("workers");
+    match (&workers, org_scoped) {
+        (Some(_), true) => errors.push(format!(
+            "{ctx}: choose workers = [..] OR scope = \"org\", not both"
+        )),
+        (None, false) => errors.push(format!(
+            "{ctx}: needs workers = [\"<name>\", ..] or scope = \"org\""
+        )),
+        (Some(list), false) => {
+            for w in list {
+                if !known_workers.contains(w) {
+                    errors.push(format!("{ctx}: no such worker \"{w}\""));
+                }
+            }
+            if list.is_empty() {
+                errors.push(format!(
+                    "{ctx}: workers = [] grants nothing — use scope = \"org\" or name workers"
+                ));
+            }
+        }
+        (None, true) => {}
+    }
+
+    let mount_kind = match kind {
+        "host-dir" => {
+            let mode = v.get("mode").and_then(|x| x.as_str()).unwrap_or("ro");
+            match mode {
+                "ro" => HostMountKind::Dir { rw: false },
+                "rw" => {
+                    warnings.push(format!(
+                        "{ctx}: rw grant on a dir roster does not back up — no gate, no \
+                         snapshots; a bad run's writes there are unrecoverable by roster"
+                    ));
+                    HostMountKind::Dir { rw: true }
+                }
+                other => {
+                    errors.push(format!("{ctx}: mode must be \"ro\" or \"rw\", not \"{other}\""));
+                    HostMountKind::Dir { rw: false }
+                }
+            }
+        }
+        "host-repo" => {
+            let write = v.get("write").and_then(|x| x.as_str()).unwrap_or("ro");
+            let gated = match write {
+                "ro" => false,
+                "gated" => true,
+                other => {
+                    errors.push(format!(
+                        "{ctx}: write must be \"ro\" or \"gated\", not \"{other}\""
+                    ));
+                    false
+                }
+            };
+            // Bare repo (HEAD at the root) or a checkout (.git inside).
+            if path.is_dir() && !path.join("HEAD").is_file() && !path.join(".git").exists() {
+                errors.push(format!(
+                    "{ctx}: path {} is not a git repository",
+                    path.display()
+                ));
+            }
+            // A gated repo's main is advanced by update-ref; on a checkout
+            // that desyncs the worktree the operator is looking at. Bare only.
+            if gated && path.is_dir() && !path.join("HEAD").is_file() {
+                errors.push(format!(
+                    "{ctx}: write = \"gated\" needs a bare repository (got a checkout — \
+                     make one: git clone --bare)"
+                ));
+            }
+            let branch = v
+                .get("branch")
+                .and_then(|x| x.as_str())
+                .unwrap_or("main")
+                .to_string();
+            HostMountKind::Repo { gated, branch }
+        }
+        _ => unreachable!("caller routes only host kinds here"),
+    };
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok((
+        HostMount {
+            name: name.to_string(),
+            kind: mount_kind,
+            path,
+            workers,
+        },
+        warnings,
+    ))
 }
 
 /// The env vars provisioning owns — an `[[expose]]` may not overwrite the
@@ -837,29 +1153,6 @@ fn context_policy(
     serde_json::from_value(merged).map_err(|e| format!("context policy is invalid: {e}").into())
 }
 
-fn memory_policy(
-    value: Option<&toml::Value>,
-    base: Option<&MemoryPolicy>,
-) -> Result<MemoryPolicy, BErr> {
-    let mut merged = serde_json::to_value(base.cloned().unwrap_or_default())?;
-    if let Some(value) = value {
-        merge_json(&mut merged, to_json(value));
-    }
-    let policy: MemoryPolicy =
-        serde_json::from_value(merged).map_err(|e| format!("memory policy is invalid: {e}"))?;
-    if let Some(kind) = policy
-        .allowed_kinds
-        .iter()
-        .find(|kind| !crate::worker::memory::SUPPORTED_MEMORY_KINDS.contains(&kind.as_str()))
-    {
-        return Err(format!(
-            "memory policy kind \"{kind}\" is not interaction memory; supported kinds are {}",
-            crate::worker::memory::SUPPORTED_MEMORY_KINDS.join(", ")
-        )
-        .into());
-    }
-    Ok(policy)
-}
 
 fn storage_policy(
     value: &toml::Value,
@@ -868,6 +1161,7 @@ fn storage_policy(
     let mut merged = serde_json::to_value(base.cloned().unwrap_or_default())?;
     let overlay = json!({
         "knowledge": value.get("knowledge").map(to_json).unwrap_or(json!({})),
+        "store": value.get("store").map(to_json).unwrap_or(json!({})),
     });
     merge_json(&mut merged, overlay);
     let policy: StoragePolicy = serde_json::from_value(merged)
@@ -961,7 +1255,7 @@ mod tests {
         );
         let workers = vec!["yuko".to_string(), "kdemo".to_string()];
         let (c, rules, exposes, warning) =
-            compile_connection("github", &v, &workers, |_| true, |_| true, |_| None).unwrap();
+            compile_connection("github", &v, &workers, |_| true, |_| true, |_| None, |_| Vec::new()).unwrap();
         assert!(c.enabled);
         assert_eq!(c.methods, vec!["*"]); // the default: full access
         assert_eq!(rules.len(), 2);
@@ -989,7 +1283,7 @@ mod tests {
         "#,
         );
         let (_, rules, _, _) =
-            compile_connection("acme", &v, &[], |_| false, |_| true, |_| None).unwrap();
+            compile_connection("acme", &v, &[], |_| false, |_| true, |_| None, |_| Vec::new()).unwrap();
         assert_eq!(rules[0]["inject"]["provider"], "acme");
         assert_eq!(rules[0]["inject"]["headers"][0]["value"], "Bearer {key}");
     }
@@ -1011,6 +1305,7 @@ mod tests {
             |_| true,
             |_| true,
             |p| (p == "anthropic").then(|| vec!["api.anthropic.com".to_string()]),
+            |_| Vec::new(),
         )
         .unwrap();
         assert!(c.enabled);
@@ -1024,6 +1319,171 @@ mod tests {
     }
 
     #[test]
+    fn restricted_discord_connection_compiles_scoped_rules() {
+        let v = toml(
+            r#"
+            provider = "discord"
+            workers = ["yuko"]
+            hosts = ["discord.com"]
+            env = "DISCORD_TOKEN"
+            [restrict]
+            channels = ["111", "222"]
+        "#,
+        );
+        let dims = |p: &str| {
+            if p == "discord" {
+                vec!["servers".to_string(), "channels".to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        let (c, rules, _, _) = compile_connection(
+            "discord",
+            &v,
+            &["yuko".to_string()],
+            |_| true,
+            |_| true,
+            |_| None,
+            dims,
+        )
+        .unwrap();
+        assert!(c.allows_surface(None, "111"));
+        assert!(!c.allows_surface(None, "333"));
+        // allow 111, allow 222, deny unscoped channels, deny guilds, broad allow
+        assert_eq!(rules.len(), 5);
+        assert_eq!(
+            rules[0]["match"]["pathPrefix"],
+            "/api/v10/channels/111"
+        );
+        assert_eq!(rules[2]["verdict"], "deny");
+        assert_eq!(rules[4]["name"], "connection:discord");
+        assert!(rules[4]["match"]["pathPrefix"].is_null());
+
+        // A server restriction admits the whole guild: no channels deny.
+        let v = toml(
+            r#"
+            provider = "discord"
+            workers = ["yuko"]
+            hosts = ["discord.com"]
+            env = "DISCORD_TOKEN"
+            [restrict]
+            servers = ["999"]
+        "#,
+        );
+        let (c, rules, _, _) = compile_connection(
+            "discord",
+            &v,
+            &["yuko".to_string()],
+            |_| true,
+            |_| true,
+            |_| None,
+            dims,
+        )
+        .unwrap();
+        assert!(c.allows_surface(Some("999"), "any-channel"));
+        assert!(!c.allows_surface(Some("998"), "any-channel"));
+        assert!(rules
+            .iter()
+            .all(|r| r["name"] != "connection:discord:deny-unscoped-channels"));
+    }
+
+    #[test]
+    fn restrict_on_undeclared_dimension_is_an_error() {
+        let v = toml(
+            r#"
+            provider = "github"
+            scope = "org"
+            hosts = ["api.github.com"]
+            env = "GH_TOKEN"
+            [restrict]
+            channels = ["111"]
+        "#,
+        );
+        let errors = compile_connection(
+            "github",
+            &v,
+            &[],
+            |_| true,
+            |_| true,
+            |_| None,
+            |_| Vec::new(),
+        )
+        .unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("no scope dimension")));
+    }
+
+    #[test]
+    fn host_dir_mount_parses_and_rw_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = toml(&format!(
+            r#"
+            kind = "host-dir"
+            path = "{}"
+            mode = "rw"
+            workers = ["yuko"]
+        "#,
+            dir.path().display()
+        ));
+        let (m, warns) =
+            compile_host_mount("notes", "host-dir", &v, &["yuko".to_string()]).unwrap();
+        assert_eq!(m.kind, HostMountKind::Dir { rw: true });
+        assert!(m.applies_to("yuko") && !m.applies_to("kdemo"));
+        assert!(warns[0].contains("does not back up"));
+
+        // ro is the default and warns about nothing
+        let v = toml(&format!(
+            r#"
+            kind = "host-dir"
+            path = "{}"
+            scope = "org"
+        "#,
+            dir.path().display()
+        ));
+        let (m, warns) = compile_host_mount("notes", "host-dir", &v, &[]).unwrap();
+        assert_eq!(m.kind, HostMountKind::Dir { rw: false });
+        assert!(warns.is_empty());
+    }
+
+    #[test]
+    fn host_repo_mount_requires_a_git_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = toml(&format!(
+            r#"
+            kind = "host-repo"
+            path = "{}"
+            write = "gated"
+            scope = "org"
+        "#,
+            dir.path().display()
+        ));
+        let errors = compile_host_mount("proj", "host-repo", &v, &[]).unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("not a git repository")));
+
+        std::fs::write(dir.path().join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let (m, _) = compile_host_mount("proj", "host-repo", &v, &[]).unwrap();
+        assert_eq!(
+            m.kind,
+            HostMountKind::Repo { gated: true, branch: "main".into() }
+        );
+    }
+
+    #[test]
+    fn host_mount_names_must_be_path_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = toml(&format!(
+            r#"
+            kind = "host-dir"
+            path = "{}"
+            scope = "org"
+        "#,
+            dir.path().display()
+        ));
+        let errors = compile_host_mount("Bad Name", "host-dir", &v, &[]).unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("path-safe")
+            || e.contains("lowercase")));
+    }
+
+    #[test]
     fn connection_without_secret_is_disabled_not_broken() {
         let v = toml(
             r#"
@@ -1034,7 +1494,7 @@ mod tests {
         "#,
         );
         let (c, rules, exposes, warning) =
-            compile_connection("github", &v, &[], |_| true, |_| false, |_| None).unwrap();
+            compile_connection("github", &v, &[], |_| true, |_| false, |_| None, |_| Vec::new()).unwrap();
         assert!(!c.enabled);
         assert!(rules.is_empty() && exposes.is_empty());
         assert!(warning.unwrap().contains("disabled"));
@@ -1056,6 +1516,7 @@ mod tests {
             |p| p == "github",
             |_| true,
             |_| None,
+            |_| Vec::new(),
         )
         .unwrap_err();
         assert!(errors.iter().any(|e| e.contains("unknown provider")));

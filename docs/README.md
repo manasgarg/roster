@@ -31,10 +31,12 @@ governance.*
 
 ## What a worker knows
 
-- **[Interaction memory](memory.md)** — scoped, consent-governed memory of
-  people and conversations.
-- **[Knowledge](knowledge.md)** — the git-backed world-knowledge store, and
-  the boundary that keeps person-data out of it.
+- **[Memory](memory.md)** — worker-owned memory of people and
+  conversations, kept in the store.
+- **[The store](store.md)** — each worker's durable read-write directory:
+  worker-managed layout, snapshots, restore, and the locking discipline.
+- **[Repos](repos.md)** — gated host git repositories (the knowledge repo
+  among them), and the boundary that keeps person-data out of them.
 - **[Compiled context](context.md)** — exactly what each run sees, traced
   byte-for-byte.
 

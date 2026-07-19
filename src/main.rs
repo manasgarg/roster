@@ -4,7 +4,7 @@
 //!
 //!   roster server …       the owned machinery: daemon, config, desk, channels, run log
 //!   roster connection …   the org's relationships with external services
-//!   roster worker …       the governed identities: lifecycle, trust, memory, work, sessions
+//!   roster worker …       the governed identities: lifecycle, trust, work, sessions
 
 mod action;
 mod channel;
@@ -39,6 +39,8 @@ struct Cli {
 enum Cmd {
     /// Initialize the deployment: config, data, and state roots (XDG)
     Init,
+    /// One-time upgrade to the store/connections worker environment
+    Migrate,
     /// The owned machinery: daemon, config, approval desk, channels, run log (bare: status)
     #[command(
         after_help = "glossary: a box is the sandboxed container one session runs in; a gate is a \
@@ -58,12 +60,12 @@ enum Cmd {
     },
     #[command(subcommand, hide = true)]
     Credential(CredentialCmd),
-    /// The governed identities: lifecycle, trust, memory, knowledge, work (bare: ls)
+    /// The governed identities: lifecycle, trust, work (bare: ls)
     #[command(
         after_help = "glossary: standing marks whose work a task is (owner: always runs; proactive: \
                       paced by budgets); a box is the sandboxed container one session runs in; a \
-                      gate is a proposed action awaiting your approval; knowledge is the worker's \
-                      git-backed notes repo; memory is what it recalls about people and channels"
+                      gate is a proposed action awaiting your approval; the store is the worker's \
+                      durable directory; a gated repo lands changes through a validated push"
     )]
     Worker {
         #[command(subcommand)]
@@ -119,7 +121,7 @@ enum ServerCmd {
         #[command(subcommand)]
         cmd: Option<ApprovalsCmd>,
     },
-    /// Channel edges: trust designation, response mode, memory settings (bare: ls)
+    /// Channel edges: trust designation, response mode (bare: ls)
     Channel {
         #[command(subcommand)]
         cmd: Option<ChannelCmd>,
@@ -276,7 +278,7 @@ enum WorkerCmd {
         #[arg(long)]
         json: bool,
     },
-    /// One worker: spec, budgets and spend, queue, gates, memory, knowledge
+    /// One worker: spec, budgets and spend, queue, gates, store
     Show {
         /// The worker's name
         name: String,
@@ -303,7 +305,7 @@ enum WorkerCmd {
         #[arg(required = true, value_name = "PROMPT")]
         prompt: Vec<String>,
     },
-    /// Retire a worker: archive its spec, memory, knowledge, and history (never deletes)
+    /// Retire a worker: archive its spec, store, and history (never deletes)
     Rm {
         /// The worker to retire
         name: String,
@@ -324,13 +326,21 @@ enum WorkerCmd {
         #[command(subcommand)]
         cmd: Option<TaskCmd>,
     },
-    /// Inspect and repair interaction memory
-    #[command(subcommand)]
-    Memory(MemoryCmd),
     /// Print the knowledge repo path (then use git)
     Knowledge {
         /// The worker's name
         name: String,
+    },
+    /// Restore the worker's store from a snapshot (default: the newest)
+    Restore {
+        /// The worker's name
+        name: String,
+        /// Snapshot name (see --list); omit for the newest
+        #[arg(long)]
+        from: Option<String>,
+        /// List available snapshots and exit
+        #[arg(long)]
+        list: bool,
     },
 }
 
@@ -346,12 +356,6 @@ enum TaskCmd {
         /// File as proactive: waits out spent budget windows (owner-filed work always runs)
         #[arg(long)]
         proactive: bool,
-        /// Code task in a worktree of this git repo
-        #[arg(long)]
-        repo: Option<String>,
-        /// Base ref for --repo
-        #[arg(long, default_value = "main")]
-        base: String,
         /// The prompt (bare words are joined)
         #[arg(required = true, value_name = "PROMPT")]
         prompt: Vec<String>,
@@ -386,78 +390,6 @@ enum TaskCmd {
 }
 
 #[derive(Subcommand)]
-enum MemoryCmd {
-    /// List memory notes
-    Ls {
-        /// The worker whose memory to list
-        worker: String,
-        /// Filter: worker | channel | user
-        #[arg(long)]
-        scope: Option<String>,
-        /// Filter: the scope's id (a channel id, a user id)
-        #[arg(long)]
-        scope_id: Option<String>,
-    },
-    /// Print one note in full
-    Show {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-    },
-    /// Replace a note's content (recorded, not a silent edit)
-    Correct {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-        /// The replacement content (bare words are joined)
-        #[arg(required = true, value_name = "REPLACEMENT")]
-        replacement: Vec<String>,
-    },
-    /// Remove a note
-    Rm {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-    },
-    /// Include a note in every recall, until unpinned
-    Pin {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-    },
-    /// Stop force-including a pinned note
-    Unpin {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-    },
-    /// Keep a note but stop recalling it
-    Disable {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-    },
-    /// Recall a disabled note again
-    Enable {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-    },
-    /// Drop dead notes, keep live ones
-    Compact {
-        /// The worker whose memory to compact
-        worker: String,
-    },
-}
-
-#[derive(Subcommand)]
 enum RunsCmd {
     /// List past sessions, whoever they were attributed to
     Ls {
@@ -483,11 +415,6 @@ enum RunsCmd {
         /// Every turn, not just the last
         #[arg(long)]
         all: bool,
-    },
-    /// The memory recall trace
-    Recall {
-        /// Run id (any unique prefix)
-        run: String,
     },
 }
 
@@ -523,6 +450,7 @@ async fn main() {
     }
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
         Cmd::Init => cli::init::run(),
+        Cmd::Migrate => cli::worker::migrate(),
         Cmd::Server { cmd } => match cmd {
             None => cli::server::status(false).await,
             Some(ServerCmd::Start {
@@ -570,7 +498,6 @@ async fn main() {
                 }) => cli::runs::ls(worker.as_deref(), limit, json),
                 Some(RunsCmd::Show { run }) => cli::runs::show(&run),
                 Some(RunsCmd::Context { run, all }) => cli::runs::context(&run, all),
-                Some(RunsCmd::Recall { run }) => cli::runs::recall(&run),
             },
         },
         Cmd::Connection { cmd } => match cmd {
@@ -663,10 +590,8 @@ async fn main() {
                     worker,
                     ceiling,
                     proactive,
-                    repo,
-                    base,
                     prompt,
-                }) => cli::task::add(&worker, ceiling, proactive, repo, &base, prompt.join(" ")),
+                }) => cli::task::add(&worker, ceiling, proactive, prompt.join(" ")),
                 Some(TaskCmd::Relay {
                     worker,
                     from,
@@ -676,26 +601,10 @@ async fn main() {
                 Some(TaskCmd::Show { id }) => cli::task::show(&id),
                 Some(TaskCmd::Requeue { id }) => cli::task::requeue(&id),
             },
-            Some(WorkerCmd::Memory(cmd)) => match cmd {
-                MemoryCmd::Ls {
-                    worker,
-                    scope,
-                    scope_id,
-                } => cli::memory::ls(&worker, scope.as_deref(), scope_id.as_deref()),
-                MemoryCmd::Show { worker, id } => cli::memory::show(&worker, &id),
-                MemoryCmd::Correct {
-                    worker,
-                    id,
-                    replacement,
-                } => cli::memory::correct(&worker, &id, &replacement.join(" ")),
-                MemoryCmd::Rm { worker, id } => cli::memory::mutate("forget", &worker, &id),
-                MemoryCmd::Pin { worker, id } => cli::memory::mutate("pin", &worker, &id),
-                MemoryCmd::Unpin { worker, id } => cli::memory::mutate("unpin", &worker, &id),
-                MemoryCmd::Disable { worker, id } => cli::memory::mutate("disable", &worker, &id),
-                MemoryCmd::Enable { worker, id } => cli::memory::mutate("enable", &worker, &id),
-                MemoryCmd::Compact { worker } => cli::memory::compact(&worker),
-            },
             Some(WorkerCmd::Knowledge { name }) => cli::knowledge::run(&name),
+            Some(WorkerCmd::Restore { name, from, list }) => {
+                cli::worker::restore(&name, from.as_deref(), list)
+            }
         },
     };
 
@@ -732,7 +641,7 @@ async fn talk_bare(idle: u64) -> Result<(), Box<dyn std::error::Error>> {
 /// Where each pre-clap command lives now. Kept until the muscle memory fades.
 fn legacy_pointer(first: &str) -> Option<&'static str> {
     Some(match first {
-        "imp" => "roster worker <init|ls|show|trust|run|chat|task|memory|knowledge>  (imps are now workers)",
+        "imp" => "roster worker <init|ls|show|trust|run|chat|task|knowledge>  (imps are now workers)",
         "serve" => "roster server start",
         "supervise" => "roster server start  (the daemons merged; --cap and --once moved there)",
         "listen" => "roster server start  (listeners start for every worker with a [channels] entry)",
@@ -743,7 +652,6 @@ fn legacy_pointer(first: &str) -> Option<&'static str> {
         "create" => "roster worker init <name>",
         "queue" => "roster worker task <add|relay|ls|show|requeue>",
         "relay" => "roster worker task relay <worker> \"<message>\"",
-        "memory" | "notes" => "roster worker memory <ls|show|correct|rm|…> <worker>",
         "knowledge" => "roster worker knowledge <name>",
         "box" => "roster worker run <name> \"<prompt>\"",
         "session" => "roster worker chat <name>",

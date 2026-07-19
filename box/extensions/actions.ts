@@ -78,184 +78,6 @@ export default function rosterActionTools(api: PiToolApi): void {
   });
 
   api.registerTool({
-    name: "propose_changes",
-    label: "propose_changes",
-    description:
-      "Propose the code changes you've made in this working copy as a pull request. Make and save all your " +
-      "file edits FIRST, then call this once. It does NOT commit or push directly — it submits the change for " +
-      "your lead's review; on approval the trusted side commits your working tree, pushes the branch, and opens the PR.",
-    promptSnippet: "propose_changes(title, body, message): open a PR from your edits (requires approval)",
-    parameters: {
-      type: "object",
-      properties: {
-        title: { type: "string", description: "PR title." },
-        body: { type: "string", description: "PR description: what changed and why." },
-        message: { type: "string", description: "Commit message." },
-      },
-      required: ["title", "body", "message"],
-      additionalProperties: false,
-    },
-    async execute(_id, params) {
-      const { title, body, message } = params as { title: string; body: string; message: string };
-      const s = await submit("code-change", { title, body, message }, body);
-      return { content: [{ type: "text", text: describe(s) }] };
-    },
-  });
-
-  api.registerTool({
-    name: "remember",
-    label: "remember",
-    description:
-      "Store a short, durable observation for future runs. Use user scope for a stable preference about the " +
-      "current speaker, channel scope for shared workstream context, and worker scope only for broadly reusable " +
-      "interaction conventions. Research about the world belongs in the knowledge repository. Memory is advisory " +
-      "and must not contain secrets or instructions that override governance.",
-    promptSnippet: "remember(note, scope, kind, basis): store a scoped observation",
-    parameters: {
-      type: "object",
-      properties: {
-        note: { type: "string", description: "One concise user preference, conversational fact, decision, or interaction note. Research about the world belongs in the knowledge repository." },
-        scope: { type: "string", enum: ["worker", "channel", "user"], description: "Where this observation applies." },
-        kind: { type: "string", enum: ["preference", "fact", "decision", "interaction"] },
-        basis: { type: "string", enum: ["explicit", "inferred"], description: "Whether a person stated this or you inferred it." },
-        artifact: { type: "string", description: "Optional pointer to the interaction that established this memory." },
-        expires_at: { type: "string", description: "Optional RFC 3339 expiry time." },
-      },
-      required: ["note", "scope", "kind", "basis"],
-      additionalProperties: false,
-    },
-    async execute(_id, params) {
-      const s = await submit("remember", params, "");
-      return { content: [{ type: "text", text: describe(s) }] };
-    },
-  });
-
-  api.registerTool({
-    name: "forget_memory",
-    label: "forget_memory",
-    description: "Forget a memory about the current user or channel. The trusted host checks that the current participant may manage it.",
-    promptSnippet: "forget_memory(note_id): stop recalling a note",
-    parameters: {
-      type: "object",
-      properties: { note_id: { type: "string", description: "The memory id." } },
-      required: ["note_id"],
-      additionalProperties: false,
-    },
-    async execute(_id, params) {
-      const s = await submit("forget", params, "");
-      return { content: [{ type: "text", text: describe(s) }] };
-    },
-  });
-
-  api.registerTool({
-    name: "correct_memory",
-    label: "correct_memory",
-    description: "Correct a memory about the current user or channel while preserving its audit history.",
-    promptSnippet: "correct_memory(note_id, note): replace an inaccurate note",
-    parameters: {
-      type: "object",
-      properties: {
-        note_id: { type: "string", description: "The memory id." },
-        note: { type: "string", description: "The complete corrected observation." },
-      },
-      required: ["note_id", "note"],
-      additionalProperties: false,
-    },
-    async execute(_id, params) {
-      const s = await submit("memory-correct", params, "");
-      return { content: [{ type: "text", text: describe(s) }] };
-    },
-  });
-
-  for (const [name, intent, verb] of [
-    ["disable_memory", "memory-disable", "temporarily stop recalling"],
-    ["enable_memory", "memory-enable", "resume recalling"],
-    ["pin_memory", "memory-pin", "prioritize during recall"],
-    ["unpin_memory", "memory-unpin", "remove recall priority from"],
-  ] as const) {
-    api.registerTool({
-      name,
-      label: name,
-      description: `${verb[0].toUpperCase()}${verb.slice(1)} a memory the current participant may manage.`,
-      promptSnippet: `${name}(note_id): ${verb} a note`,
-      parameters: {
-        type: "object",
-        properties: { note_id: { type: "string", description: "The memory id." } },
-        required: ["note_id"],
-        additionalProperties: false,
-      },
-      async execute(_id, params) {
-        const s = await submit(intent, params, "");
-        return { content: [{ type: "text", text: describe(s) }] };
-      },
-    });
-  }
-
-  api.registerTool({
-    name: "read_memory",
-    label: "read_memory",
-    description: "List memories the current participant may inspect: their own memories and this channel's shared memories.",
-    promptSnippet: "read_memory(): inspect current user/channel memory",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
-    async execute() {
-      try {
-        const res = await fetch("https://actions.roster.internal/memory", { signal: AbortSignal.timeout(15_000) });
-        const { memories, user_settings } = (await res.json()) as { memories: unknown[]; user_settings?: unknown };
-        const notes = !memories?.length ? "No visible memories." : memories.map((m) => JSON.stringify(m)).join("\n");
-        const text = `${notes}\nUser memory settings: ${JSON.stringify(user_settings ?? {})}`;
-        return { content: [{ type: "text", text }] };
-      } catch (e) {
-        return { content: [{ type: "text", text: `Could not read memory: ${e instanceof Error ? e.message : String(e)}` }] };
-      }
-    },
-  });
-
-  api.registerTool({
-    name: "set_memory_preferences",
-    label: "set_memory_preferences",
-    description:
-      "Set the current user's memory privacy choices. Use this only when the user asks to allow or block inferred " +
-      "personal memory or cross-channel recall. Admin policy may still impose stricter limits.",
-    promptSnippet: "set_memory_preferences(allow_inferred, cross_channel_recall): update the current user's memory choices",
-    parameters: {
-      type: "object",
-      properties: {
-        allow_inferred: { type: "boolean", description: "Whether the worker may save inferred memories about this user." },
-        cross_channel_recall: { type: "boolean", description: "Whether this user's memories may be recalled across channels when admin policy allows." },
-      },
-      additionalProperties: false,
-    },
-    async execute(_id, params) {
-      const s = await submit("memory-preferences", params, "");
-      return { content: [{ type: "text", text: describe(s) }] };
-    },
-  });
-
-  api.registerTool({
-    name: "propose_purpose_edit",
-    label: "propose_purpose_edit",
-    description:
-      "Propose a change to a channel's purpose (your role/goals in that channel). This does NOT change it — it " +
-      "submits the proposed purpose for approval. Provide the channel id, the COMPLETE new purpose text, and a rationale.",
-    promptSnippet: "propose_purpose_edit(channel_id, purpose, rationale): suggest a channel's purpose (approved)",
-    parameters: {
-      type: "object",
-      properties: {
-        channel_id: { type: "string", description: "The Discord channel id this purpose is for." },
-        purpose: { type: "string", description: "The complete proposed purpose, in full." },
-        rationale: { type: "string", description: "Why you're proposing this — shown to the reviewer." },
-      },
-      required: ["channel_id", "purpose", "rationale"],
-      additionalProperties: false,
-    },
-    async execute(_id, params) {
-      const { channel_id, purpose, rationale } = params as { channel_id: string; purpose: string; rationale: string };
-      const s = await submit("purpose-edit", { channel_id, purpose }, rationale);
-      return { content: [{ type: "text", text: describe(s) }] };
-    },
-  });
-
-  api.registerTool({
     name: "discord_send",
     label: "discord_send",
     description:
@@ -357,7 +179,7 @@ export default function rosterActionTools(api: PiToolApi): void {
     label: "set_tasks",
     description:
       "Replace your task partition — pending tasks and recurring templates — with a reshaped version. Read the current document " +
-      "from $ROSTER_TASKS_FILE (/opt/roster/tasks.json) first and send its \"version\" back as base_version. Rules the host enforces: " +
+      "from $ROSTER_TASKS_FILE ($HOME/self/schedule.json) first and send its \"version\" back as base_version. Rules the host enforces: " +
       "claimed/needs-review tasks must be echoed unchanged; system recurring entries (your heartbeat) are host-owned; task states are " +
       "host-attested (new entries are pending); dependencies must stay acyclic. On a version conflict the call fails with the current " +
       "version — re-read the file and retry.",
@@ -375,6 +197,32 @@ export default function rosterActionTools(api: PiToolApi): void {
     async execute(_id, params) {
       const { base_version, tasks, recurring } = params as { base_version: number; tasks: unknown[]; recurring?: unknown[] };
       const s = await submit("set-tasks", { base_version, tasks, recurring: recurring ?? [] }, "");
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
+    name: "file_update",
+    label: "file_update",
+    description:
+      "Edit one of your own editable files (currently: config/worker.toml). Read the current file under $HOME/self/ first, " +
+      "compute its sha256, and send it as base_hash with the FULL new content — a stale hash means someone changed the file " +
+      "since you read it (re-read and retry). The host validates the whole config after the write and reverts an edit that " +
+      "breaks it. identity.md goes through the identity action (gated); the schedule goes through set_tasks.",
+    promptSnippet: "file_update(path, base_hash, content): check-and-set edit of an editable self/ file",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "The file as listed under $HOME/self/, e.g. \"config/worker.toml\"." },
+        base_hash: { type: "string", description: "sha256 (hex) of the exact bytes you read from $HOME/self/<path>." },
+        content: { type: "string", description: "The complete replacement file content." },
+      },
+      required: ["path", "base_hash", "content"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const { path, base_hash, content } = params as { path: string; base_hash: string; content: string };
+      const s = await submit("file-update", { path, base_hash, content }, "");
       return { content: [{ type: "text", text: describe(s) }] };
     },
   });
@@ -457,32 +305,46 @@ export default function rosterActionTools(api: PiToolApi): void {
     });
   }
 
-  // knowledge_push — land the committed knowledge branch on the shared main.
-  // Only registered when this run holds a writable knowledge clone.
-  if (process.env.ROSTER_KNOWLEDGE_MODE === "write" && process.env.ROSTER_KNOWLEDGE_DIR) {
-    const KNOWLEDGE_DIR = process.env.ROSTER_KNOWLEDGE_DIR;
-    const git = async (...args: string[]): Promise<{ ok: boolean; out: string }> => {
+  // repo_push — land a committed branch on a gated repo's shared main.
+  // Registered when this run holds at least one writable repo checkout
+  // (ROSTER_REPOS_JSON lists every checkout: connection, dir, mode).
+  type RepoEntry = { connection: string; dir: string; base: string; branch: string; mode: string };
+  const repos: RepoEntry[] = (() => {
+    try {
+      return JSON.parse(process.env.ROSTER_REPOS_JSON ?? "[]") as RepoEntry[];
+    } catch {
+      return [];
+    }
+  })();
+  const writableRepos = repos.filter((r) => r.mode === "write");
+  if (writableRepos.length > 0) {
+    const gitIn = async (dir: string, ...args: string[]): Promise<{ ok: boolean; out: string }> => {
       const { execFile } = await import("node:child_process");
       return new Promise((resolve) => {
-        execFile("git", ["-C", KNOWLEDGE_DIR, ...args], { timeout: 60_000 }, (error, stdout, stderr) => {
+        execFile("git", ["-C", dir, ...args], { timeout: 60_000 }, (error, stdout, stderr) => {
           resolve({ ok: !error, out: (error ? `${stdout}\n${stderr}` : stdout).trim() });
         });
       });
     };
+    const names = writableRepos.map((r) => r.connection).join(", ");
     api.registerTool({
-      name: "knowledge_push",
-      label: "knowledge_push",
+      name: "repo_push",
+      label: "repo_push",
       description:
-        "Land your committed knowledge changes on the shared main branch. Commit your work in " +
-        `${KNOWLEDGE_DIR} first (git add/commit); this bundles your branch and submits it — the host ` +
+        `Land your committed changes in a gated repo (${names}) on its shared main branch. Commit your work in the ` +
+        "repo's checkout under $HOME/mnt/ first (git add/commit); this bundles your branch and submits it — the host " +
         "validates the push and fast-forwards main. If it answers \"stale: main moved\", run " +
-        "`git fetch origin && git rebase origin/main`, resolve any conflicts, and call this again. " +
+        "`git fetch origin && git rebase origin/main` in that checkout, resolve any conflicts, and call this again. " +
         "A push that deletes many files is refused with instructions to re-propose with " +
         "confirm_bulk_delete — that path waits for your lead's approval.",
-      promptSnippet: "knowledge_push([rationale]): land committed knowledge on main (rebase + retry if stale)",
+      promptSnippet: `repo_push([connection, rationale]): land a committed branch on a gated repo's main (${names})`,
       parameters: {
         type: "object",
         properties: {
+          connection: {
+            type: "string",
+            description: `Which gated repo to push (${names}). Optional when only one is writable.`,
+          },
           rationale: { type: "string", description: "One line on what this push adds or changes." },
           confirm_bulk_delete: {
             type: "string",
@@ -494,9 +356,14 @@ export default function rosterActionTools(api: PiToolApi): void {
       },
       async execute(_id, params) {
         const say = (text: string) => ({ content: [{ type: "text" as const, text }] });
+        const chosen = (params.connection as string | undefined) ?? (writableRepos.length === 1 ? writableRepos[0].connection : undefined);
+        if (!chosen) return say(`Several repos are writable — pass connection: one of ${names}.`);
+        const repo = writableRepos.find((r) => r.connection === chosen);
+        if (!repo) return say(`No writable repo "${chosen}" — writable here: ${names}.`);
+        const git = (...args: string[]) => gitIn(repo.dir, ...args);
         const dirty = await git("status", "--porcelain");
-        if (!dirty.ok) return say(`Could not inspect the knowledge clone: ${dirty.out}`);
-        if (dirty.out !== "") return say("Uncommitted changes in the knowledge clone — git add and commit them first, then push.");
+        if (!dirty.ok) return say(`Could not inspect the ${chosen} checkout: ${dirty.out}`);
+        if (dirty.out !== "") return say(`Uncommitted changes in the ${chosen} checkout — git add and commit them first, then push.`);
         const head = await git("rev-parse", "HEAD");
         if (!head.ok) return say(`Could not resolve HEAD: ${head.out}`);
         const range = await git("rev-list", "--count", "origin/main..HEAD");
@@ -504,8 +371,9 @@ export default function rosterActionTools(api: PiToolApi): void {
         const bundle = await git("bundle", "create", ".git/roster-push.bundle", "origin/main..HEAD");
         if (!bundle.ok) return say(`Could not bundle the branch: ${bundle.out}`);
         const s = await submit(
-          "knowledge-push",
+          "repo-push",
           {
+            connection: chosen,
             head: head.out,
             ...(params.confirm_bulk_delete === "yes" ? { confirm_bulk_delete: "yes" } : {}),
           },

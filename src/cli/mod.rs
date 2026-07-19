@@ -9,7 +9,6 @@ pub mod connections;
 pub mod create;
 pub mod init;
 pub mod knowledge;
-pub mod memory;
 pub mod runs;
 pub mod server;
 pub mod task;

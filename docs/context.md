@@ -37,7 +37,7 @@ appear before the stable boundaries, and dynamic content is JSON-escaped so
 a message containing a fake block delimiter can't forge structure.
 
 Scope comes only from host-owned run metadata. A task saying "use channel
-999" selects nothing: purpose files and memory namespaces are chosen by the
+999" selects nothing: purpose files are chosen by the
 trusted channel id on the run, never by text.
 
 ## Budgets
@@ -45,7 +45,7 @@ trusted channel id on the run, never by text.
 Block sizes are bounded, in characters, from `org.toml [context]` (per-worker
 overlays allowed — defaults: 48k total injected, 12k identity, 8k purpose,
 4k briefing, 24k task). Under pressure the compiler shrinks the advisory
-tail — memory drops ranked-last notes, the briefing keeps the continuation
+tail — the briefing keeps the continuation
 and counts what it omitted. Mandatory blocks (identity, purpose, policy,
 scope, task) are **never silently truncated**: oversized means a failed
 compilation, and a failed compilation means no model input — there is no
@@ -62,13 +62,12 @@ compilations are traced too.
 roster server runs show <run>       # block summary: what got in, what didn't
 roster server runs context <run>    # the exact compiled prompts
 roster server runs context <run> --all   # every turn of a session
-roster server runs recall <run>     # the memory selection trace
 ```
 
 ## Warm sessions
 
 A session compiles its system prompt once at start; each turn compiles
-fresh input (current memory, current briefing, the new message) while prior
+fresh input (the current briefing, the new message) while prior
 conversation bytes are never regenerated or reordered. Memory written in
 turn N is eligible in turn N+1; a newly filed or resolved gate shows up in
 the next turn's briefing; identity and purpose edits take effect at the

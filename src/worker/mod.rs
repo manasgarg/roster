@@ -7,6 +7,7 @@ pub mod journal;
 pub mod knowledge;
 pub mod memory;
 pub mod storage;
+pub mod store;
 
 use crate::util::BErr;
 

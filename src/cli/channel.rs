@@ -41,17 +41,16 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         return Ok(());
     }
     println!(
-        "{:<22}  {:<28}  {:<9}  {:<7}  MEMORY",
-        "CHANNEL", "WHERE", "TRUST", "MODE"
+        "{:<22}  {:<28}  {:<9}  MODE",
+        "CHANNEL", "WHERE", "TRUST"
     );
     for (id, s) in map {
         println!(
-            "{:<22}  {:<28}  {:<9}  {:<7}  {}",
+            "{:<22}  {:<28}  {:<9}  {}",
             id,
             describe(&id),
             if s.trusted { "trusted" } else { "untrusted" },
             s.mode,
-            memory_summary(&s),
         );
     }
     println!("\ndetails: roster server channel show <id>");
@@ -82,37 +81,6 @@ pub fn show(channel_id: &str) -> Result<(), BErr> {
         "mode      {:<10} (all = every message wakes the worker; mention = @mention/DM only)",
         s.mode
     );
-    println!("memory    {}", if s.memory_enabled { "on" } else { "off" });
-    println!(
-        "  inferred   {:<10} (auto = inferred notes apply; review = they gate)",
-        if s.memory_inferred_auto {
-            "auto"
-        } else {
-            "review"
-        }
-    );
-    println!(
-        "  kinds      {}",
-        s.memory_allowed_kinds
-            .as_ref()
-            .map(|v| v.join(","))
-            .unwrap_or_else(|| "default".into())
-    );
-    println!(
-        "  retention  {}",
-        s.memory_retention_days
-            .map(|n| format!("{n} days"))
-            .unwrap_or_else(|| "default".into())
-    );
-    println!(
-        "  recall     {} notes / {} chars",
-        s.memory_recall_max_notes
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "default".into()),
-        s.memory_recall_char_budget
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "default".into())
-    );
     Ok(())
 }
 
@@ -137,55 +105,9 @@ pub fn set_trust(channel_id: &str, trusted: bool) -> Result<(), BErr> {
 /// service.
 pub fn set_help(channel_id: &str) -> Result<(), BErr> {
     let s = current_settings(channel_id);
-    let current_kinds = s
-        .memory_allowed_kinds
-        .as_ref()
-        .map(|v| v.join(","))
-        .unwrap_or_else(|| "default".into());
-    let current_retention = s
-        .memory_retention_days
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "default".into());
-    let current_notes = s
-        .memory_recall_max_notes
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "default".into());
-    let current_chars = s
-        .memory_recall_char_budget
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "default".into());
     println!("channel {channel_id}  ({})\n", describe(channel_id));
     println!("{:<18}  {:<34}  CURRENT", "KEY", "VALUES");
-    let rows = [
-        ("mode", "all | mention", s.mode.clone()),
-        (
-            "memory",
-            "on | off",
-            if s.memory_enabled { "on" } else { "off" }.to_string(),
-        ),
-        (
-            "memory-inferred",
-            "auto | review",
-            if s.memory_inferred_auto {
-                "auto"
-            } else {
-                "review"
-            }
-            .to_string(),
-        ),
-        ("memory-kinds", "default | kind,kind,…", current_kinds),
-        ("memory-retention", "default | days", current_retention),
-        (
-            "memory-notes",
-            "default | max notes recalled",
-            current_notes,
-        ),
-        (
-            "memory-chars",
-            "default | max chars recalled",
-            current_chars,
-        ),
-    ];
+    let rows = [("mode", "all | mention", s.mode.clone())];
     for (key, values, current) in rows {
         println!("{key:<18}  {values:<34}  {current}");
     }
@@ -200,50 +122,6 @@ pub fn set(channel_id: &str, key: &str, value: &str) -> Result<(), BErr> {
                 return Err("mode must be \"all\" or \"mention\"".into());
             }
             discord::set_channel_mode(channel_id, value)?;
-        }
-        "memory" => {
-            let enabled = on_off(value)?;
-            discord::set_channel_memory(channel_id, enabled)?;
-        }
-        "memory-inferred" => {
-            let auto = match value {
-                "auto" => true,
-                "review" => false,
-                _ => return Err("memory-inferred must be \"auto\" or \"review\"".into()),
-            };
-            discord::set_channel_memory_inferred_auto(channel_id, auto)?;
-        }
-        "memory-kinds" => {
-            let kinds = parse_memory_kinds(value)?;
-            discord::set_channel_memory_allowed_kinds(channel_id, kinds)?;
-        }
-        "memory-retention" => {
-            let days = match value {
-                "default" => None,
-                v => Some(
-                    v.parse::<u64>()
-                        .ok()
-                        .filter(|n| *n > 0)
-                        .ok_or("retention wants a positive number of days, or default")?,
-                ),
-            };
-            discord::set_channel_memory_retention_days(channel_id, days)?;
-        }
-        // The recall budget is stored as one (notes, chars) pair; setting one
-        // half keeps the other as currently configured.
-        "memory-notes" => {
-            let notes = budget_value(value)?;
-            let current = current_settings(channel_id);
-            discord::set_channel_memory_budget(
-                channel_id,
-                notes,
-                current.memory_recall_char_budget,
-            )?;
-        }
-        "memory-chars" => {
-            let chars = budget_value(value)?;
-            let current = current_settings(channel_id);
-            discord::set_channel_memory_budget(channel_id, current.memory_recall_max_notes, chars)?;
         }
         other => {
             return Err(format!("unknown channel setting \"{other}\" (keys: {SET_KEYS})").into())
@@ -260,86 +138,10 @@ fn current_settings(channel_id: &str) -> ChannelSettings {
         .unwrap_or_default()
 }
 
-fn memory_summary(s: &ChannelSettings) -> String {
-    if !s.memory_enabled {
-        return "off".into();
-    }
-    format!(
-        "on ({}, kinds={}, retention={}, recall={}/{})",
-        if s.memory_inferred_auto {
-            "auto"
-        } else {
-            "review"
-        },
-        s.memory_allowed_kinds
-            .as_ref()
-            .map(|v| v.join(","))
-            .unwrap_or_else(|| "default".into()),
-        s.memory_retention_days
-            .map(|n| format!("{n}d"))
-            .unwrap_or_else(|| "default".into()),
-        s.memory_recall_max_notes
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "default".into()),
-        s.memory_recall_char_budget
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "default".into()),
-    )
-}
 
-fn on_off(value: &str) -> Result<bool, BErr> {
-    match value {
-        "on" => Ok(true),
-        "off" => Ok(false),
-        _ => Err("value must be \"on\" or \"off\"".into()),
-    }
-}
-
-fn budget_value(value: &str) -> Result<Option<usize>, BErr> {
-    match value {
-        "default" => Ok(None),
-        v => v
-            .parse::<usize>()
-            .ok()
-            .filter(|n| *n > 0)
-            .map(Some)
-            .ok_or_else(|| "recall budgets want a positive integer, or default".into()),
-    }
-}
-
-pub fn parse_memory_kinds(value: &str) -> Result<Option<Vec<String>>, BErr> {
-    if value == "default" {
-        return Ok(None);
-    }
-    let allowed = crate::worker::memory::SUPPORTED_MEMORY_KINDS;
-    let kinds: Vec<String> = value
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .collect();
-    if kinds.is_empty() || kinds.iter().any(|kind| !allowed.contains(&kind.as_str())) {
-        return Err(format!(
-            "memory kinds must be a comma-separated subset of {}",
-            allowed.join(",")
-        )
-        .into());
-    }
-    Ok(Some(kinds))
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn memory_kinds_are_validated() {
-        assert!(parse_memory_kinds("default").unwrap().is_none());
-        assert!(parse_memory_kinds("research").is_err());
-        assert_eq!(
-            parse_memory_kinds("fact,interaction").unwrap().unwrap(),
-            vec!["fact", "interaction"]
-        );
-        assert!(parse_memory_kinds("fact,secrets").is_err());
-    }
 }

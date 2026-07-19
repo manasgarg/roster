@@ -103,6 +103,28 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: Option<&str>) ->
         }
     }
 
+    // Daily store-snapshot sweep — the catch-all behind the per-run pass
+    // (finalize_storage), for stores mutated outside runs or by runs that
+    // died before their snapshot. Skipped entirely under --once.
+    let sweep = (!once).then(|| {
+        tokio::spawn(async {
+            loop {
+                tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
+                let Ok(c) = crate::config::snapshot() else { continue };
+                for w in &c.workers {
+                    let keep = crate::worker::storage::load(w).store.snapshots;
+                    match crate::worker::store::snapshot(w, None, keep) {
+                        Ok(Some(o)) => {
+                            eprintln!("store sweep {w}: snapshot ({} changes)", o.changes)
+                        }
+                        Ok(None) => {}
+                        Err(e) => eprintln!("store sweep {w}: {e}"),
+                    }
+                }
+            }
+        })
+    });
+
     // Dispatch runs in the foreground: with --once it drains due work and
     // returns; otherwise it loops until the process is stopped.
     let dispatch = crate::work::dispatch::dispatch_loop(cap, once);
@@ -123,6 +145,9 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: Option<&str>) ->
     }
     for l in listeners {
         l.abort();
+    }
+    if let Some(s) = sweep {
+        s.abort();
     }
     crate::gateway::clear_state();
     result

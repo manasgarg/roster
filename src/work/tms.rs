@@ -72,11 +72,6 @@ pub struct Task {
     pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
-    /// Code task: repo to branch a worktree from + base ref.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repo: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base: Option<String>,
     /// Why a failed task failed — attested with the outcome, journaled with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -387,10 +382,6 @@ fn migrate_legacy_queue(worker: &str) {
         run_id: Option<String>,
         #[serde(default)]
         context: Value,
-        #[serde(default)]
-        repo: Option<String>,
-        #[serde(default)]
-        base: Option<String>,
     }
     let mut p = read_partition(worker);
     let shelf = qdir.with_extension("migrated");
@@ -437,8 +428,6 @@ fn migrate_legacy_queue(worker: &str) {
             run_id: l.run_id,
             created_at: l.created_at,
             updated_at: l.updated_at,
-            repo: l.repo,
-            base: l.base,
             error: None,
         };
         if t.live() {
@@ -465,8 +454,6 @@ pub struct Draft {
     pub context: Value,
     pub scheduled_at: Option<String>,
     pub depends_on: Vec<String>,
-    pub repo: Option<String>,
-    pub base: Option<String>,
     pub recurring_id: Option<String>,
 }
 
@@ -481,8 +468,6 @@ impl Default for Draft {
             context: Value::Null,
             scheduled_at: None,
             depends_on: Vec::new(),
-            repo: None,
-            base: None,
             recurring_id: None,
         }
     }
@@ -541,8 +526,6 @@ pub fn add(worker: &str, draft: Draft) -> Result<Task, BErr> {
         run_id: None,
         created_at: now.clone(),
         updated_at: now,
-        repo: draft.repo,
-        base: draft.base,
         error: None,
     };
     p.tasks.push(t.clone());
@@ -1173,8 +1156,6 @@ fn run_recurrence(worker: &str, p: &mut Partition, now_str: &str, now: i64) -> b
             run_id: None,
             created_at: now_str.to_string(),
             updated_at: now_str.to_string(),
-            repo: None,
-            base: None,
             error: None,
         };
         eprintln!("tms: recurrence {} → task {} for {worker}", r.id, child.id);
@@ -1657,8 +1638,6 @@ mod tests {
             run_id: None,
             created_at: String::new(),
             updated_at: String::new(),
-            repo: None,
-            base: None,
             error: None,
         });
         let next = set_tasks("w4", p.version, tasks, vec![], &ctx("host-op", None)).unwrap();

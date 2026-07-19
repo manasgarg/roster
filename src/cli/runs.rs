@@ -6,7 +6,6 @@ use crate::util::BErr;
 use crate::work::tms;
 use crate::worker::context as context_compiler;
 use crate::worker::journal;
-use crate::worker::memory;
 
 pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
     if limit == 0 {
@@ -93,14 +92,14 @@ pub fn show(id: &str) -> Result<(), BErr> {
         if let Some(error) = &record.error {
             println!("error     {}", runlog::one_line(error, 300));
         }
-        if let Some(knowledge) = &record.knowledge {
-            println!("knowledge {}", knowledge.state);
-            println!("  mode    {}", knowledge.mode);
-            println!("  base    {}", knowledge.base_commit);
-            if let Some(commit) = &knowledge.produced_commit {
+        for (connection, repo) in record.repo_records() {
+            println!("repo      {connection}: {}", repo.state);
+            println!("  mode    {}", repo.mode);
+            println!("  base    {}", repo.base_commit);
+            if let Some(commit) = &repo.produced_commit {
                 println!("  commit  {commit}");
             }
-            if let Some(error) = &knowledge.error {
+            if let Some(error) = &repo.error {
                 println!("  error   {}", runlog::one_line(error, 200));
             }
         }
@@ -161,31 +160,6 @@ pub fn show(id: &str) -> Result<(), BErr> {
         }
     }
 
-    let recalls = memory::recall_trace(&run.id);
-    if !recalls.is_empty() {
-        println!(
-            "\nmemory recall ({} turn{}):",
-            recalls.len(),
-            if recalls.len() == 1 { "" } else { "s" }
-        );
-        for recall in recalls {
-            let selected = recall
-                .get("selected")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
-            println!(
-                "  {}  selected: {}",
-                recall.get("ts").and_then(|v| v.as_str()).unwrap_or(""),
-                if selected.is_empty() { "-" } else { &selected }
-            );
-        }
-    }
 
     let contexts = context_compiler::trace_events(&run.id);
     if !contexts.is_empty() {
@@ -306,19 +280,6 @@ pub fn context(id: &str, all: bool) -> Result<(), BErr> {
     Ok(())
 }
 
-/// The memory recall trace for one session (was: `roster memory explain`).
-pub fn recall(id: &str) -> Result<(), BErr> {
-    let run = runlog::resolve(id).map_err(|e| -> BErr { e.into() })?;
-    let trace = memory::recall_trace(&run.id);
-    if trace.is_empty() {
-        println!("no memory recall trace for run {}", run.id);
-        return Ok(());
-    }
-    for event in trace {
-        println!("{}", serde_json::to_string_pretty(&event)?);
-    }
-    Ok(())
-}
 
 fn short_time(value: &str) -> String {
     if value.len() >= 16 {

@@ -5,8 +5,7 @@
 //! mirrors the grammar table below.
 
 use super::discord::{
-    purpose_path, set_channel_memory, set_channel_memory_allowed_kinds,
-    set_channel_memory_inferred_auto, set_channel_memory_retention_days, set_channel_mode,
+    purpose_path, set_channel_mode,
     set_channel_trust,
 };
 use crate::worker::memory::RunContext;
@@ -62,44 +61,6 @@ const GRAMMAR: &[(&str, &str, &[&str], &str)] = &[
         "mode",
         &["mode"],
         "all = every message, mention = only when @mentioned",
-    ),
-    (
-        "channel",
-        "memory",
-        &["state"],
-        "memory in this channel: on or off",
-    ),
-    (
-        "channel",
-        "memory-inferred",
-        &["state"],
-        "inferred channel notes: auto or review",
-    ),
-    (
-        "channel",
-        "memory-kinds",
-        &["kinds"],
-        "default, or comma-separated kinds",
-    ),
-    (
-        "channel",
-        "memory-retention",
-        &["days"],
-        "default, or a number of days",
-    ),
-    ("memory", "show", &[], "memories visible here"),
-    (
-        "memory",
-        "ls",
-        &["scope"],
-        "notes by scope: worker | channel | user",
-    ),
-    ("memory", "forget", &["id"], "forget a memory"),
-    (
-        "memory",
-        "correct",
-        &["id", "text"],
-        "replace a memory's content",
     ),
     ("purpose", "show", &[], "this channel's purpose"),
     ("purpose", "set", &["text"], "set this channel's purpose"),
@@ -264,7 +225,7 @@ pub fn complete(line: &str, pos: usize, worker: &str) -> (usize, Vec<String>) {
 
 /// Live values for an argument slot. Reading the stores on every TAB is fine
 /// at interactive cadence.
-fn arg_values(cmd: &str, sub: &str, arg: &str, worker: &str) -> Vec<String> {
+fn arg_values(cmd: &str, sub: &str, arg: &str, _worker: &str) -> Vec<String> {
     let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect();
     match (cmd, sub, arg) {
         ("approvals", "show", "id") => crate::action::gate::list_all()
@@ -285,15 +246,7 @@ fn arg_values(cmd: &str, sub: &str, arg: &str, worker: &str) -> Vec<String> {
             .take(25)
             .map(|r| r.id)
             .collect(),
-        ("memory", "ls", "scope") => strs(&["worker", "channel", "user"]),
-        ("memory", _, "id") => crate::worker::memory::list(worker)
-            .into_iter()
-            .map(|n| n.id)
-            .collect(),
         ("channel", "mode", _) => strs(&["all", "mention"]),
-        ("channel", "memory", _) => strs(&["on", "off"]),
-        ("channel", "memory-inferred", _) => strs(&["auto", "review"]),
-        ("channel", "memory-kinds", _) | ("channel", "memory-retention", _) => strs(&["default"]),
         _ => Vec::new(),
     }
 }
@@ -559,23 +512,9 @@ pub async fn run(
             format!(
                 "This channel ({channel_id}{place}):\n\
                  trust: **{}** · mode: **{}**\n\
-                 memory: **{}** (inferred {}, kinds {}, retention {})\n\
                  purpose: {}",
                 if s.trusted { "trusted" } else { "untrusted" },
                 s.mode,
-                if s.memory_enabled { "on" } else { "off" },
-                if s.memory_inferred_auto {
-                    "auto"
-                } else {
-                    "review"
-                },
-                s.memory_allowed_kinds
-                    .as_ref()
-                    .map(|v| v.join(","))
-                    .unwrap_or_else(|| "default".into()),
-                s.memory_retention_days
-                    .map(|n| format!("{n} days"))
-                    .unwrap_or_else(|| "default".into()),
                 purpose.as_deref().unwrap_or("(none — /purpose set)")
             )
         }
@@ -612,175 +551,6 @@ pub async fn run(
                 "I'll now read **every** message here and decide whether to respond.".into()
             } else {
                 "I'll now respond here **only when @mentioned**.".into()
-            }
-        }
-        ("channel", "memory") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let state = call.arg("state");
-            let enabled = match state.as_str() {
-                "on" => true,
-                "off" => false,
-                _ => return "Memory state must be `on` or `off`.".into(),
-            };
-            if let Err(e) = set_channel_memory(channel_id, enabled) {
-                return format!("Couldn't update this channel: {e}");
-            }
-            format!(
-                "Memory is now **{}** in this channel.",
-                if enabled { "on" } else { "off" }
-            )
-        }
-        ("channel", "memory-inferred") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let state = call.arg("state");
-            let enabled = match state.as_str() {
-                "auto" => true,
-                "review" => false,
-                _ => return "Inferred memory must be `auto` or `review`.".into(),
-            };
-            if let Err(e) = set_channel_memory_inferred_auto(channel_id, enabled) {
-                return format!("Couldn't update this channel: {e}");
-            }
-            format!(
-                "Inferred channel memories now require **{}**.",
-                if enabled { "no review" } else { "review" }
-            )
-        }
-        ("channel", "memory-kinds") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let value = call.arg("kinds");
-            match crate::cli::channel::parse_memory_kinds(&value) {
-                Ok(kinds) => {
-                    if let Err(e) = set_channel_memory_allowed_kinds(channel_id, kinds.clone()) {
-                        return format!("Couldn't update this channel: {e}");
-                    }
-                    format!(
-                        "Channel memory kinds: **{}**.",
-                        kinds
-                            .map(|v| v.join(", "))
-                            .unwrap_or_else(|| "default".into())
-                    )
-                }
-                Err(e) => format!("Could not set memory kinds: {e}"),
-            }
-        }
-        ("channel", "memory-retention") => {
-            if rank < 1 {
-                return denied("trusted participants");
-            }
-            let value = call.arg("days");
-            let days = if value == "default" {
-                None
-            } else {
-                match value.parse::<u64>().ok().filter(|n| *n > 0) {
-                    Some(days) => Some(days),
-                    None => {
-                        return "Retention must be `default` or a positive number of days.".into()
-                    }
-                }
-            };
-            if let Err(e) = set_channel_memory_retention_days(channel_id, days) {
-                return format!("Couldn't update this channel: {e}");
-            }
-            format!(
-                "Channel memory retention: **{}**.",
-                days.map(|n| format!("{n} days"))
-                    .unwrap_or_else(|| "default".into())
-            )
-        }
-        ("memory", "show") => {
-            let notes = crate::worker::memory::visible_in_context(worker, memory_context);
-            if notes.is_empty() {
-                "No visible memories about you or this channel.".into()
-            } else {
-                let lines: Vec<String> = notes
-                    .iter()
-                    .take(20)
-                    .map(|n| {
-                        format!(
-                            "• `{}` [{} / {}] {}",
-                            n.id,
-                            n.scope.as_str(),
-                            n.status(),
-                            n.note
-                        )
-                    })
-                    .collect();
-                format!("Visible memories:\n{}", lines.join("\n"))
-            }
-        }
-        ("memory", "ls") => {
-            if rank < 2 {
-                return denied("server admins");
-            }
-            let scope = call.arg("scope");
-            if !matches!(scope.as_str(), "worker" | "channel" | "user") {
-                return "Scope must be `worker`, `channel`, or `user`.".into();
-            }
-            // Contextual: channel = this channel's notes, user = yours.
-            let scope_id = match scope.as_str() {
-                "channel" => memory_context.channel_scope_id(),
-                "user" => memory_context.user_scope_id(),
-                _ => None,
-            };
-            let notes: Vec<_> = crate::worker::memory::list(worker)
-                .into_iter()
-                .filter(|n| n.scope.as_str() == scope)
-                .filter(|n| {
-                    scope_id
-                        .as_deref()
-                        .map(|id| n.scope_id.as_deref() == Some(id))
-                        .unwrap_or(true)
-                })
-                .collect();
-            if notes.is_empty() {
-                format!("No {scope}-scope memories here.")
-            } else {
-                let total = notes.len();
-                let lines: Vec<String> = notes
-                    .iter()
-                    .take(20)
-                    .map(|n| format!("• `{}` [{}] {}", n.id, n.status(), n.note))
-                    .collect();
-                let more = if total > 20 {
-                    format!("\n… {} more: roster worker memory ls {worker}", total - 20)
-                } else {
-                    String::new()
-                };
-                format!("{total} {scope}-scope note(s):\n{}{more}", lines.join("\n"))
-            }
-        }
-        ("memory", "forget") => {
-            let id = call.arg("id");
-            match crate::worker::memory::participant_mutate(
-                worker,
-                "forget",
-                &id,
-                None,
-                memory_context,
-            ) {
-                Ok(()) => format!("Forgot `{id}`."),
-                Err(e) => format!("Could not forget `{id}`: {e}"),
-            }
-        }
-        ("memory", "correct") => {
-            let id = call.arg("id");
-            let text = call.arg("text");
-            match crate::worker::memory::participant_mutate(
-                worker,
-                "correct",
-                &id,
-                Some(&text),
-                memory_context,
-            ) {
-                Ok(()) => format!("Corrected `{id}`."),
-                Err(e) => format!("Could not correct `{id}`: {e}"),
             }
         }
         ("purpose", "show") => {
@@ -832,8 +602,7 @@ pub async fn run(
                 .filter(|g| g.state == "pending")
                 .count();
             format!(
-                "{worker}\ntasks: {queue_line}\npending approval: {gates}\nmemory: {} note(s)\nfull detail: roster worker show {worker}",
-                crate::worker::memory::list(worker).len()
+                "{worker}\ntasks: {queue_line}\npending approval: {gates}\nfull detail: roster worker show {worker}"
             )
         }
         ("worker", "trust") => {
@@ -908,18 +677,7 @@ mod tests {
         // slot 1: subcommands of the typed command
         let (_, c) = complete("/purpose s", 10, "w");
         assert_eq!(c, vec!["set".to_string(), "show".to_string()]);
-        // a space starts the next slot
-        let (from, c) = complete("/memory ls ", 11, "w");
-        assert_eq!(from, 11);
-        assert_eq!(
-            c,
-            vec![
-                "channel".to_string(),
-                "user".to_string(),
-                "worker".to_string()
-            ]
-        );
-        // slot 2: argument values, prefix-filtered
+        // slot 2: argument values, prefix-filtered (a space starts the slot)
         let (from, c) = complete("/channel mode a", 15, "w");
         assert_eq!((from, c), (14, vec!["all".to_string()]));
         // not a slash line → nothing

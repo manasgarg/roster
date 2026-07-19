@@ -37,6 +37,17 @@ Both listeners **dial out** — Discord's gateway WebSocket, Slack's Socket
 Mode — so nothing ever listens on the internet. Both reconnect with backoff
 and never take the rest of the daemon down.
 
+## Scoping the bot to a server or channel
+
+The Discord connection's `[restrict]` table limits where the worker
+exists: list `servers` (guild ids) and/or `channels` (channel ids), and
+the listener treats everything outside the scope as if it didn't exist —
+not answered, not persisted, no commands registered there — while the
+gateway restricts API calls to the same scope
+([connections.md](connections.md) has the format and the enforcement
+details). Either dimension admits a surface; DMs always pass. The edit is
+live: scope changes apply without a listener restart.
+
 ## Who can do what
 
 Authority is derived from the platform, which authenticates every user —

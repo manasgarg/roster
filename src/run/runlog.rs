@@ -40,8 +40,26 @@ pub struct RunRecord {
     /// where `runs show` can find it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Pre-2026-07 single-repo records; read for old runs on disk, never
+    /// written. New records use `repos`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge: Option<KnowledgeRunRecord>,
+    /// One record per gated host-repo connection this run checked out,
+    /// keyed by connection name ("knowledge" for the legacy repo).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub repos: std::collections::BTreeMap<String, KnowledgeRunRecord>,
+}
+
+impl RunRecord {
+    /// The per-connection repo records, folding an old single-repo record in
+    /// as "knowledge" so pre-migration runs display and push-check the same.
+    pub fn repo_records(&self) -> std::collections::BTreeMap<String, KnowledgeRunRecord> {
+        let mut map = self.repos.clone();
+        if let Some(k) = &self.knowledge {
+            map.entry("knowledge".into()).or_insert_with(|| k.clone());
+        }
+        map
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +94,7 @@ pub fn start(run_id: &str, worker: &str, kind: &str, task_id: Option<&str>) -> R
         exit_code: None,
         error: None,
         knowledge: None,
+        repos: Default::default(),
     };
     save(&record)
 }
@@ -127,23 +146,27 @@ pub fn outcome_report(run_id: &str) -> Option<(String, Option<String>)> {
     ))
 }
 
-pub fn attach_storage(run_id: &str, knowledge: Option<KnowledgeRunRecord>) -> Result<(), String> {
+pub fn attach_storage(
+    run_id: &str,
+    repos: std::collections::BTreeMap<String, KnowledgeRunRecord>,
+) -> Result<(), String> {
     let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
-    record.knowledge = knowledge;
+    record.repos = repos;
     save(&record)
 }
 
 pub fn update_knowledge(
     run_id: &str,
+    connection: &str,
     state: &str,
     produced_commit: Option<&str>,
     error: Option<&str>,
 ) -> Result<(), String> {
     let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
-    if let Some(knowledge) = record.knowledge.as_mut() {
-        knowledge.state = state.into();
-        knowledge.produced_commit = produced_commit.map(String::from);
-        knowledge.error = error.map(String::from);
+    if let Some(repo) = record.repos.get_mut(connection) {
+        repo.state = state.into();
+        repo.produced_commit = produced_commit.map(String::from);
+        repo.error = error.map(String::from);
     }
     save(&record)
 }
@@ -184,6 +207,8 @@ pub fn list() -> Vec<RunSummary> {
             path.is_dir()
                 && (path.join("run.json").exists()
                     || path.join("stdout.jsonl").exists()
+                    // one-home layout, and the pre-2026-07 mount triple
+                    || path.join("home/session").is_dir()
                     || path.join("session").is_dir()
                     || path.join("workspace").is_dir())
         })
@@ -238,9 +263,7 @@ fn summarize(
         .or_else(|| journal_worker.cloned())
         .unwrap_or_else(|| "?".into());
     let kind = record.as_ref().map(|r| r.kind.clone()).unwrap_or_else(|| {
-        if task.and_then(|t| t.repo.as_ref()).is_some() || path.join("worktree").exists() {
-            "code".into()
-        } else if task.is_some() {
+        if task.is_some() {
             "task".into()
         } else if channel_id.is_some() {
             "session".into()
@@ -292,7 +315,15 @@ fn read_json(path: PathBuf) -> Option<Value> {
 }
 
 fn session_files(path: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(path.join("session"))
+    // The one-home layout keeps the transcript at home/session; runs recorded
+    // before the change (still on disk, state/ is prunable not pruned) have it
+    // at session/.
+    let session = if path.join("home/session").is_dir() {
+        path.join("home/session")
+    } else {
+        path.join("session")
+    };
+    let mut files: Vec<PathBuf> = std::fs::read_dir(session)
         .into_iter()
         .flatten()
         .flatten()

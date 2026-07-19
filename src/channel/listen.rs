@@ -64,7 +64,7 @@ pub async fn listen_worker(worker: &str, platform: &str, credential: &str) -> Re
         "discord" => {
             let token = field("token")?;
             eprintln!("listener {worker}: connecting the Discord gateway");
-            discord::run_gateway(worker, &token).await;
+            discord::run_gateway(worker, &token, credential).await;
             Ok(())
         }
         "slack" => {

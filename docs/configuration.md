@@ -11,7 +11,7 @@ The files:
 
 ```
 org.toml                    org-wide policy: grants, actions, trust, budgets,
-                            memory/knowledge/context policy
+                            knowledge/context policy
 workers/<name>/worker.toml  one worker: channels, heartbeat, overlays
 workers/<name>/identity.md  who the worker is (prose, not config)
 connections/<name>.toml     one service capability (usually wizard-written)
@@ -65,7 +65,7 @@ trust    = "gate"            # default; "auto" skips the desk
 wake_on_resolve = true       # file a continuation task when the gate resolves
 ```
 
-Executors: `message-user`, `email`, `git-pr`, `identity`, `purpose`,
+Executors: `message-user`, `email`, `identity`, `purpose`,
 `discord`, `slack`, `task`, `note`, `knowledge`. An intent with no grant is
 refused, not gated. See [actions-and-trust.md](actions-and-trust.md).
 
@@ -140,23 +140,13 @@ Mandatory blocks fail rather than truncate; see [context.md](context.md).
 | `write_from` | `"clean-room"` | `"clean-room"`: only runs without person-data may write; `"any-run"`: scan-only legacy behavior |
 | `max_file_chars` | 200000 | per-file cap |
 | `max_repo_bytes` | 1000000000 | repo size cap |
-| `max_deletions_ungated` | 20 | a `knowledge_push` deleting more files than this waits for a human gate |
+| `max_deletions_ungated` | 20 | a `repo_push` deleting more files than this waits for a human gate |
 
-### `[memory]`
+### `[store]`
 
 | key | default | meaning |
 |---|---|---|
-| `enabled` | `true` | |
-| `allowed_kinds` | all four | subset of `preference`, `fact`, `decision`, `interaction` |
-| `max_note_chars` | 2000 | |
-| `max_notes_per_scope` | 100 | |
-| `recall_max_notes` | 20 | |
-| `recall_char_budget` | 6000 | |
-| `max_retention_days` | unset | notes expire after this many days |
-| `allow_inferred_user_auto` | `false` | inferred personal facts save without review |
-| `allow_worker_auto` | `false` | worker-wide notes save without review |
-| `cross_channel_user_recall` | `false` | recall a user's memory outside its home channel |
-| `user_memory_in_groups` | `false` | recall user memory in group contexts |
+| `snapshots` | 14 | rotating store snapshots kept per worker (0 disables — the store is then unrecoverable after a bad run) |
 
 ## workers/\<name\>/worker.toml
 
@@ -175,7 +165,7 @@ max      = 60
 ```
 
 A worker's file may also carry its own `[[grant]]`, `[[action]]`,
-`[[trust]]`, `[[expose]]`, and `[memory]`/`[context]`/`[knowledge]`
+`[[trust]]`, `[[expose]]`, and `[context]`/`[knowledge]`
 overlays. Overlays merge over org defaults; the knowledge overlay can only
 narrow (disable features, reduce limits) — it cannot re-enable, raise, or
 relax what the org set. Two workers cannot bind the same channel credential.

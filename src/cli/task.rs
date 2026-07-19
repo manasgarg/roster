@@ -4,39 +4,12 @@
 use crate::util::BErr;
 use crate::work::tms;
 
-#[allow(clippy::too_many_arguments)]
-pub fn add(
-    worker: &str,
-    ceiling: f64,
-    proactive: bool,
-    repo: Option<String>,
-    base: &str,
-    prompt: String,
-) -> Result<(), BErr> {
+pub fn add(worker: &str, ceiling: f64, proactive: bool, prompt: String) -> Result<(), BErr> {
     crate::worker::require_worker(worker)?;
     if prompt.trim().is_empty() {
         return Err("task add needs a prompt".into());
     }
-    // Absolute path so the worktree resolves from the daemon's cwd. Fail loudly
-    // on a bad path rather than storing a relative string that the daemon would
-    // resolve against its own cwd (wrong repo) or fail to find at run time.
-    let repo = match repo {
-        Some(p) => Some(
-            std::fs::canonicalize(&p)
-                .map_err(|e| -> BErr { format!("--repo \"{p}\": {e}").into() })?
-                .display()
-                .to_string(),
-        ),
-        None => None,
-    };
-    let base = repo.as_ref().map(|_| base.to_string());
-    let kind = if repo.is_some() {
-        "code"
-    } else if proactive {
-        "proactive"
-    } else {
-        "owner-filed"
-    };
+    let kind = if proactive { "proactive" } else { "owner-filed" };
     let t = tms::add(
         worker,
         tms::Draft {
@@ -44,8 +17,6 @@ pub fn add(
             created_by: "user".into(),
             standing: if proactive { "proactive" } else { "owner" }.into(),
             ceiling_min: ceiling,
-            repo,
-            base,
             ..Default::default()
         },
     )
@@ -138,9 +109,6 @@ pub fn show(id: &str) -> Result<(), BErr> {
     println!("ceiling  {} min", t.ceiling_min);
     if let Some(run) = &t.run_id {
         println!("run      {run}   (details: roster server runs show {run})");
-    }
-    if let Some(repo) = &t.repo {
-        println!("repo     {repo} @ {}", t.base.as_deref().unwrap_or("main"));
     }
     let gates = crate::action::gate::pending_for_task(&t.id);
     if !gates.is_empty() {

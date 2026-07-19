@@ -130,8 +130,6 @@ Three intents get special handling, hardwired:
   channel the admin has marked trusted, replies and purpose refinements flow
   without a gate — the channel's own participants could do these directly
   anyway. In untrusted channels they gate.
-- **Memory notes follow the memory policy**, a parallel ladder based on
-  scope, basis, and channel settings — see [memory.md](memory.md).
 
 ## The executors
 
@@ -144,19 +142,17 @@ sees. The admin binds intents to executors in config; the built-in set:
 | `discord` | Post to a Discord channel with the bot token from the vault |
 | `slack` | Post to a Slack channel with the bot token from the vault |
 | `email` | Send via SMTP over TLS with the `smtp` vault credential |
-| `git-pr` | Commit the run's worktree, push an `worker/<name>/…` branch, open the pull request |
 | `identity` | Overwrite the worker's identity file (always human-gated) |
 | `purpose` | Overwrite a channel's purpose file |
 | `task` | File a task on the worker's own queue (`file_task` — the bridge from conversations to clean-room research) |
-| `knowledge` | Land a run's committed knowledge branch: validate the pushed range, fast-forward the repo's `main` ([knowledge.md](knowledge.md)) |
-| `note` | Interaction-memory operations: remember, forget, correct, pin, and the rest |
+| `knowledge` | Land a run’s committed branch on a gated repo: validate the pushed range, fast-forward the repo's `main` ([repos.md](repos.md)) |
 
 And the box-side tools that propose through them: `message_user`,
-`discord_send`, `slack_send`, `send_email`, `propose_changes` (one intent
-covering commit, push, and PR), `propose_purpose_edit`, `file_task`,
-`knowledge_push`, and the memory tools. Task runs also carry `task_complete`/`task_fail` — not granted
-actions but part of the task protocol: the worker's outcome report, recorded
-as evidence for the host's attestation (see [work.md](work.md)).
+`discord_send`, `slack_send`, `send_email`, `propose_purpose_edit`,
+`file_task`, `file_update`, and `repo_push`. Task runs also carry
+`task_complete`/`task_fail` — not granted actions but part of the task
+protocol: the worker's outcome report, recorded as evidence for the
+host's attestation (see [work.md](work.md)).
 
 Because the box holds no write credential and has no egress grant to any
 write host, it *cannot* perform these actions — only propose them. A fully

@@ -1,0 +1,27 @@
+#!/bin/sh
+# roster-lock <name> -- <command...> — run a command while holding a named
+# store lock. The lock is an flock(2) on store/.locks/<name>; bind mounts
+# share the inode, so it excludes every other instance of this worker AND the
+# host's backup pass, and the kernel releases it if the holder dies. Use it
+# around any store write where a torn file would hurt:
+#
+#   roster-lock notes -- sh -c 'cat >> "$HOME/store/notes/log.md"' < entry.md
+#
+# "store" is the whole-store lock the host's snapshot pass takes.
+set -eu
+if [ "$#" -lt 2 ]; then
+  echo "usage: roster-lock <name> -- <command...>" >&2
+  exit 2
+fi
+name="$1"
+shift
+[ "${1:-}" = "--" ] && shift
+case "$name" in
+  */* | .* | "")
+    echo "roster-lock: lock names are plain words, not paths" >&2
+    exit 2
+    ;;
+esac
+dir="${ROSTER_STORE_DIR:-$HOME/store}/.locks"
+mkdir -p "$dir"
+exec flock "$dir/$name" "$@"

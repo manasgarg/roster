@@ -128,10 +128,32 @@ struct GwError {
 /// Run the gateway for one worker: dial out, identify, and dispatch events.
 /// Reconnects on transient errors, resuming the session when possible so no
 /// messages are dropped in the gap; stops on fatal ones (bad token / intent).
-pub async fn run_gateway(worker: &str, token: &str) {
+/// The `[restrict]` scope of the connection this listener runs under, looked
+/// up live so a scope edit applies without a listener restart. Guild-space
+/// only: DMs are a different trust surface (1:1, sought-out, dynamically
+/// created ids that could never be pre-listed) and always pass. Broken config
+/// fails closed, like dispatch does.
+fn out_of_scope(credential: &str, guild_id: Option<&str>, channel_id: &str) -> bool {
+    let Some(gid) = guild_id else { return false };
+    let cfg = match crate::config::snapshot() {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("discord: config invalid — dropping guild traffic until it parses");
+            return true;
+        }
+    };
+    match cfg.connections.iter().find(|c| c.name == credential) {
+        Some(c) => !c.allows_surface(Some(gid), channel_id),
+        // No connection file for this credential (legacy [channels]-only
+        // binding) = unrestricted, exactly as before scoping existed.
+        None => false,
+    }
+}
+
+pub async fn run_gateway(worker: &str, token: &str, credential: &str) {
     let mut resume: Option<ResumeState> = None;
     loop {
-        match connect_once(worker, token, resume.take()).await {
+        match connect_once(worker, token, credential, resume.take()).await {
             Ok(()) => {}
             Err(e) if e.fatal => {
                 eprintln!("discord gateway: {} — stopping.", e.msg);
@@ -151,6 +173,7 @@ pub async fn run_gateway(worker: &str, token: &str) {
 async fn connect_once(
     worker: &str,
     token: &str,
+    credential: &str,
     resume: Option<ResumeState>,
 ) -> Result<(), GwError> {
     let transient = |m: String| GwError {
@@ -299,6 +322,7 @@ async fn connect_once(
                             "discord: connected as {} ({bot_id})",
                             d["user"]["username"].as_str().unwrap_or("?")
                         );
+                        register_dm_commands(&app_id, token).await;
                     }
                     "RESUMED" => eprintln!("discord: resumed session (missed events replayed)"),
                     "GUILD_CREATE" => {
@@ -308,11 +332,47 @@ async fn connect_once(
                             g.name, g.channels
                         );
                         let guild_id = d["id"].as_str().unwrap_or("").to_string();
-                        register_commands(&app_id, &guild_id, token).await;
+                        // A scoped listener doesn't advertise commands in
+                        // guilds it won't act in: the guild must be admitted
+                        // by scope, or contain a scoped channel (the payload
+                        // lists the guild's channels). Ingest either way, for
+                        // name resolution in logs.
+                        let guild_admitted = match crate::config::snapshot() {
+                            Err(_) => false,
+                            Ok(cfg) => match cfg.connections.iter().find(|c| c.name == credential) {
+                                None => true,
+                                Some(c) if c.restrict.is_empty() => true,
+                                Some(c) => {
+                                    c.allows_surface(Some(&guild_id), "")
+                                        || d["channels"]
+                                            .as_array()
+                                            .map(|chs| {
+                                                chs.iter()
+                                                    .filter_map(|ch| ch["id"].as_str())
+                                                    .any(|id| c.allows_surface(None, id))
+                                            })
+                                            .unwrap_or(false)
+                                }
+                            },
+                        };
+                        if guild_admitted {
+                            register_commands(&app_id, &guild_id, token).await;
+                        }
                         guilds.insert(guild_id, g);
                     }
-                    "MESSAGE_CREATE" => handle_message(worker, d, &bot_id, &guilds, token).await,
+                    "MESSAGE_CREATE" => {
+                        handle_message(worker, d, &bot_id, &guilds, token, credential).await
+                    }
                     "INTERACTION_CREATE" => {
+                        // The same attachment rule as messages: an interaction
+                        // from an out-of-scope surface doesn't exist for us.
+                        if out_of_scope(
+                            credential,
+                            d["guild_id"].as_str(),
+                            d["channel_id"].as_str().unwrap_or(""),
+                        ) {
+                            continue;
+                        }
                         // Handle interactions off the read loop: a slow command
                         // (e.g. an approval that sends email) must not delay the
                         // NEXT interaction's 3-second deferral deadline.
@@ -447,6 +507,7 @@ async fn handle_message(
     bot_id: &str,
     guilds: &HashMap<String, Guild>,
     token: &str,
+    credential: &str,
 ) {
     // Never react to bots (including ourselves) — avoids reply loops.
     if d["author"]["bot"].as_bool().unwrap_or(false) {
@@ -454,6 +515,11 @@ async fn handle_message(
     }
     let channel_id = d["channel_id"].as_str().unwrap_or("");
     if channel_id.is_empty() {
+        return;
+    }
+    // Attachment rule: an out-of-scope surface doesn't exist for this
+    // listener — not persisted, not answered, no attachments fetched.
+    if out_of_scope(credential, d["guild_id"].as_str(), channel_id) {
         return;
     }
     let is_dm = d["guild_id"].as_str().is_none();
@@ -676,7 +742,8 @@ async fn trigger_typing(channel_id: &str, token: &str) {
 
 // ── slash commands (the admin surface) ────────────────────────────────────────
 
-/// Command definitions registered per guild (instant, unlike global). Scoped to
+/// Command definitions, registered per guild (instant, unlike global) and
+/// globally for the bot's DMs, where guild commands never appear. Scoped to
 /// what's safe: the approval desk, the queue, and channel trust.
 fn command_defs() -> Value {
     json!([
@@ -697,7 +764,7 @@ fn command_defs() -> Value {
             { "type": 1, "name": "show", "description": "One session's record", "options": [{ "type": 3, "name": "run", "description": "Run id", "required": true }] }
         ]},
         { "name": "worker", "description": "The worker itself", "options": [
-            { "type": 1, "name": "show", "description": "Queue, gates, memory at a glance" },
+            { "type": 1, "name": "show", "description": "Queue and gates at a glance" },
             { "type": 1, "name": "trust", "description": "Per-action trust and earned history" }
         ]},
         { "name": "channel", "description": "Channel settings", "options": [
@@ -707,34 +774,6 @@ fn command_defs() -> Value {
             { "type": 1, "name": "mode", "description": "How the worker wakes here", "options": [
                 { "type": 3, "name": "mode", "description": "all = every message, mention = only when @mentioned", "required": true,
                   "choices": [{ "name": "all", "value": "all" }, { "name": "mention", "value": "mention" }] }
-            ]},
-            { "type": 1, "name": "memory", "description": "Enable or disable memory in this channel", "options": [
-                { "type": 3, "name": "state", "description": "on or off", "required": true,
-                  "choices": [{ "name": "on", "value": "on" }, { "name": "off", "value": "off" }] }
-            ]},
-            { "type": 1, "name": "memory-inferred", "description": "Choose whether inferred channel notes need review", "options": [
-                { "type": 3, "name": "state", "description": "auto or review", "required": true,
-                  "choices": [{ "name": "auto", "value": "auto" }, { "name": "review", "value": "review" }] }
-            ]},
-            { "type": 1, "name": "memory-kinds", "description": "Limit memory kinds in this channel", "options": [
-                { "type": 3, "name": "kinds", "description": "default or comma-separated kinds", "required": true }
-            ]},
-            { "type": 1, "name": "memory-retention", "description": "Shorten channel memory retention", "options": [
-                { "type": 3, "name": "days", "description": "default or a positive number of days", "required": true }
-            ]}
-        ]},
-        { "name": "memory", "description": "Inspect or correct scoped memory", "options": [
-            { "type": 1, "name": "show", "description": "Show your and this channel's visible memories" },
-            { "type": 1, "name": "ls", "description": "Notes by scope (admin)", "options": [
-                { "type": 3, "name": "scope", "description": "worker, channel, or user", "required": true,
-                  "choices": [{ "name": "worker", "value": "worker" }, { "name": "channel", "value": "channel" }, { "name": "user", "value": "user" }] }
-            ]},
-            { "type": 1, "name": "forget", "description": "Forget a memory", "options": [
-                { "type": 3, "name": "id", "description": "Memory id", "required": true }
-            ]},
-            { "type": 1, "name": "correct", "description": "Correct a memory", "options": [
-                { "type": 3, "name": "id", "description": "Memory id", "required": true },
-                { "type": 3, "name": "text", "description": "Complete corrected note", "required": true }
             ]}
         ]},
         { "name": "purpose", "description": "This channel's purpose for the worker", "options": [
@@ -767,6 +806,34 @@ async fn register_commands(app_id: &str, guild_id: &str, token: &str) {
             r.status()
         ),
         Err(e) => eprintln!("discord: register commands failed: {e}"),
+    }
+}
+
+/// The same commands, registered globally but limited to the bot's DMs
+/// (contexts: [1] = BOT_DM). Guild channels are covered by the per-guild
+/// registration above; without the context limit the global copies would
+/// show up there too, as duplicates.
+async fn register_dm_commands(app_id: &str, token: &str) {
+    if app_id.is_empty() {
+        return;
+    }
+    let mut defs = command_defs();
+    if let Some(list) = defs.as_array_mut() {
+        for cmd in list {
+            cmd["contexts"] = json!([1]);
+            cmd["integration_types"] = json!([0]);
+        }
+    }
+    let res = reqwest::Client::new()
+        .put(format!("{}/applications/{app_id}/commands", base()))
+        .header("authorization", format!("Bot {token}"))
+        .json(&defs)
+        .send()
+        .await;
+    match res {
+        Ok(r) if r.status().is_success() => {}
+        Ok(r) => eprintln!("discord: register DM commands → {}", r.status()),
+        Err(e) => eprintln!("discord: register DM commands failed: {e}"),
     }
 }
 
@@ -909,27 +976,10 @@ pub struct ChannelSettings {
     /// "all" (wake on every message) | "mention" (wake only on @mention/DM).
     #[serde(default = "default_mode")]
     pub mode: String,
-    /// Channel-local memory controls may only make the worker policy stricter.
-    #[serde(default = "default_memory_enabled")]
-    pub memory_enabled: bool,
-    #[serde(default)]
-    pub memory_recall_max_notes: Option<usize>,
-    #[serde(default)]
-    pub memory_recall_char_budget: Option<usize>,
-    #[serde(default)]
-    pub memory_inferred_auto: bool,
-    #[serde(default)]
-    pub memory_allowed_kinds: Option<Vec<String>>,
-    #[serde(default)]
-    pub memory_retention_days: Option<u64>,
 }
 
 fn default_mode() -> String {
     "all".to_string()
-}
-
-fn default_memory_enabled() -> bool {
-    true
 }
 
 impl Default for ChannelSettings {
@@ -937,12 +987,6 @@ impl Default for ChannelSettings {
         Self {
             trusted: false,
             mode: default_mode(),
-            memory_enabled: true,
-            memory_recall_max_notes: None,
-            memory_recall_char_budget: None,
-            memory_inferred_auto: false,
-            memory_allowed_kinds: None,
-            memory_retention_days: None,
         }
     }
 }
@@ -1028,92 +1072,6 @@ pub fn set_channel_mode(channel_id: &str, mode: &str) -> Result<(), String> {
     let mode = mode.to_string();
     mutate_settings(|m| {
         m.entry(channel_id.to_string()).or_default().mode = mode;
-    })
-}
-
-pub fn channel_memory_enabled(channel_id: &str) -> bool {
-    load_settings()
-        .get(channel_id)
-        .map(|s| s.memory_enabled)
-        .unwrap_or(true)
-}
-
-pub fn channel_memory_recall_max_notes(channel_id: &str) -> Option<usize> {
-    load_settings()
-        .get(channel_id)
-        .and_then(|s| s.memory_recall_max_notes)
-}
-
-pub fn channel_memory_recall_char_budget(channel_id: &str) -> Option<usize> {
-    load_settings()
-        .get(channel_id)
-        .and_then(|s| s.memory_recall_char_budget)
-}
-
-pub fn channel_memory_inferred_auto(channel_id: &str) -> bool {
-    load_settings()
-        .get(channel_id)
-        .map(|s| s.memory_inferred_auto)
-        .unwrap_or(false)
-}
-
-pub fn channel_memory_allowed_kinds(channel_id: &str) -> Option<Vec<String>> {
-    load_settings()
-        .get(channel_id)
-        .and_then(|s| s.memory_allowed_kinds.clone())
-}
-
-pub fn channel_memory_retention_days(channel_id: &str) -> Option<u64> {
-    load_settings()
-        .get(channel_id)
-        .and_then(|s| s.memory_retention_days)
-}
-
-pub fn set_channel_memory_inferred_auto(channel_id: &str, enabled: bool) -> Result<(), String> {
-    mutate_settings(|m| {
-        m.entry(channel_id.to_string())
-            .or_default()
-            .memory_inferred_auto = enabled;
-    })
-}
-
-pub fn set_channel_memory_allowed_kinds(
-    channel_id: &str,
-    kinds: Option<Vec<String>>,
-) -> Result<(), String> {
-    mutate_settings(|m| {
-        m.entry(channel_id.to_string())
-            .or_default()
-            .memory_allowed_kinds = kinds;
-    })
-}
-
-pub fn set_channel_memory_retention_days(
-    channel_id: &str,
-    days: Option<u64>,
-) -> Result<(), String> {
-    mutate_settings(|m| {
-        m.entry(channel_id.to_string())
-            .or_default()
-            .memory_retention_days = days;
-    })
-}
-
-pub fn set_channel_memory(channel_id: &str, enabled: bool) -> Result<(), String> {
-    mutate_settings(|m| {
-        m.entry(channel_id.to_string()).or_default().memory_enabled = enabled;
-    })
-}
-
-pub fn set_channel_memory_budget(
-    channel_id: &str,
-    notes: Option<usize>,
-    chars: Option<usize>,
-) -> Result<(), String> {
-    mutate_settings(|m| {
-        let entry = m.entry(channel_id.to_string()).or_default();
-        entry.memory_recall_max_notes = notes;
-        entry.memory_recall_char_budget = chars;
     })
 }
 

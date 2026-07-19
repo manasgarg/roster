@@ -113,6 +113,125 @@ struct SmError {
     msg: String,
 }
 
+/// Durable per-channel replay cursor: the newest message ts this listener
+/// has seen. Socket Mode replays nothing — an event that fires while no
+/// socket is connected is gone — so this cursor is what lets a starting
+/// listener fetch what arrived while the server was down
+/// (`conversations.history` with `oldest` is exclusive: pass the cursor,
+/// get strictly newer).
+fn cursor_path(channel_id: &str) -> std::path::PathBuf {
+    crate::paths::channel_dir(channel_id).join("slack-cursor.json")
+}
+
+fn read_cursor(channel_id: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(cursor_path(channel_id)).ok()?)
+        .ok()?;
+    Some(v.get("last_ts")?.as_str()?.to_string())
+}
+
+fn write_cursor(channel_id: &str, ts: &str) {
+    let path = cursor_path(channel_id);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, json!({ "last_ts": ts }).to_string());
+}
+
+/// A channel-dir name that is a Slack conversation id (C… channel, D… DM,
+/// G… group) — distinguishes Slack dirs from Discord's all-digit snowflakes
+/// and the terminal's `term-…` ids when baselining.
+fn is_slack_channel_id(id: &str) -> bool {
+    matches!(id.as_bytes().first(), Some(b'C' | b'D' | b'G'))
+        && id.len() > 1
+        && id.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+/// Fetch and handle everything that arrived while no socket was connected:
+/// for every channel with a cursor, page `conversations.history` past it and
+/// run each message down the exact same path as a live event. Channels never
+/// seen before are baselined at their latest message without replaying
+/// history. Top-level messages only — replies posted into an existing thread
+/// during downtime are not recovered (docs/channels.md says so).
+async fn catch_up(worker: &str, bot_token: &str, bot_user_id: &str) {
+    let mut admins: HashMap<String, bool> = HashMap::new();
+    let channels: Vec<String> = std::fs::read_dir(crate::paths::channels_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
+    for channel in channels {
+        let cursor = match read_cursor(&channel) {
+            Some(c) => Some(c),
+            None if is_slack_channel_id(&channel) => {
+                // Baseline: mark "caught up to now" without replaying the
+                // pre-cursor past.
+                if let Ok(res) = api(
+                    bot_token,
+                    "conversations.history",
+                    json!({ "channel": channel, "limit": 1 }),
+                )
+                .await
+                {
+                    if let Some(ts) = res["messages"][0]["ts"].as_str() {
+                        write_cursor(&channel, ts);
+                    }
+                }
+                None // baselined; nothing to replay this round
+            }
+            None => None,
+        };
+        let Some(oldest) = cursor else { continue };
+
+        // Bounded pages per channel, collected then replayed oldest-first.
+        let mut missed: Vec<Value> = Vec::new();
+        let mut page_cursor: Option<String> = None;
+        for _page in 0..3 {
+            let mut body = json!({ "channel": channel, "oldest": oldest, "limit": 100 });
+            if let Some(c) = &page_cursor {
+                body["cursor"] = json!(c);
+            }
+            // Lost access or a hiccup skips this channel, never the pass.
+            let Ok(res) = api(bot_token, "conversations.history", body).await else {
+                break;
+            };
+            missed.extend(res["messages"].as_array().cloned().unwrap_or_default());
+            page_cursor = res["response_metadata"]["next_cursor"]
+                .as_str()
+                .filter(|c| !c.is_empty())
+                .map(String::from);
+            if page_cursor.is_none() {
+                break;
+            }
+        }
+        if missed.is_empty() {
+            continue;
+        }
+        // History arrives newest-first; handle in the order people spoke.
+        missed.sort_by(|a, b| {
+            a["ts"]
+                .as_str()
+                .unwrap_or("")
+                .partial_cmp(b["ts"].as_str().unwrap_or(""))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for mut event in missed {
+            // History items carry no channel/channel_type — the live handler
+            // needs both (a D… id is a DM, and DMs wake and auto-trust).
+            event["channel"] = json!(channel);
+            if channel.starts_with('D') {
+                event["channel_type"] = json!("im");
+            }
+            if let Some(ts) = event["ts"].as_str() {
+                // Advance past bot-authored messages too, so catch-up never
+                // refetches the bot's own replies.
+                write_cursor(&channel, ts);
+            }
+            handle_message(worker, &event, bot_user_id, bot_token, &mut admins).await;
+        }
+    }
+}
+
 /// Run Socket Mode for one worker: dial out, ack envelopes, dispatch events.
 /// Reconnects on transient errors (Slack refreshes connections routinely);
 /// stops on fatal ones (bad tokens).
@@ -197,7 +316,20 @@ async fn connect_once(worker: &str, bot_token: &str, app_token: &str) -> Result<
         match v["type"].as_str().unwrap_or("") {
             // Slack refreshes sockets on a schedule; this is routine, not an error.
             "disconnect" => break Ok(()),
-            "hello" => {}
+            "hello" => {
+                // Socket Mode replays nothing — fetch what arrived while no
+                // socket was connected. Every connect, not just boot: the
+                // gap between a drop and this reconnect loses events too.
+                // Off the read loop so REST calls don't stall acks.
+                let (w, t, b) = (
+                    worker.to_string(),
+                    bot_token.to_string(),
+                    bot_user_id.clone(),
+                );
+                tokio::spawn(async move {
+                    catch_up(&w, &t, &b).await;
+                });
+            }
             "events_api" => {
                 // Ack FIRST — Slack redelivers unacked envelopes, which would
                 // double-file work if handling were slow.
@@ -211,6 +343,14 @@ async fn connect_once(worker: &str, bot_token: &str, app_token: &str) -> Result<
                     let event_id = v["payload"]["event_id"].as_str().unwrap_or("");
                     if !event_id.is_empty() && already_seen(event_id) {
                         continue;
+                    }
+                    // The replay cursor advances on every message seen live —
+                    // bot-authored ones included, so catch-up never refetches
+                    // the bot's own replies.
+                    if let (Some(ch), Some(ts)) =
+                        (event["channel"].as_str(), event["ts"].as_str())
+                    {
+                        write_cursor(ch, ts);
                     }
                     handle_message(worker, event, &bot_user_id, bot_token, &mut admins).await;
                 }
@@ -283,7 +423,10 @@ async fn handle_message(
     persist_message(
         channel_id,
         &json!({
-            "ts": now_rfc3339(),
+            // Slack's own send time, so caught-up messages land in history
+            // with when they were SAID, not when the listener finally saw
+            // them. (Slack ts is epoch-seconds with a decimal suffix.)
+            "ts": rfc3339_from_slack_ts(event["ts"].as_str().unwrap_or("")),
             "slack_ts": event["ts"].as_str().unwrap_or(""),
             "thread_ts": event["thread_ts"].as_str(),
             "author_id": user_id, "author": user_id, "role": role, "content": text,
@@ -325,6 +468,17 @@ async fn handle_message(
         bot_token,
     )
     .await;
+}
+
+/// A Slack ts ("1721400000.123456") as RFC 3339, falling back to "now" for
+/// anything unparseable — history records sort and read by this field.
+fn rfc3339_from_slack_ts(ts: &str) -> String {
+    ts.split('.')
+        .next()
+        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(|secs| time::OffsetDateTime::from_unix_timestamp(secs).ok())
+        .and_then(|t| t.format(&time::format_description::well_known::Rfc3339).ok())
+        .unwrap_or_else(now_rfc3339)
 }
 
 /// Have we already handled this Slack event id? Bounded and process-global, so it
@@ -436,4 +590,49 @@ async fn route_to_session(
             .await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slack_cursor_roundtrips_and_ids_classify() {
+        let _guard = crate::statefile::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ROSTER_ROOT", dir.path());
+
+        write_cursor("C0123ABCD", "1721400000.000100");
+        assert_eq!(
+            read_cursor("C0123ABCD").as_deref(),
+            Some("1721400000.000100")
+        );
+        write_cursor("C0123ABCD", "1721400009.000001");
+        assert_eq!(
+            read_cursor("C0123ABCD").as_deref(),
+            Some("1721400009.000001")
+        );
+        assert_eq!(read_cursor("D0DMDMDMD"), None);
+
+        // Baseline targeting: Slack ids only — never Discord snowflakes or
+        // term channels.
+        assert!(is_slack_channel_id("C0123ABCD"));
+        assert!(is_slack_channel_id("D0DMDMDMD"));
+        assert!(is_slack_channel_id("G0GROUPID"));
+        assert!(!is_slack_channel_id("1451951375079571628")); // discord
+        assert!(!is_slack_channel_id("term-manas-yuko"));
+        assert!(!is_slack_channel_id("C")); // a bare prefix is not an id
+    }
+
+    #[test]
+    fn slack_ts_renders_rfc3339_with_now_fallback() {
+        assert_eq!(
+            rfc3339_from_slack_ts("1721400000.123456"),
+            "2024-07-19T14:40:00Z"
+        );
+        // Unparseable ts still yields a timestamp (now), never a panic.
+        assert!(rfc3339_from_slack_ts("not-a-ts").ends_with('Z'));
+    }
 }

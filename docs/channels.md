@@ -37,14 +37,16 @@ Both listeners **dial out** — Discord's gateway WebSocket, Slack's Socket
 Mode — so nothing ever listens on the internet. Both reconnect with backoff
 and never take the rest of the daemon down.
 
-**Nothing said while the server was down is lost.** The Discord listener
-keeps a per-channel replay cursor (the newest message id it handled); on
-every fresh connect it fetches what arrived after the cursor over REST and
-runs each message down the exact same path as a live event — same wake
-rules, same history, stamped with Discord's own send time. Channels the
+**Nothing said while the server was down is lost.** Both listeners keep a
+per-channel replay cursor (the newest message id/ts handled); on every
+fresh connect they fetch what arrived after the cursor over REST and run
+each message down the exact same path as a live event — same wake rules,
+same history, stamped with the platform's own send time. Channels the
 listener has never seen get baselined on first connect, so only the very
 first message in a brand-new channel during downtime waits for the next
-message there. (The Slack listener does not have catch-up yet.)
+message there. One Slack caveat: catch-up recovers top-level messages;
+replies posted into an existing thread while the server was down are not
+recovered.
 
 ## Scoping the bot to a server or channel
 

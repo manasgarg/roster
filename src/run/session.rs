@@ -21,6 +21,7 @@ pub async fn chat(worker: &str, idle: u64) -> Result<(), BErr> {
                 text: l,
                 author_label: "stdin".into(),
                 context: crate::worker::memory::RunContext::default(),
+                history: Vec::new(),
             };
             if tx.send(msg).await.is_err() {
                 break;
@@ -462,8 +463,15 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
             let _ = info_tx.send(reply).await;
             continue;
         }
-        // Only the human side is persisted, like the other channels
-        // (continuity inside a session comes from the session itself).
+        // Snapshot before persisting, like the listeners: a fresh session's
+        // first turn carries the conversation so far; a live session ignores
+        // it (continuity inside a session comes from the session itself).
+        let history = crate::channel::discord::recent_messages(
+            &channel_id,
+            crate::channel::discord::HISTORY_SNAPSHOT_MAX,
+        );
+        // The human side is persisted here; the worker's side lands via the
+        // send executors, like the other channels.
         crate::channel::discord::persist_message(
             &channel_id,
             &serde_json::json!({
@@ -476,6 +484,7 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
             text: l,
             author_label: user.clone(),
             context: context.clone(),
+            history,
         });
         if let Some((tx, _)) = live.as_ref() {
             if let Err(back) = tx.send(msg.take().unwrap()).await {

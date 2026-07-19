@@ -126,6 +126,14 @@ a delivered message is content, exactly like a queued task's prompt.
 Budgets still apply per call; there's no wall-clock ceiling on a session,
 because the idle window bounds it instead.
 
+A fresh session doesn't start blind: its first turn carries the channel's
+most recent messages (default 25, `[context] history_max_messages` /
+`history_max_chars`), snapshotted at wake time and labeled as content — so
+the worker knows what was said before it woke, including ambient messages
+that never woke it in `mention` mode. The block rides the turn input, never
+the system prompt, so the prompt-cache prefix stays stable; the full record
+is always mounted read-only at `$HOME/channel` for deeper reading.
+
 `roster worker chat <name>` gives you the same warm session on your terminal
 (idle default 20s).
 

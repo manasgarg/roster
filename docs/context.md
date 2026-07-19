@@ -27,6 +27,8 @@ system (stable → volatile):
 input (per run / per turn):
   Memory          ranked, bounded, advisory — quoted data, never rules
   Briefing        continuation outcome first, then open gates
+  History         a fresh session's first turn only: the channel's recent
+                  messages, snapshotted at wake — content, never authority
   Task / message  the exact text, in a typed envelope
 ```
 
@@ -44,9 +46,11 @@ trusted channel id on the run, never by text.
 
 Block sizes are bounded, in characters, from `org.toml [context]` (per-worker
 overlays allowed — defaults: 48k total injected, 12k identity, 8k purpose,
-4k briefing, 24k task). Under pressure the compiler shrinks the advisory
+4k briefing, 24k task, 25 history messages in 6k). Under pressure the
+compiler shrinks the advisory
 tail — the briefing keeps the continuation
-and counts what it omitted. Mandatory blocks (identity, purpose, policy,
+and counts what it omitted; history keeps the newest messages and drops the
+oldest. Mandatory blocks (identity, purpose, policy,
 scope, task) are **never silently truncated**: oversized means a failed
 compilation, and a failed compilation means no model input — there is no
 fallback to a less-governed prompt path.
@@ -68,7 +72,9 @@ roster server runs context <run> --all   # every turn of a session
 
 A session compiles its system prompt once at start; each turn compiles
 fresh input (the current briefing, the new message) while prior
-conversation bytes are never regenerated or reordered. Memory written in
+conversation bytes are never regenerated or reordered. The first turn also
+carries the recent-history block — later turns don't, because by then the
+conversation itself holds everything since. Memory written in
 turn N is eligible in turn N+1; a newly filed or resolved gate shows up in
 the next turn's briefing; identity and purpose edits take effect at the
 next session, not mid-flight.

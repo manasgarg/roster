@@ -859,6 +859,23 @@ async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, Strin
     Ok(json!({ "delivered": "inbox" }))
 }
 
+/// Record the worker's own outbound message in the channel's history, so a
+/// later session's first-turn history block (and $HOME/channel) carries both
+/// sides of the conversation. The listener never persists bot-authored
+/// events, so this is the single writer for the worker's side — no
+/// duplication, live or via catch-up.
+fn persist_worker_message(channel: &str, worker: &str, text: &str) {
+    let short = crate::paths::short_worker(worker);
+    crate::channel::discord::persist_message(
+        channel,
+        &json!({
+            "ts": now_rfc3339(),
+            "author_id": short, "author": short, "role": "worker",
+            "content": text, "attachments": [],
+        }),
+    );
+}
+
 /// Post a message to a Discord channel (the worker's reply). Trusted-side; the
 /// bot token comes from the vault, never the box.
 /// Post a system courtesy notice (e.g. "your task failed") to a chat channel
@@ -891,8 +908,9 @@ pub async fn deliver_notice(provider: &str, channel: &str, worker: &str, text: &
         // term/talk surfaces failures in the session itself; nothing to post.
         _ => return,
     };
-    if let Err(e) = result {
-        eprintln!("notice to {provider} channel {channel} not delivered: {e}");
+    match result {
+        Ok(()) => persist_worker_message(channel, worker, text),
+        Err(e) => eprintln!("notice to {provider} channel {channel} not delivered: {e}"),
     }
 }
 
@@ -913,6 +931,7 @@ async fn exec_discord(worker: &str, payload: &Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .ok_or("discord credential has no token")?;
     let id = crate::channel::discord::post_chunked(token, channel, text).await?;
+    persist_worker_message(channel, worker, text);
     eprintln!("discord [{worker}] → channel {channel}");
     Ok(json!({ "sent": true, "channel_id": channel, "message_id": id }))
 }
@@ -954,6 +973,7 @@ async fn exec_slack(worker: &str, payload: &Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .ok_or("slack credential has no bot_token")?;
     let ts = crate::channel::slack::post_chunked(token, channel, text, thread_ts).await?;
+    persist_worker_message(channel, worker, text);
     eprintln!("slack [{worker}] → channel {channel}");
     Ok(json!({ "sent": true, "channel_id": channel, "message_ts": ts }))
 }

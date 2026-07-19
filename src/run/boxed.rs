@@ -86,6 +86,7 @@ pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<
             reply_to: None,
         }),
         message: None,
+        history: Vec::new(),
     };
     let compiled = match crate::worker::context::compile_and_trace(&request) {
         Ok(compiled) => compiled,
@@ -143,10 +144,14 @@ enum Engine {
 
 /// One trusted conversation turn delivered to a warm session. The text goes to
 /// the model; the context stays host-side and governs scoped memory actions.
+/// `history` is the listener's pre-persist snapshot of the channel's recent
+/// messages — consumed by the session's FIRST turn only (a warm session
+/// already holds its own turns), ignored on every later delivery.
 pub struct SessionMessage {
     pub text: String,
     pub author_label: String,
     pub context: crate::worker::memory::RunContext,
+    pub history: Vec<serde_json::Value>,
 }
 
 /// Everything one boxed run needs to know about itself. Bundled because the
@@ -176,6 +181,7 @@ pub async fn dispatch(
         run_context: spec.run_context.clone(),
         task: Some(task),
         message: None,
+        history: Vec::new(),
     };
     let compiled = match crate::worker::context::compile_and_trace(&request) {
         Ok(compiled) => compiled,
@@ -404,6 +410,7 @@ pub async fn run_session(
         run_context: start_context.clone(),
         task: None,
         message: None,
+        history: Vec::new(),
     };
     let start = match crate::worker::context::compile_and_trace(&start_request) {
         Ok(compiled) => compiled,
@@ -480,6 +487,7 @@ pub async fn run_session(
     let mut turn_started: Option<tokio::time::Instant> = None;
     let mut rx_open = true;
     let mut busy = false; // a turn is in progress
+    let mut first_turn = true;
     let mut clean_exit = false;
     let mut pending: std::collections::VecDeque<SessionMessage> = std::collections::VecDeque::new();
     loop {
@@ -513,6 +521,10 @@ pub async fn run_session(
                         role: msg.context.role.clone(),
                         text: msg.text,
                     }),
+                    // The room's recent past rides the first turn only —
+                    // later turns live in a conversation that already holds
+                    // everything since.
+                    history: if first_turn { msg.history } else { Vec::new() },
                 };
                 let compiled = match crate::worker::context::compile_and_trace(&request) {
                     Ok(compiled) => compiled,
@@ -533,6 +545,7 @@ pub async fn run_session(
                 }
                 let _ = stdin.flush().await;
                 busy = true;
+                first_turn = false;
                 turn_started = Some(tokio::time::Instant::now());
             }
         }

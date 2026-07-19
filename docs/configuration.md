@@ -129,8 +129,14 @@ model.
 | `purpose_max_chars` | 8000 |
 | `briefing_max_chars` | 4000 |
 | `task_max_chars` | 24000 |
+| `history_max_messages` | 25 |
+| `history_max_chars` | 6000 |
 
 Mandatory blocks fail rather than truncate; see [context.md](context.md).
+`history_*` bound the recent-channel-history block a fresh session's first
+turn carries (newest kept, oldest dropped; `0` disables it) — history
+truncates rather than fails, since the full record stays readable at
+`$HOME/channel`.
 
 ### `[knowledge]`
 

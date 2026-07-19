@@ -701,6 +701,23 @@ async fn handle_message(
     let author = d["author"]["username"].as_str().unwrap_or("?");
     let content = d["content"].as_str().unwrap_or("");
 
+    // Wake rule: a DM, an @mention, or a channel in "all" mode. In "mention"
+    // mode ambient messages are persisted but don't spawn a run. Evaluated
+    // before persisting so a waking message can snapshot the history it is
+    // about to join: the listener handles its events one at a time, so
+    // everything on file right now is exactly "the channel before this
+    // message" — no id matching, no race.
+    let mentioned = d["mentions"]
+        .as_array()
+        .map(|m| m.iter().any(|u| u["id"].as_str() == Some(bot_id)))
+        .unwrap_or(false);
+    let wakes = is_dm || mentioned || channel_mode(channel_id) == "all";
+    let history = if wakes {
+        recent_messages(channel_id, HISTORY_SNAPSHOT_MAX)
+    } else {
+        Vec::new()
+    };
+
     // Persist to the channel's history and download any attachments.
     let record = json!({
         // Discord's own send time, so caught-up messages land in history
@@ -713,13 +730,7 @@ async fn handle_message(
     persist_message(channel_id, &record);
     download_attachments(channel_id, &d["attachments"]).await;
 
-    // Wake rule: a DM, an @mention, or a channel in "all" mode. In "mention"
-    // mode ambient messages are persisted but don't spawn a run.
-    let mentioned = d["mentions"]
-        .as_array()
-        .map(|m| m.iter().any(|u| u["id"].as_str() == Some(bot_id)))
-        .unwrap_or(false);
-    if !(is_dm || mentioned || channel_mode(channel_id) == "all") {
+    if !wakes {
         return;
     }
 
@@ -745,8 +756,22 @@ async fn handle_message(
         inbound: false, // live channel context carries ids; inbound marks relay tasks
     };
     eprintln!("discord: {author} ({role}) in {channel_id} → session");
-    route_to_session(worker, channel_id, author.to_string(), text, context, token).await;
+    route_to_session(
+        worker,
+        channel_id,
+        author.to_string(),
+        text,
+        context,
+        history,
+        token,
+    )
+    .await;
 }
+
+/// How many records a waking message snapshots for a fresh session's first
+/// turn. Generous on purpose — the context policy's `history_max_messages` /
+/// `history_max_chars` do the real trimming at compile time.
+pub(crate) const HISTORY_SNAPSHOT_MAX: usize = 50;
 
 // ── conversation sessions: one warm box per active channel ────────────────────
 
@@ -776,6 +801,7 @@ async fn route_to_session(
     author_label: String,
     text: String,
     context: crate::worker::memory::RunContext,
+    history: Vec<Value>,
     token: &str,
 ) {
     let start_context = context.clone();
@@ -786,6 +812,7 @@ async fn route_to_session(
         text,
         author_label,
         context,
+        history,
     };
     let delivered = {
         let map = sessions().lock().unwrap();
@@ -795,6 +822,8 @@ async fn route_to_session(
                     text: message.text.clone(),
                     author_label: message.author_label.clone(),
                     context: message.context.clone(),
+                    // A live session already holds its own turns.
+                    history: Vec::new(),
                 })
                 .is_ok(),
             None => false,
@@ -1266,12 +1295,15 @@ pub(crate) fn persist_message(channel_id: &str, record: &Value) {
     }
 }
 
-/// Distinct human authors seen in a channel's history (bots aren't persisted),
-/// to tell a 1:1 conversation from a group one.
+/// Distinct human authors seen in a channel's history, to tell a 1:1
+/// conversation from a group one. The worker's own replies are on file too
+/// (role "worker" — the send executors record them); they don't make a
+/// conversation a group.
 pub(crate) fn distinct_human_authors(channel_id: &str) -> usize {
     use std::collections::HashSet;
     recent_messages(channel_id, 500)
         .iter()
+        .filter(|m| m["role"].as_str() != Some("worker"))
         .filter_map(|m| m["author_id"].as_str().map(String::from))
         .collect::<HashSet<_>>()
         .len()

@@ -420,6 +420,21 @@ async fn handle_message(
     };
     let text = event["text"].as_str().unwrap_or("");
 
+    // Wake rule (same as Discord): a DM, an @mention, or a channel in "all"
+    // mode. In "mention" mode ambient messages are persisted but don't wake.
+    // Evaluated before persisting so a waking message snapshots exactly "the
+    // channel before this message" for a fresh session's first turn.
+    let mentioned = text.contains(&format!("<@{bot_user_id}>"));
+    let wakes = is_dm || mentioned || channel_mode(channel_id) == "all";
+    let history = if wakes {
+        crate::channel::discord::recent_messages(
+            channel_id,
+            crate::channel::discord::HISTORY_SNAPSHOT_MAX,
+        )
+    } else {
+        Vec::new()
+    };
+
     persist_message(
         channel_id,
         &json!({
@@ -433,10 +448,7 @@ async fn handle_message(
         }),
     );
 
-    // Wake rule (same as Discord): a DM, an @mention, or a channel in "all"
-    // mode. In "mention" mode ambient messages are persisted but don't wake.
-    let mentioned = text.contains(&format!("<@{bot_user_id}>"));
-    if !(is_dm || mentioned || channel_mode(channel_id) == "all") {
+    if !wakes {
         return;
     }
 
@@ -465,6 +477,7 @@ async fn handle_message(
         user_id.to_string(),
         format!("{text}{hint}"),
         context,
+        history,
         bot_token,
     )
     .await;
@@ -523,6 +536,7 @@ async fn route_to_session(
     author_label: String,
     text: String,
     context: crate::worker::memory::RunContext,
+    history: Vec<Value>,
     bot_token: &str,
 ) {
     let start_context = context.clone();
@@ -532,6 +546,7 @@ async fn route_to_session(
         text,
         author_label,
         context,
+        history,
     };
     let delivered = {
         let map = sessions().lock().unwrap();
@@ -541,6 +556,8 @@ async fn route_to_session(
                     text: message.text.clone(),
                     author_label: message.author_label.clone(),
                     context: message.context.clone(),
+                    // A live session already holds its own turns.
+                    history: Vec::new(),
                 })
                 .is_ok(),
             None => false,

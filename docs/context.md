@@ -46,7 +46,7 @@ trusted channel id on the run, never by text.
 
 Block sizes are bounded, in characters, from `org.toml [context]` (per-worker
 overlays allowed — defaults: 48k total injected, 12k identity, 8k purpose,
-4k briefing, 24k task, 25 history messages in 6k). Under pressure the
+4k briefing, 24k task, 5 history messages in 6k). Under pressure the
 compiler shrinks the advisory
 tail — the briefing keeps the continuation
 and counts what it omitted; history keeps the newest messages and drops the

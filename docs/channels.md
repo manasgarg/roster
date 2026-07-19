@@ -127,7 +127,7 @@ Budgets still apply per call; there's no wall-clock ceiling on a session,
 because the idle window bounds it instead.
 
 A fresh session doesn't start blind: its first turn carries the channel's
-most recent messages (default 25, `[context] history_max_messages` /
+most recent messages (default 5, `[context] history_max_messages` /
 `history_max_chars`), snapshotted at wake time and labeled as content — so
 the worker knows what was said before it woke, including ambient messages
 that never woke it in `mention` mode. The block rides the turn input, never

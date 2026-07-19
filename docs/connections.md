@@ -32,22 +32,37 @@ and model secrets are consumed host-side only.
 ```bash
 roster connection catalog
 roster connection add                       # bare: the guided session
-roster connection add github --worker yuko  # login → vault → scaffold → validate
-roster connection add discord --worker yuko # login → vault → [channels] binding
+roster connection add github                # login → vault → scaffold (granted to no one yet)
+roster connection add github --worker yuko  # add + grant in one breath
 roster connection add anthropic             # login → vault → grant report
 roster connection add slack --worker yuko   # one login, channel AND capability
 roster connection add github --org          # org-wide, spelled out
 roster connection add github --name github-kdemo --worker kdemo
 ```
 
+Two acts, two verbs. `add` is the roster-level act: it connects the org
+to the service (login, vault, connection file). `grant` is the
+availability act: it makes the connection usable by a worker, and the
+restriction rides on the edge:
+
+```bash
+roster connection grant github yuko                          # unrestricted edge
+roster connection grant discord yuko --restrict servers=999  # scoped edge
+roster connection grant github --org                         # fleet-wide edge
+roster connection revoke discord yuko                        # withdraw the edge
+```
+
+`add --worker` / `add --org` are sugar for add-then-grant; bare `add`
+leaves the connection granted to no one — a legal resting state, shown as
+**ungranted** in `ls`.
+
 `add` runs the provider's login flow (paste details, or an OAuth dance
 roster triggers), stores the secret, and follows through per use:
 
 - **capability** — scaffolds the connection file (once — re-running only
   **rotates the secret**, never touches your edits) and prints the
-  compiled result. Per-worker is the default posture: a connection is a
-  capability granted to an identity, not to the fleet. `--name` gives the
-  connection its own name — the idiom for per-worker service identities.
+  compiled result. `--name` gives the connection its own name — the idiom
+  for per-worker service identities.
   The worker is told: every run's system context carries a compiled
   connections brief — each applicable connection's hosts, methods, and env
   stand-in, plus the provider's `brief` usage line from the registry (e.g.
@@ -61,8 +76,9 @@ roster triggers), stores the secret, and follows through per use:
   derive from the provider registry, compiling into an
   allow-and-inject rule for the model API (org-wide unless `--worker`
   narrows it, no env exposure). The file is admin-owned after creation —
-  edit or delete it to change access; a hand-written `[[grant]]` injecting
-  the same credential is respected and nothing is scaffolded over it.
+  edit it, use grant/revoke, or delete it to change access; a hand-written
+  `[[grant]]` injecting the same credential is respected and nothing is
+  scaffolded over it.
 
 A provider supporting several uses (slack) asks which to set up —
 `--use channel --use capability` for scripts — and collects only the
@@ -77,13 +93,16 @@ roster connection ls [--json]   # every connection, use(s), state
 roster connection rm <name>     # delete the secret and (on confirm) the connection file
 ```
 
-`ls` states: **active** (secret present, use bound), **DISABLED (no
-secret)** (a reference exists but the vault has nothing — grant and
-exposure omitted, warned loudly, never fail-open), **unbound** (a secret
-nothing references; the natural state mid-setup, named so orphans are
-visible). `rm` deletes the secret, then offers to delete the connection
-file it scaffolded (each behind its own y/N). It never edits org.toml or
-worker specs — references there are reported for you to remove yourself.
+`ls` states: **active** (secret present, edge granted), **ungranted**
+(connected, granted to no one — the resting state between `add` and
+`grant`), **DISABLED (no secret)** (a reference exists but the vault has
+nothing — grant and exposure omitted, warned loudly, never fail-open),
+**unbound** (a secret nothing references; the natural state mid-setup,
+named so orphans are visible). `rm` deletes the secret, then offers to
+delete the connection file — edges die with it (each step behind its own
+y/N). It never edits org.toml or worker specs — references there are
+reported for you to remove yourself, and `revoke` owns a worker's
+`[channels]` binding.
 
 ## Two structural guarantees
 
@@ -170,16 +189,20 @@ A host path becomes a connection the same way a service does — a file in
 
 ```toml
 # connections/notes.toml — a directory
-kind    = "host-dir"
-path    = "/home/you/shared-notes"
-mode    = "ro"                # or "rw"
-workers = ["yuko"]
+kind = "host-dir"
+path = "/home/you/shared-notes"
+mode = "ro"                   # or "rw"
 
+[grant.yuko]                  # membership only — mounts have no dimensions
+```
+
+```toml
 # connections/research-kb.toml — a git repository
-kind    = "host-repo"
-path    = "/home/you/research-kb.git"
-write   = "gated"             # or "ro"; gated needs a bare repo
-scope   = "org"
+kind  = "host-repo"
+path  = "/home/you/research-kb.git"
+write = "gated"               # or "ro"; gated needs a bare repo
+
+[grant.org]                   # the fleet-wide edge
 ```
 
 Granting one mounts it at `$HOME/mnt/<name>` in every run: `host-dir` as
@@ -196,23 +219,33 @@ to a granted dir are unrecoverable by roster.
 
 ## Scoping a grant
 
-A `[restrict]` table narrows a connection to provider-declared
-dimensions, and one scope governs every use the connection has — the
-listener refuses to attach outside it AND the gateway compiles it into
-request predicates, so "can speak there" and "can act there" never drift
-apart:
+Each `[grant.<worker>]` edge carries its own scope in provider-declared
+dimensions — two workers on one connection can see different slices of
+the service. One scope governs every use the edge has: the listener
+refuses to attach outside it AND the gateway compiles it into request
+predicates, so "can speak there" and "can act there" never drift apart:
 
 ```toml
 # connections/discord.toml
 provider = "discord"
-workers  = ["yuko"]
 env      = "DISCORD_TOKEN"
 hosts    = ["discord.com"]
 
-[restrict]
+[grant.yuko]
 servers  = ["1015381923845"]      # a guild id
 channels = ["1451951375079"]      # and/or specific channel ids
+
+[grant.kdemo]
+channels = ["1521178264683"]      # kdemo's own, narrower slice
 ```
+
+`[grant.org]` is the fleet-wide edge; a worker's own edge wins over it.
+The CLI writes these for you (`roster connection grant discord yuko
+--restrict servers=…`), and the edit is live either way. A worker with no
+edge gets nothing: the listener drops its guild traffic and no rules
+compile. (The pre-edge form — `workers = [..]`/`scope = "org"` with one
+shared `[restrict]` — still parses as identical edges, and `grant`
+migrates such a file the first time it touches one.)
 
 Discord declares `servers` and `channels` (the provider registry's
 `scope_dims`); either dimension admits a surface — a listed channel works

@@ -43,6 +43,8 @@ connection catalog
 connection add    [<service>] [--worker W].. [--org] [--name NAME]
                   [--host H].. [--header TEMPLATE] [--env VAR] [--method M]..
                   [--use U].. [--auth A] [--declare] [--verify]
+connection grant  <name> <worker>|--org [--restrict DIM=IDS]..
+connection revoke <name> <worker>|--org
 connection ls     [--json]
 connection rm     <name>
 

@@ -205,7 +205,7 @@ enum ConnectionCmd {
         /// Service from the connection catalog (omit for the guided session)
         #[arg(value_name = "SERVICE")]
         service: Option<String>,
-        /// Grant to this worker (repeatable); default is to ask
+        /// Also grant to this worker (repeatable); omit to connect without granting
         #[arg(long)]
         worker: Vec<String>,
         /// Org-wide: every current and future worker (the explicit escalation)
@@ -239,13 +239,38 @@ enum ConnectionCmd {
         #[arg(long)]
         verify: bool,
     },
+    /// Make a connection available to a worker (the restriction rides on the edge)
+    Grant {
+        /// Connection name (see: roster connection ls)
+        name: String,
+        /// Worker to grant to (or --org for the fleet-wide edge)
+        #[arg(value_name = "WORKER")]
+        worker: Option<String>,
+        /// Fleet-wide edge: every current and future worker
+        #[arg(long)]
+        org: bool,
+        /// Scope this edge to provider dimensions, e.g. servers=111,222 (repeatable)
+        #[arg(long, value_name = "DIM=IDS")]
+        restrict: Vec<String>,
+    },
+    /// Withdraw a worker's edge on a connection (the connection stays)
+    Revoke {
+        /// Connection name (see: roster connection ls)
+        name: String,
+        /// Worker whose edge to withdraw (or --org for the fleet-wide edge)
+        #[arg(value_name = "WORKER")]
+        worker: Option<String>,
+        /// The fleet-wide edge
+        #[arg(long)]
+        org: bool,
+    },
     /// Every connection, its use(s) — capability, channel, model — and state
     Ls {
         /// Machine-readable JSON
         #[arg(long)]
         json: bool,
     },
-    /// Delete the secret from the vault; report every surviving reference
+    /// Delete the secret and, on confirm, the connection file with its edges
     Rm {
         /// Connection name (see: roster connection ls)
         name: String,
@@ -568,6 +593,15 @@ async fn main() {
                 }
                 None => cli::connections::guided().await,
             },
+            Some(ConnectionCmd::Grant {
+                name,
+                worker,
+                org,
+                restrict,
+            }) => cli::connections::grant(&name, worker, org, &restrict),
+            Some(ConnectionCmd::Revoke { name, worker, org }) => {
+                cli::connections::revoke(&name, worker, org)
+            }
             Some(ConnectionCmd::Ls { json }) => cli::connections::ls(json),
             Some(ConnectionCmd::Rm { name }) => cli::connections::rm(&name),
         },

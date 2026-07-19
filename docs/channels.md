@@ -50,11 +50,12 @@ recovered.
 
 ## Scoping the bot to a server or channel
 
-The Discord connection's `[restrict]` table limits where the worker
-exists: list `servers` (guild ids) and/or `channels` (channel ids), and
-the listener treats everything outside the scope as if it didn't exist —
-not answered, not persisted, no commands registered there — while the
-gateway restricts API calls to the same scope
+The worker's `[grant.<worker>]` edge on the Discord connection limits
+where it exists: list `servers` (guild ids) and/or `channels` (channel
+ids) — `roster connection grant discord yuko --restrict servers=…` writes
+it — and the listener treats everything outside the scope as if it didn't
+exist: not answered, not persisted, no commands registered there — while
+the gateway restricts API calls to the same scope
 ([connections.md](connections.md) has the format and the enforcement
 details). Either dimension admits a surface; DMs always pass. The edit is
 live: scope changes apply without a listener restart.

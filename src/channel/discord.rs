@@ -128,12 +128,13 @@ struct GwError {
 /// Run the gateway for one worker: dial out, identify, and dispatch events.
 /// Reconnects on transient errors, resuming the session when possible so no
 /// messages are dropped in the gap; stops on fatal ones (bad token / intent).
-/// The `[restrict]` scope of the connection this listener runs under, looked
-/// up live so a scope edit applies without a listener restart. Guild-space
-/// only: DMs are a different trust surface (1:1, sought-out, dynamically
-/// created ids that could never be pre-listed) and always pass. Broken config
-/// fails closed, like dispatch does.
-fn out_of_scope(credential: &str, guild_id: Option<&str>, channel_id: &str) -> bool {
+/// This worker's grant edge on the connection this listener runs under,
+/// looked up live so a grant edit applies without a listener restart.
+/// Guild-space only: DMs are a different trust surface (1:1, sought-out,
+/// dynamically created ids that could never be pre-listed) and always pass.
+/// Broken config fails closed, like dispatch does — and so does a connection
+/// file that grants this worker nothing.
+fn out_of_scope(worker: &str, credential: &str, guild_id: Option<&str>, channel_id: &str) -> bool {
     let Some(gid) = guild_id else { return false };
     let cfg = match crate::config::snapshot() {
         Ok(c) => c,
@@ -143,7 +144,7 @@ fn out_of_scope(credential: &str, guild_id: Option<&str>, channel_id: &str) -> b
         }
     };
     match cfg.connections.iter().find(|c| c.name == credential) {
-        Some(c) => !c.allows_surface(Some(gid), channel_id),
+        Some(c) => !c.allows_surface(worker, Some(gid), channel_id),
         // No connection file for this credential (legacy [channels]-only
         // binding) = unrestricted, exactly as before scoping existed.
         None => false,
@@ -231,7 +232,7 @@ async fn catch_up(worker: &str, token: &str, credential: &str, bot_id: &str) {
         let Some((mut after, guild)) = cursor else {
             continue;
         };
-        if out_of_scope(credential, guild.as_deref(), &channel) {
+        if out_of_scope(worker, credential, guild.as_deref(), &channel) {
             continue;
         }
         // Bounded pages per channel: a week of backlog lands; an unbounded
@@ -484,18 +485,23 @@ async fn connect_once(
                             Err(_) => false,
                             Ok(cfg) => match cfg.connections.iter().find(|c| c.name == credential) {
                                 None => true,
-                                Some(c) if c.restrict.is_empty() => true,
-                                Some(c) => {
-                                    c.allows_surface(Some(&guild_id), "")
-                                        || d["channels"]
-                                            .as_array()
-                                            .map(|chs| {
-                                                chs.iter()
-                                                    .filter_map(|ch| ch["id"].as_str())
-                                                    .any(|id| c.allows_surface(None, id))
-                                            })
-                                            .unwrap_or(false)
-                                }
+                                Some(c) => match c.grant_for(worker) {
+                                    // A file that grants this worker nothing
+                                    // admits nothing.
+                                    None => false,
+                                    Some(r) if r.is_empty() => true,
+                                    Some(_) => {
+                                        c.allows_surface(worker, Some(&guild_id), "")
+                                            || d["channels"]
+                                                .as_array()
+                                                .map(|chs| {
+                                                    chs.iter()
+                                                        .filter_map(|ch| ch["id"].as_str())
+                                                        .any(|id| c.allows_surface(worker, None, id))
+                                                })
+                                                .unwrap_or(false)
+                                    }
+                                },
                             },
                         };
                         if guild_admitted {
@@ -509,7 +515,7 @@ async fn connect_once(
                         // never refetches the bot's own replies.
                         let ch = d["channel_id"].as_str().unwrap_or("");
                         let gid = d["guild_id"].as_str();
-                        if !ch.is_empty() && !out_of_scope(credential, gid, ch) {
+                        if !ch.is_empty() && !out_of_scope(worker, credential, gid, ch) {
                             if let Some(id) = d["id"].as_str() {
                                 write_cursor(ch, id, gid);
                             }
@@ -520,6 +526,7 @@ async fn connect_once(
                         // The same attachment rule as messages: an interaction
                         // from an out-of-scope surface doesn't exist for us.
                         if out_of_scope(
+                            worker,
                             credential,
                             d["guild_id"].as_str(),
                             d["channel_id"].as_str().unwrap_or(""),
@@ -672,7 +679,7 @@ async fn handle_message(
     }
     // Attachment rule: an out-of-scope surface doesn't exist for this
     // listener — not persisted, not answered, no attachments fetched.
-    if out_of_scope(credential, d["guild_id"].as_str(), channel_id) {
+    if out_of_scope(worker, credential, d["guild_id"].as_str(), channel_id) {
         return;
     }
     let is_dm = d["guild_id"].as_str().is_none();

@@ -574,10 +574,7 @@ fn worker_connections(worker: &str) -> Vec<ConnectionBrief> {
         .connections
         .iter()
         .filter(|c| c.enabled && !c.env.is_empty())
-        .filter(|c| match &c.workers {
-            None => true,
-            Some(list) => list.iter().any(|w| w == short),
-        })
+        .filter(|c| c.applies_to(short))
         .map(|c| ConnectionBrief {
             name: c.name.clone(),
             hosts: c.hosts.clone(),

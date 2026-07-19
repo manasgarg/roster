@@ -33,26 +33,45 @@ pub const DEFAULT_BOX_IMAGE: &str = "ghcr.io/manasgarg/roster-box:latest";
 pub struct Connection {
     pub name: String,
     pub provider: String,
-    /// None = org-wide; Some = these workers only.
-    pub workers: Option<Vec<String>>,
+    /// Availability edges: `[grant.<worker>]` sections ("org" is the
+    /// fleet-wide edge). Each edge carries its own scope in provider-declared
+    /// dimensions (registry `scope_dims`; discord: servers/channels) — one
+    /// scope per edge, every enforcement point: listeners refuse attachment
+    /// outside it, the gateway compiles it into path predicates. An empty
+    /// edge is unrestricted; an empty map is a connection granted to no one.
+    /// Legacy `workers = [..]`/`scope = "org"` + `[restrict]` files parse
+    /// into identical edges.
+    pub grants: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
     pub hosts: Vec<String>,
     pub methods: Vec<String>,
     pub env: String,
     /// Secret present in the vault?
     pub enabled: bool,
-    /// `[restrict]` — provider-declared scope dimensions narrowing the grant
-    /// (registry `scope_dims`; discord: servers/channels). One scope, every
-    /// enforcement point: listeners refuse attachment outside it, the gateway
-    /// compiles it into path predicates. Empty = unrestricted.
-    pub restrict: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl Connection {
-    /// The channel/server restriction a listener must enforce, if any.
-    /// None = unrestricted. Ids are Discord snowflakes as strings.
-    pub fn allows_surface(&self, server_id: Option<&str>, channel_id: &str) -> bool {
-        let servers = self.restrict.get("servers");
-        let channels = self.restrict.get("channels");
+    /// The edge governing this worker, if any: the worker's own edge wins
+    /// over the org-wide one.
+    pub fn grant_for(
+        &self,
+        worker: &str,
+    ) -> Option<&std::collections::BTreeMap<String, Vec<String>>> {
+        self.grants.get(worker).or_else(|| self.grants.get("org"))
+    }
+
+    pub fn applies_to(&self, worker: &str) -> bool {
+        self.grant_for(worker).is_some()
+    }
+
+    /// The channel/server restriction a listener must enforce for this
+    /// worker. No edge = nothing admitted; an empty edge = unrestricted.
+    /// Ids are Discord snowflakes as strings.
+    pub fn allows_surface(&self, worker: &str, server_id: Option<&str>, channel_id: &str) -> bool {
+        let Some(restrict) = self.grant_for(worker) else {
+            return false;
+        };
+        let servers = restrict.get("servers");
+        let channels = restrict.get("channels");
         if servers.is_none() && channels.is_none() {
             return true;
         }
@@ -315,6 +334,15 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         for name in names {
             let spec = workers_dir.join(&name).join("worker.toml");
             if !spec.exists() {
+                continue;
+            }
+            // "org" is the fleet: the root scope, the fleet-wide grant edge.
+            // A worker by that name would collide with both — fail closed.
+            if name == "org" {
+                errors.push(format!(
+                    "{}: \"org\" is reserved (the org scope and the fleet-wide [grant.org] edge) — rename the worker",
+                    spec.display()
+                ));
                 continue;
             }
             let w = match read_toml(&spec) {
@@ -631,26 +659,96 @@ fn compile_connection(
     let org_scoped = v.get("scope").and_then(|x| x.as_str()) == Some("org");
     // Accept the pre-rename key so upgraded deployments keep parsing.
     let workers = strings("workers").or_else(|| strings("imps"));
-    match (&workers, org_scoped) {
-        (Some(_), true) => errors.push(format!(
-            "{ctx}: choose workers = [..] OR scope = \"org\", not both"
-        )),
-        (None, false) => errors.push(format!(
-            "{ctx}: needs workers = [\"<name>\", ..] or scope = \"org\""
-        )),
-        (Some(list), false) => {
-            for w in list {
-                if !known_workers.contains(w) {
-                    errors.push(format!("{ctx}: no such worker \"{w}\""));
+    let dims = scope_dims_of(&provider);
+
+    // Availability edges. New form: `[grant.<worker>]` tables, each with its
+    // own provider-dim scope. Legacy form: `workers = [..]` / `scope = "org"`
+    // with one shared `[restrict]` — parsed into identical edges. Neither
+    // form present = connected but granted to no one (the resting state
+    // between `connection add` and `connection grant`).
+    let mut grants: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, Vec<String>>,
+    > = Default::default();
+    let has_legacy = workers.is_some() || org_scoped || v.get("restrict").is_some();
+    if let Some(g) = v.get("grant") {
+        if has_legacy {
+            errors.push(format!(
+                "{ctx}: choose [grant.<worker>] tables OR the legacy workers/scope/[restrict] keys, not both"
+            ));
+        }
+        match g.as_table() {
+            Some(table) => {
+                for (who, edge) in table {
+                    if who != "org" && !known_workers.contains(who) {
+                        errors.push(format!("{ctx}: no such worker \"{who}\" in [grant.{who}]"));
+                    }
+                    match edge.as_table() {
+                        Some(t) => {
+                            let scope = parse_edge_scope(
+                                t,
+                                &format!("{ctx}: grant.{who}"),
+                                &provider,
+                                &dims,
+                                &mut errors,
+                            );
+                            grants.insert(who.clone(), scope);
+                        }
+                        None => errors.push(format!(
+                            "{ctx}: [grant.{who}] must be a table of <dimension> = [\"id\", ..]"
+                        )),
+                    }
                 }
             }
-            if list.is_empty() {
-                errors.push(format!(
-                    "{ctx}: workers = [] grants nothing — use scope = \"org\" or name workers"
-                ));
+            None => errors.push(format!(
+                "{ctx}: [grant] must be a table of [grant.<worker>] sections"
+            )),
+        }
+    } else {
+        let shared = match v.get("restrict") {
+            Some(r) => match r.as_table() {
+                Some(table) => {
+                    parse_edge_scope(table, &format!("{ctx}: restrict"), &provider, &dims, &mut errors)
+                }
+                None => {
+                    errors.push(format!(
+                        "{ctx}: [restrict] must be a table of <dimension> = [\"id\", ..]"
+                    ));
+                    Default::default()
+                }
+            },
+            None => Default::default(),
+        };
+        match (&workers, org_scoped) {
+            (Some(_), true) => errors.push(format!(
+                "{ctx}: choose workers = [..] OR scope = \"org\", not both"
+            )),
+            (Some(list), false) => {
+                for w in list {
+                    if !known_workers.contains(w) {
+                        errors.push(format!("{ctx}: no such worker \"{w}\""));
+                    }
+                }
+                if list.is_empty() {
+                    errors.push(format!(
+                        "{ctx}: workers = [] grants nothing — use scope = \"org\" or name workers"
+                    ));
+                }
+                for w in list {
+                    grants.insert(w.clone(), shared.clone());
+                }
+            }
+            (None, true) => {
+                grants.insert("org".to_string(), shared);
+            }
+            (None, false) => {
+                if v.get("restrict").is_some() {
+                    errors.push(format!(
+                        "{ctx}: [restrict] without an edge grants nothing — use [grant.<worker>] tables"
+                    ));
+                }
             }
         }
-        (None, true) => {}
     }
 
     // A model provider's connection is a grant by default: hosts come from
@@ -675,50 +773,6 @@ fn compile_connection(
         errors.push(format!("{ctx}: needs env = \"<VAR the box sees>\""));
     }
 
-    // `[restrict]` — one scope declaration, validated against the provider's
-    // registry-declared dimensions. Unknown dimension = config error, not a
-    // silently ignored key: a restriction the operator believes exists MUST
-    // exist.
-    let mut restrict: std::collections::BTreeMap<String, Vec<String>> = Default::default();
-    if let Some(r) = v.get("restrict") {
-        match r.as_table() {
-            Some(table) => {
-                let dims = scope_dims_of(&provider);
-                for (dim, val) in table {
-                    if !dims.iter().any(|d| d == dim) {
-                        let declared = if dims.is_empty() {
-                            "it declares none".to_string()
-                        } else {
-                            format!("it declares: {}", dims.join(", "))
-                        };
-                        errors.push(format!(
-                            "{ctx}: provider \"{provider}\" has no scope dimension \"{dim}\" ({declared})"
-                        ));
-                        continue;
-                    }
-                    let ids: Vec<String> = val
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|s| s.as_str())
-                                .map(str::to_string)
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    if ids.is_empty() {
-                        errors.push(format!(
-                            "{ctx}: restrict.{dim} needs a non-empty list of id strings"
-                        ));
-                        continue;
-                    }
-                    restrict.insert(dim.clone(), ids);
-                }
-            }
-            None => errors.push(format!(
-                "{ctx}: [restrict] must be a table of <dimension> = [\"id\", ..]"
-            )),
-        }
-    }
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -727,12 +781,11 @@ fn compile_connection(
     let connection = Connection {
         name: name.to_string(),
         provider: provider.clone(),
-        workers: workers.clone(),
+        grants: grants.clone(),
         hosts: hosts.clone(),
         methods: methods.clone(),
         env: env.clone(),
         enabled,
-        restrict: restrict.clone(),
     };
     if !enabled {
         // Disabled, not broken: no grant, no exposure, nothing to inject —
@@ -750,12 +803,16 @@ fn compile_connection(
         return Ok((connection, Vec::new(), Vec::new(), Some(warning)));
     }
 
-    let scopes: Vec<String> = match &workers {
-        Some(list) => list.iter().map(|w| format!("org/{w}")).collect(),
-        None => vec!["org".to_string()],
+    let scope_of = |who: &str| {
+        if who == "org" {
+            "org".to_string()
+        } else {
+            format!("org/{who}")
+        }
     };
     let mut rules: Vec<Value> = Vec::new();
-    for scope in &scopes {
+    for (who, restrict) in &grants {
+        let scope = scope_of(who);
         let mut inject = json!({ "credential": name, "provider": provider });
         if let (Some(header), Some(value)) = (&inject_header, &inject_value) {
             inject["headers"] = json!([{ "header": header, "value": value }]);
@@ -819,16 +876,60 @@ fn compile_connection(
     let exposes = if env.is_empty() {
         Vec::new()
     } else {
-        scopes
-            .into_iter()
-            .map(|scope| Expose {
-                scope,
+        grants
+            .keys()
+            .map(|who| Expose {
+                scope: scope_of(who),
                 credential: name.to_string(),
                 env: env.clone(),
             })
             .collect()
     };
     Ok((connection, rules, exposes, None))
+}
+
+/// One edge's scope: a table of <dimension> = ["id", ..], validated against
+/// the provider's registry-declared dimensions. Unknown dimension = config
+/// error, not a silently ignored key: a restriction the operator believes
+/// exists MUST exist.
+fn parse_edge_scope(
+    table: &toml::value::Table,
+    ctx: &str,
+    provider: &str,
+    dims: &[String],
+    errors: &mut Vec<String>,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut out = std::collections::BTreeMap::new();
+    for (dim, val) in table {
+        if !dims.iter().any(|d| d == dim) {
+            let declared = if dims.is_empty() {
+                "it declares none".to_string()
+            } else {
+                format!("it declares: {}", dims.join(", "))
+            };
+            errors.push(format!(
+                "{ctx}: provider \"{provider}\" has no scope dimension \"{dim}\" ({declared})"
+            ));
+            continue;
+        }
+        let ids: Vec<String> = val
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if ids.is_empty() {
+            errors.push(format!(
+                "{ctx}.{dim} needs a non-empty list of id strings"
+            ));
+            continue;
+        }
+        out.insert(dim.clone(), ids);
+    }
+    out
 }
 
 /// Compile a `kind = "host-dir"` / `"host-repo"` connection file. No secret,
@@ -876,27 +977,72 @@ fn compile_host_mount(
         })
     };
     let org_scoped = v.get("scope").and_then(|x| x.as_str()) == Some("org");
-    let workers = strings("workers");
-    match (&workers, org_scoped) {
-        (Some(_), true) => errors.push(format!(
-            "{ctx}: choose workers = [..] OR scope = \"org\", not both"
-        )),
-        (None, false) => errors.push(format!(
-            "{ctx}: needs workers = [\"<name>\", ..] or scope = \"org\""
-        )),
-        (Some(list), false) => {
-            for w in list {
-                if !known_workers.contains(w) {
-                    errors.push(format!("{ctx}: no such worker \"{w}\""));
+    let mut workers = strings("workers");
+    // `[grant.<worker>]` edges name the mount's audience in the same shape
+    // service connections use. Mounts declare no scope dimensions, so an edge
+    // here must be empty.
+    if let Some(g) = v.get("grant") {
+        if workers.is_some() || org_scoped {
+            errors.push(format!(
+                "{ctx}: choose [grant.<worker>] tables OR the legacy workers/scope keys, not both"
+            ));
+        }
+        match g.as_table() {
+            Some(table) => {
+                let mut list: Vec<String> = Vec::new();
+                let mut org_edge = false;
+                for (who, edge) in table {
+                    if !edge.as_table().is_some_and(|t| t.is_empty()) {
+                        errors.push(format!(
+                            "{ctx}: [grant.{who}] must be empty — mounts declare no scope dimensions"
+                        ));
+                    }
+                    if who == "org" {
+                        org_edge = true;
+                    } else {
+                        list.push(who.clone());
+                    }
+                }
+                if org_edge {
+                    if !list.is_empty() {
+                        errors.push(format!(
+                            "{ctx}: [grant.org] already covers every worker — drop the named edges"
+                        ));
+                    }
+                    workers = None;
+                } else {
+                    workers = Some(list);
                 }
             }
-            if list.is_empty() {
-                errors.push(format!(
-                    "{ctx}: workers = [] grants nothing — use scope = \"org\" or name workers"
-                ));
+            None => errors.push(format!(
+                "{ctx}: [grant] must be a table of [grant.<worker>] sections"
+            )),
+        }
+        // An empty [grant] is legal: the mount exists, granted to no one.
+    } else {
+        match (&workers, org_scoped) {
+            (Some(_), true) => errors.push(format!(
+                "{ctx}: choose workers = [..] OR scope = \"org\", not both"
+            )),
+            (None, false) => errors.push(format!(
+                "{ctx}: needs workers = [\"<name>\", ..] or a [grant.<worker>] edge"
+            )),
+            (Some(list), false) => {
+                if list.is_empty() {
+                    errors.push(format!(
+                        "{ctx}: workers = [] grants nothing — use scope = \"org\" or name workers"
+                    ));
+                }
+            }
+            (None, true) => {}
+        }
+    }
+    if let Some(list) = &workers {
+        for w in list {
+            if !known_workers.contains(w) {
+                errors.push(format!("{ctx}: no such worker \"{w}\""));
             }
         }
-        (None, true) => {}
     }
 
     let mount_kind = match kind {
@@ -1259,12 +1405,14 @@ mod tests {
         assert!(c.enabled);
         assert_eq!(c.methods, vec!["*"]); // the default: full access
         assert_eq!(rules.len(), 2);
-        assert_eq!(rules[0]["scope"], "org/yuko");
+        // Edges compile in name order (kdemo, yuko) — one rule per worker.
+        assert_eq!(rules[0]["scope"], "org/kdemo");
+        assert_eq!(rules[1]["scope"], "org/yuko");
         assert_eq!(rules[0]["name"], "connection:github");
         assert_eq!(rules[0]["match"]["host"][0], "api.github.com");
         assert_eq!(rules[0]["inject"]["credential"], "github");
         assert_eq!(exposes.len(), 2);
-        assert_eq!(exposes[1].scope, "org/kdemo");
+        assert_eq!(exposes[1].scope, "org/yuko");
         assert_eq!(exposes[1].env, "GH_TOKEN");
         assert!(warning.is_none());
     }
@@ -1347,8 +1495,10 @@ mod tests {
             dims,
         )
         .unwrap();
-        assert!(c.allows_surface(None, "111"));
-        assert!(!c.allows_surface(None, "333"));
+        assert!(c.allows_surface("yuko", None, "111"));
+        assert!(!c.allows_surface("yuko", None, "333"));
+        // No edge for kdemo: nothing is admitted, not everything.
+        assert!(!c.allows_surface("kdemo", None, "111"));
         // allow 111, allow 222, deny unscoped channels, deny guilds, broad allow
         assert_eq!(rules.len(), 5);
         assert_eq!(
@@ -1380,11 +1530,122 @@ mod tests {
             dims,
         )
         .unwrap();
-        assert!(c.allows_surface(Some("999"), "any-channel"));
-        assert!(!c.allows_surface(Some("998"), "any-channel"));
+        assert!(c.allows_surface("yuko", Some("999"), "any-channel"));
+        assert!(!c.allows_surface("yuko", Some("998"), "any-channel"));
         assert!(rules
             .iter()
             .all(|r| r["name"] != "connection:discord:deny-unscoped-channels"));
+    }
+
+    #[test]
+    fn grant_tables_carry_per_worker_scopes() {
+        let dims = |p: &str| {
+            if p == "discord" {
+                vec!["servers".to_string(), "channels".to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        let v = toml(
+            r#"
+            provider = "discord"
+            hosts = ["discord.com"]
+            env = "DISCORD_TOKEN"
+            [grant.yuko]
+            servers = ["999"]
+            [grant.kdemo]
+            channels = ["111"]
+        "#,
+        );
+        let (c, rules, exposes, _) = compile_connection(
+            "discord",
+            &v,
+            &["yuko".to_string(), "kdemo".to_string()],
+            |_| true,
+            |_| true,
+            |_| None,
+            dims,
+        )
+        .unwrap();
+        // Each worker's edge is its own scope — no bleed between them.
+        assert!(c.allows_surface("yuko", Some("999"), "x"));
+        assert!(!c.allows_surface("kdemo", Some("999"), "x"));
+        assert!(c.allows_surface("kdemo", None, "111"));
+        assert!(!c.allows_surface("yuko", None, "111"));
+        // Rules and exposures land per edge, in the worker's scope.
+        assert!(rules
+            .iter()
+            .any(|r| r["scope"] == "org/yuko" && r["match"]["pathPrefix"] == "/api/v10/guilds/999"));
+        assert!(rules
+            .iter()
+            .any(|r| r["scope"] == "org/kdemo"
+                && r["match"]["pathPrefix"] == "/api/v10/channels/111"));
+        assert_eq!(exposes.len(), 2);
+
+        // An org edge is the fallback for workers without their own.
+        let v = toml(
+            r#"
+            provider = "discord"
+            hosts = ["discord.com"]
+            env = "DISCORD_TOKEN"
+            [grant.org]
+            servers = ["999"]
+        "#,
+        );
+        let (c, rules, _, _) =
+            compile_connection("discord", &v, &[], |_| true, |_| true, |_| None, dims).unwrap();
+        assert!(c.applies_to("anyone"));
+        assert!(c.allows_surface("anyone", Some("999"), "x"));
+        assert!(rules.iter().any(|r| r["scope"] == "org"));
+
+        // Identity-only: connected, granted to no one — legal, compiles to
+        // nothing, admits nothing.
+        let v = toml(
+            r#"
+            provider = "discord"
+            hosts = ["discord.com"]
+            env = "DISCORD_TOKEN"
+        "#,
+        );
+        let (c, rules, exposes, _) =
+            compile_connection("discord", &v, &[], |_| true, |_| true, |_| None, dims).unwrap();
+        assert!(c.grants.is_empty() && rules.is_empty() && exposes.is_empty());
+        assert!(!c.applies_to("yuko"));
+
+        // Mixing syntaxes is an error, and so is an unknown worker.
+        let v = toml(
+            r#"
+            provider = "discord"
+            workers = ["yuko"]
+            hosts = ["discord.com"]
+            env = "DISCORD_TOKEN"
+            [grant.yuko]
+            servers = ["999"]
+        "#,
+        );
+        let errors = compile_connection(
+            "discord",
+            &v,
+            &["yuko".to_string()],
+            |_| true,
+            |_| true,
+            |_| None,
+            dims,
+        )
+        .unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("not both")));
+        let v = toml(
+            r#"
+            provider = "discord"
+            hosts = ["discord.com"]
+            env = "DISCORD_TOKEN"
+            [grant.ghost]
+            servers = ["999"]
+        "#,
+        );
+        let errors =
+            compile_connection("discord", &v, &[], |_| true, |_| true, |_| None, dims).unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("no such worker \"ghost\"")));
     }
 
     #[test]

@@ -6,10 +6,11 @@ made available per worker or org-wide ([connections.md](connections.md)):
 
 ```toml
 # connections/research-kb.toml
-kind    = "host-repo"
-path    = "/home/you/research-kb.git"   # a bare repository
-write   = "gated"                        # or "ro" (the default)
-workers = ["yuko"]
+kind  = "host-repo"
+path  = "/home/you/research-kb.git"   # a bare repository
+write = "gated"                       # or "ro" (the default)
+
+[grant.yuko]
 ```
 
 A `ro` repo simply mounts read-only at `$HOME/mnt/<name>`. A **gated**

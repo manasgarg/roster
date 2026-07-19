@@ -239,46 +239,22 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
         None => None,
     };
 
-    // Scope: flags win; otherwise ask — but only when a capability file will
-    // be scaffolded. Per-worker is the default posture: a connection is a
-    // capability granted to an identity, not to the fleet.
+    // Edges: `add` connects the service at the roster level; --worker/--org
+    // are sugar for the grant that follows (roster connection grant). Neither
+    // flag = connected, granted to no one — grant it when ready.
     let known = match crate::config::snapshot() {
         Ok(c) => c.workers.clone(),
         Err(e) => return Err(format!("config must load before connecting a service:\n{e}").into()),
     };
-    let scope_workers: Option<Vec<String>> = if !capability || path.exists() || org {
-        None
-    } else if !workers.is_empty() {
-        Some(workers.clone())
+    let mut edges: std::collections::BTreeMap<String, EdgeScope> = Default::default();
+    if org {
+        edges.insert("org".to_string(), EdgeScope::new());
     } else {
-        let answer = crate::credential::connect::ask(&format!(
-            "for which worker(s)? ({}, comma-separated, or \"org\" for org-wide): ",
-            known.join(", ")
-        ))?;
-        if answer.trim() == "org" {
-            None
-        } else {
-            Some(
-                answer
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect(),
-            )
-        }
-    };
-    if capability && !path.exists() {
-        if let Some(list) = &scope_workers {
-            if list.is_empty() {
-                return Err("no workers named — nothing to grant".into());
+        for w in &workers {
+            if !known.contains(w) {
+                return Err(format!("no such worker \"{w}\" (have: {})", known.join(", ")).into());
             }
-            for w in list {
-                if !known.contains(w) {
-                    return Err(
-                        format!("no such worker \"{w}\" (have: {})", known.join(", ")).into(),
-                    );
-                }
-            }
+            edges.insert(w.clone(), EdgeScope::new());
         }
     }
 
@@ -306,7 +282,7 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
             &path,
             &name,
             &service,
-            &scope_workers,
+            &edges,
             &hosts,
             &methods,
             &env,
@@ -328,10 +304,7 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
             }
             if capability {
                 if let Some(conn) = c.connections.iter().find(|c| c.name == name) {
-                    let scope = match &conn.workers {
-                        None => "org-wide".to_string(),
-                        Some(l) => l.join(", "),
-                    };
+                    let scope = grants_summary(&conn.grants);
                     println!(
                         "active: {} → {} [{}] as {} for {}",
                         conn.name,
@@ -440,13 +413,15 @@ async fn verify_connection(name: &str, service: &str) -> Result<(), BErr> {
 }
 
 /// The connection file: scaffolded once, human-owned after. A rotation never
-/// overwrites the admin's edits.
+/// overwrites the admin's edits. The file is the roster-level object; the
+/// `[grant.<worker>]` sections are its availability edges — none is a legal
+/// resting state (connected, granted to no one).
 #[allow(clippy::too_many_arguments)]
 fn scaffold_connection(
     path: &std::path::Path,
     name: &str,
     service: &str,
-    scope_workers: &Option<Vec<String>>,
+    edges: &std::collections::BTreeMap<String, EdgeScope>,
     hosts: &[String],
     methods: &[String],
     env: &str,
@@ -457,16 +432,6 @@ fn scaffold_connection(
         return Ok(());
     }
     std::fs::create_dir_all(crate::paths::connections_dir())?;
-    let scope_line = match scope_workers {
-        None => "scope = \"org\"".to_string(),
-        Some(list) => format!(
-            "workers = [{}]",
-            list.iter()
-                .map(|w| format!("\"{w}\""))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    };
     let hosts_line = hosts
         .iter()
         .map(|h| format!("\"{h}\""))
@@ -487,6 +452,16 @@ fn scaffold_connection(
             )
         })
         .unwrap_or_default();
+    let grant_lines = if edges.is_empty() {
+        String::new()
+    } else {
+        let mut out = String::new();
+        for (who, scope) in edges {
+            out.push('\n');
+            out.push_str(&grant_section(who, scope));
+        }
+        out
+    };
     std::fs::write(
         path,
         format!(
@@ -494,16 +469,21 @@ fn scaffold_connection(
              # Compiles live into: an egress grant for these hosts/methods (evaluated\n\
              # before hand-written grants), credential injection in transit, and the env\n\
              # var below set in the box (to a sentinel; the secret never enters the box).\n\
+             # Availability is per [grant.<worker>] edge: roster connection grant/revoke.\n\
              provider = \"{service}\"\n\
-             {scope_line}\n\
              hosts = [{hosts_line}]\n\
              methods = [{methods_line}]\n\
              env = \"{}\"\n\
-             {inject_lines}",
+             {inject_lines}{grant_lines}",
             toml_escape(env)
         ),
     )?;
     println!("created {}", path.display());
+    if edges.is_empty() {
+        println!(
+            "granted to no one yet — make it available: roster connection grant {name} <worker>"
+        );
+    }
     Ok(())
 }
 
@@ -637,27 +617,26 @@ pub fn ensure_model_connection(
         return Ok(false);
     }
     std::fs::create_dir_all(crate::paths::connections_dir())?;
-    let scope_line = if workers.is_empty() {
-        "scope = \"org\"".to_string()
+    // A model connection stays org-wide by default: every box authenticates
+    // through sentinel logins anyway, and a model nobody can call helps no one.
+    let grant_lines = if workers.is_empty() {
+        grant_section("org", &EdgeScope::new())
     } else {
-        format!(
-            "workers = [{}]",
-            workers
-                .iter()
-                .map(|w| format!("\"{w}\""))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+        workers
+            .iter()
+            .map(|w| grant_section(w, &EdgeScope::new()))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     std::fs::write(
         &path,
         format!(
-            "# Model connection — workers' boxes may call {service}'s model API; the\n\
+            "# Model connection — granted boxes may call {service}'s model API; the\n\
              # gateway injects the credential in transit. Hosts derive from the provider\n\
              # registry; all methods are allowed — narrow with hosts = [..] / methods = [..].\n\
-             # ADMIN-OWNED after creation: edit or delete this file to change access.\n\
-             provider = \"{service}\"\n\
-             {scope_line}\n"
+             # ADMIN-OWNED after creation: edit this file or use grant/revoke.\n\
+             provider = \"{service}\"\n\n\
+             {grant_lines}"
         ),
     )?;
     println!(
@@ -888,6 +867,33 @@ fn declare_oauth(name: &str) -> Result<(), BErr> {
 
 // ── inventory ────────────────────────────────────────────────────────────────
 
+/// The availability edges, human-readable: "org-wide", "yuko, kdemo",
+/// "yuko (servers 1)" — each restricted edge carries a compact dim count.
+fn grants_summary(
+    grants: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
+) -> String {
+    if grants.is_empty() {
+        return "no one yet".into();
+    }
+    grants
+        .iter()
+        .map(|(who, scope)| {
+            let label = if who == "org" { "org-wide" } else { who };
+            if scope.is_empty() {
+                label.to_string()
+            } else {
+                let dims = scope
+                    .iter()
+                    .map(|(d, ids)| format!("{d} {}", ids.len()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{label} ({dims})")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// `roster connection ls` — every connection, its use(s), and its state.
 /// Uses are derived from what references the secret: a connection file
 /// (capability), a `[channels]` binding (channel), a grant's inject (model).
@@ -900,10 +906,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
 
     for conn in &c.connections {
         seen.insert(conn.name.clone());
-        let scope = match &conn.workers {
-            None => "org".to_string(),
-            Some(l) => l.join(","),
-        };
+        let scope = grants_summary(&conn.grants);
         // A connection with no env exposure is a model connection: boxes
         // authenticate via sentinel logins, injection happens in transit.
         let is_model = conn.env.is_empty();
@@ -911,9 +914,15 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             "name": conn.name,
             "use": if is_model { "model" } else { "capability" },
             "provider": conn.provider,
-            "workers": conn.workers, "hosts": conn.hosts, "methods": conn.methods,
+            "grants": conn.grants, "hosts": conn.hosts, "methods": conn.methods,
             "env": conn.env,
-            "state": if conn.enabled { "active" } else { "DISABLED (no secret)" },
+            "state": if !conn.enabled {
+                "DISABLED (no secret)"
+            } else if conn.grants.is_empty() {
+                "ungranted"
+            } else {
+                "active"
+            },
             "detail": if is_model {
                 format!("{scope}: {} [{}], injected in transit",
                     conn.hosts.join(","), conn.methods.join(","))
@@ -1052,6 +1061,549 @@ fn vault_entries() -> Vec<(String, String)> {
     }
     out.sort();
     out
+}
+
+// ── grant / revoke ───────────────────────────────────────────────────────────
+
+type EdgeScope = std::collections::BTreeMap<String, Vec<String>>;
+
+/// Resolve `<worker>` / `--org` into the edge key, validated against the
+/// live worker list.
+fn resolve_edge_who(worker: Option<String>, org: bool) -> Result<String, BErr> {
+    match (worker, org) {
+        (Some(_), true) => Err("name a worker OR pass --org, not both".into()),
+        (None, true) => Ok("org".to_string()),
+        (None, false) => Err("name a worker, or --org for the fleet-wide edge".into()),
+        (Some(w), false) => {
+            if w == "org" {
+                return Err("\"org\" is the fleet-wide edge — spell it --org".into());
+            }
+            let known = crate::worker::names();
+            if !known.contains(&w) {
+                return Err(
+                    format!("no such worker \"{w}\" (have: {})", known.join(", ")).into(),
+                );
+            }
+            Ok(w)
+        }
+    }
+}
+
+/// `--restrict servers=111,222` flags → one edge scope. Dimensions are
+/// validated against the provider's registry-declared `scope_dims` before
+/// anything is written — the file never learns a dimension config would
+/// reject.
+fn parse_restrict_flags(flags: &[String], provider: &str) -> Result<EdgeScope, BErr> {
+    let registry = crate::credential::registry::registry_json();
+    let dims: Vec<String> = registry
+        .get(provider)
+        .and_then(|p| p.get("scope_dims"))
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut scope = EdgeScope::new();
+    for flag in flags {
+        let Some((dim, ids)) = flag.split_once('=') else {
+            return Err(
+                format!("--restrict takes <dimension>=<id>[,<id>..] — got \"{flag}\"").into(),
+            );
+        };
+        let dim = dim.trim();
+        if !dims.iter().any(|d| d == dim) {
+            let declared = if dims.is_empty() {
+                "it declares none".to_string()
+            } else {
+                format!("it declares: {}", dims.join(", "))
+            };
+            return Err(format!(
+                "provider \"{provider}\" has no scope dimension \"{dim}\" ({declared})"
+            )
+            .into());
+        }
+        let entry = scope.entry(dim.to_string()).or_default();
+        for id in ids.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if !entry.iter().any(|e| e == id) {
+                entry.push(id.to_string());
+            }
+        }
+        if scope[dim].is_empty() {
+            return Err(format!("--restrict {dim}= names no ids").into());
+        }
+    }
+    Ok(scope)
+}
+
+/// One `[grant.<who>]` section, rendered.
+fn grant_section(who: &str, scope: &EdgeScope) -> String {
+    let mut out = format!("[grant.{who}]\n");
+    for (dim, ids) in scope {
+        out.push_str(&format!(
+            "{dim} = [{}]\n",
+            ids.iter()
+                .map(|i| format!("\"{i}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    out
+}
+
+/// The line span of a `[section]` in TOML text: header line index and the
+/// exclusive end (the next `[` header or EOF). Only finds plain headers —
+/// dotted or inline layouts return None and the caller refuses the edit.
+fn section_span(lines: &[&str], header: &str) -> Option<(usize, usize)> {
+    let start = lines.iter().position(|l| {
+        let t = l.trim();
+        t == header
+            || t.strip_prefix(header)
+                .is_some_and(|rest| rest.trim_start().starts_with('#'))
+    })?;
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .map(|i| start + 1 + i)
+        .unwrap_or(lines.len());
+    Some((start, end))
+}
+
+/// Rewrite a legacy `workers = [..]` / `scope = "org"` / `[restrict]` file
+/// into `[grant.<who>]` edges — same meaning, new shape. Ok(None) = nothing
+/// legacy here. The parse happens first, so values survive the text surgery.
+fn migrate_legacy_grants(text: &str) -> Result<Option<String>, String> {
+    let parsed: toml::Value =
+        toml::from_str(text).map_err(|e| format!("connection file is invalid: {e}"))?;
+    let strings = |key: &str| -> Option<Vec<String>> {
+        parsed.get(key).and_then(|x| x.as_array()).map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+    };
+    let workers = strings("workers").or_else(|| strings("imps"));
+    let org_scoped = parsed.get("scope").and_then(|x| x.as_str()) == Some("org");
+    let has_restrict = parsed.get("restrict").is_some();
+    if workers.is_none() && !org_scoped && !has_restrict {
+        return Ok(None);
+    }
+    let shared: EdgeScope = parsed
+        .get("restrict")
+        .and_then(|r| r.as_table())
+        .map(|t| {
+            t.iter()
+                .filter_map(|(dim, val)| {
+                    let ids: Vec<String> = val
+                        .as_array()?
+                        .iter()
+                        .filter_map(|s| s.as_str())
+                        .map(str::to_string)
+                        .collect();
+                    Some((dim.clone(), ids))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let lines: Vec<&str> = text.lines().collect();
+    let mut drop: Vec<bool> = vec![false; lines.len()];
+    for (i, l) in lines.iter().enumerate() {
+        let t = l.trim_start();
+        let legacy_key = ["workers", "imps", "scope"]
+            .iter()
+            .any(|k| t.strip_prefix(k).is_some_and(|r| r.trim_start().starts_with('=')));
+        if legacy_key {
+            if (t.starts_with("workers") || t.starts_with("imps")) && !l.contains(']') {
+                return Err(
+                    "workers = [..] spans several lines — edit the file to [grant.<worker>] form by hand"
+                        .into(),
+                );
+            }
+            drop[i] = true;
+        }
+    }
+    if has_restrict {
+        let Some((start, end)) = section_span(&lines, "[restrict]") else {
+            return Err("has a [restrict] layout this tool cannot edit — migrate it by hand".into());
+        };
+        for d in drop.iter_mut().take(end).skip(start) {
+            *d = true;
+        }
+    }
+    let mut out: String = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !drop[*i])
+        .map(|(_, l)| format!("{l}\n"))
+        .collect();
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
+    let edges: Vec<String> = match &workers {
+        Some(list) => list.clone(),
+        None => vec!["org".to_string()],
+    };
+    for who in edges {
+        out.push('\n');
+        out.push_str(&grant_section(&who, &shared));
+    }
+    Ok(Some(out))
+}
+
+/// Upsert a `[grant.<who>]` section in connection-file text. The result is
+/// parse-checked before it is returned — surgery that corrupts the file is a
+/// bug here, never a broken config there.
+fn upsert_grant_edge(text: &str, who: &str, scope: &EdgeScope) -> Result<(String, bool), String> {
+    let parsed: toml::Value =
+        toml::from_str(text).map_err(|e| format!("connection file is invalid: {e}"))?;
+    let exists = parsed
+        .get("grant")
+        .and_then(|g| g.get(who))
+        .is_some();
+    let lines: Vec<&str> = text.lines().collect();
+    let section = grant_section(who, scope);
+    let out = if exists {
+        let Some((start, end)) = section_span(&lines, &format!("[grant.{who}]")) else {
+            return Err(format!(
+                "has a [grant] layout this tool cannot edit — set [grant.{who}] by hand"
+            ));
+        };
+        let mut out: String = lines[..start].iter().map(|l| format!("{l}\n")).collect();
+        out.push_str(&section);
+        // Keep one blank line before a following section.
+        if end < lines.len() {
+            out.push('\n');
+        }
+        out.push_str(
+            &lines[end..]
+                .iter()
+                .map(|l| format!("{l}\n"))
+                .collect::<String>(),
+        );
+        out
+    } else {
+        let mut out = text.to_string();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+        out.push_str(&section);
+        out
+    };
+    toml::from_str::<toml::Value>(&out).map_err(|e| format!("edit would corrupt the file: {e}"))?;
+    Ok((out, exists))
+}
+
+/// Remove a `[grant.<who>]` section. Err when there is no such edge.
+fn remove_grant_edge(text: &str, who: &str) -> Result<String, String> {
+    let parsed: toml::Value =
+        toml::from_str(text).map_err(|e| format!("connection file is invalid: {e}"))?;
+    if parsed.get("grant").and_then(|g| g.get(who)).is_none() {
+        let have: Vec<String> = parsed
+            .get("grant")
+            .and_then(|g| g.as_table())
+            .map(|t| t.keys().cloned().collect())
+            .unwrap_or_default();
+        let have = if have.is_empty() {
+            "none".to_string()
+        } else {
+            have.join(", ")
+        };
+        return Err(format!("no [grant.{who}] edge (edges: {have})"));
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let Some((start, end)) = section_span(&lines, &format!("[grant.{who}]")) else {
+        return Err(format!(
+            "has a [grant] layout this tool cannot edit — remove [grant.{who}] by hand"
+        ));
+    };
+    let mut out: String = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i < start || *i >= end)
+        .map(|(_, l)| format!("{l}\n"))
+        .collect();
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
+    toml::from_str::<toml::Value>(&out).map_err(|e| format!("edit would corrupt the file: {e}"))?;
+    Ok(out)
+}
+
+/// `roster connection grant <name> <worker> [--restrict dim=ids] | --org` —
+/// make a roster-level connection available to a worker. The restriction
+/// rides on the edge: each worker's grant carries its own scope.
+pub fn grant(
+    name: &str,
+    worker: Option<String>,
+    org: bool,
+    restrict_flags: &[String],
+) -> Result<(), BErr> {
+    let who = resolve_edge_who(worker, org)?;
+    let path = crate::paths::connections_dir().join(format!("{name}.toml"));
+    let registry = crate::credential::registry::registry_json();
+
+    // The provider governs which restrict dimensions exist: from the file
+    // when there is one, else the registry entry the file will scaffold from.
+    // Host mounts have no provider and no dimensions — their edges are
+    // membership only.
+    let existing_text = std::fs::read_to_string(&path).ok();
+    let is_mount = existing_text
+        .as_deref()
+        .and_then(|t| toml::from_str::<toml::Value>(t).ok())
+        .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_string))
+        .is_some_and(|k| k == "host-dir" || k == "host-repo");
+    let scope = if is_mount {
+        if !restrict_flags.is_empty() {
+            return Err("host mounts take no --restrict — an edge is membership only".into());
+        }
+        EdgeScope::new()
+    } else {
+        let provider = match &existing_text {
+            Some(text) => toml::from_str::<toml::Value>(text)
+                .map_err(|e| format!("{}: {e}", path.display()))?
+                .get("provider")
+                .and_then(|p| p.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| format!("{} names no provider", path.display()))?,
+            None => {
+                if !registry.contains_key(name) {
+                    return Err(format!(
+                        "no connection \"{name}\" — connect it first: roster connection add {name}"
+                    )
+                    .into());
+                }
+                name.to_string()
+            }
+        };
+        parse_restrict_flags(restrict_flags, &provider)?
+    };
+
+    match existing_text {
+        Some(text) => {
+            let (text, migrated) = match migrate_legacy_grants(&text)
+                .map_err(|e| format!("{}: {e}", path.display()))?
+            {
+                Some(t) => (t, true),
+                None => (text, false),
+            };
+            let (out, replaced) = upsert_grant_edge(&text, &who, &scope)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            std::fs::write(&path, out)?;
+            if migrated {
+                println!(
+                    "migrated {} to per-worker [grant.*] edges (same meaning, new shape)",
+                    path.display()
+                );
+            }
+            println!(
+                "{} [grant.{who}] in {}",
+                if replaced { "updated" } else { "added  " },
+                path.display()
+            );
+        }
+        None => {
+            // Scaffold the roster-level file this grant hangs off — identity
+            // from the registry, exactly as `add` would have written it.
+            let entry = &registry[name];
+            let is_model = entry.get("model_hosts").is_some();
+            let meta = entry.get("connection");
+            let hosts: Vec<String> = meta
+                .and_then(|m| m["hosts"].as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_else(|| match name {
+                    "discord" => vec!["discord.com".to_string()],
+                    _ => Vec::new(),
+                });
+            if !is_model && hosts.is_empty() {
+                return Err(format!(
+                    "\"{name}\" declares no hosts to grant — connect it first: roster connection add {name}"
+                )
+                .into());
+            }
+            let env = meta
+                .and_then(|m| m["env"].as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| default_env(name));
+            let mut edges = std::collections::BTreeMap::new();
+            edges.insert(who.clone(), scope.clone());
+            if is_model {
+                std::fs::create_dir_all(crate::paths::connections_dir())?;
+                std::fs::write(
+                    &path,
+                    format!(
+                        "# Model connection — granted boxes may call {name}'s model API; the\n\
+                         # gateway injects the credential in transit.\n\
+                         provider = \"{name}\"\n\n{}",
+                        grant_section(&who, &scope)
+                    ),
+                )?;
+                println!("created {}", path.display());
+            } else {
+                // A missing file means name == provider (registry-resolved).
+                scaffold_connection(
+                    &path,
+                    name,
+                    name,
+                    &edges,
+                    &hosts,
+                    &["*".to_string()],
+                    &env,
+                    &None,
+                )?;
+            }
+        }
+    }
+
+    // The compiled result — same follow-through as add: warnings out loud,
+    // then this connection's live state.
+    match crate::config::load() {
+        Ok(c) => {
+            for w in &c.warnings {
+                println!("warning: {w}");
+            }
+            if let Some(conn) = c.connections.iter().find(|c| c.name == name) {
+                println!("granted: {} → {}", conn.name, grants_summary(&conn.grants));
+            }
+            if let Some(m) = c.host_mounts.iter().find(|m| m.name == name) {
+                let audience = match &m.workers {
+                    None => "org-wide".to_string(),
+                    Some(l) if l.is_empty() => "no one yet".to_string(),
+                    Some(l) => l.join(", "),
+                };
+                println!("granted: {} (mount) → {}", m.name, audience);
+            }
+            let listeners: Vec<String> = c
+                .listeners
+                .iter()
+                .filter(|(_, _, credential)| credential == name)
+                .map(|(w, platform, _)| format!("{platform} for {w}"))
+                .collect();
+            if !listeners.is_empty() {
+                println!("listening: {} — the edge scopes the listener too", listeners.join(", "));
+            }
+        }
+        Err(errors) => {
+            for e in &errors {
+                eprintln!("config: {e}");
+            }
+            return Err(format!("{} config error(s) — fix before the grant is live", errors.len()).into());
+        }
+    }
+    Ok(())
+}
+
+/// `roster connection revoke <name> <worker> | --org` — withdraw an edge.
+/// The connection itself stays; a channel binding consuming the credential in
+/// that worker's spec is removed with the edge (grant wrote it, revoke owns
+/// it).
+pub fn revoke(name: &str, worker: Option<String>, org: bool) -> Result<(), BErr> {
+    let who = resolve_edge_who(worker, org)?;
+    let path = crate::paths::connections_dir().join(format!("{name}.toml"));
+    let text = std::fs::read_to_string(&path)
+        .map_err(|_| format!("no connection file for \"{name}\" — nothing to revoke"))?;
+    let (text, migrated) =
+        match migrate_legacy_grants(&text).map_err(|e| format!("{}: {e}", path.display()))? {
+            Some(t) => (t, true),
+            None => (text, false),
+        };
+    let mut out = remove_grant_edge(&text, &who).map_err(|e| format!("{}: {e}", path.display()))?;
+    let parsed = toml::from_str::<toml::Value>(&out).ok();
+    let no_edges_left = parsed
+        .as_ref()
+        .and_then(|v| v.get("grant").and_then(|g| g.as_table()).map(|t| t.is_empty()))
+        .unwrap_or(true);
+    let is_mount = parsed
+        .as_ref()
+        .and_then(|v| v.get("kind").and_then(|k| k.as_str()))
+        .is_some_and(|k| k == "host-dir" || k == "host-repo");
+    // A mount must declare its audience to parse — an explicit empty [grant]
+    // says "granted to no one". Service files need no marker: no grant syntax
+    // already means exactly that.
+    if no_edges_left && is_mount && !out.lines().any(|l| l.trim() == "[grant]") {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("\n[grant]\n");
+    }
+    std::fs::write(&path, &out)?;
+    if migrated {
+        println!(
+            "migrated {} to per-worker [grant.*] edges (same meaning, new shape)",
+            path.display()
+        );
+    }
+    println!("revoked [grant.{who}] in {}", path.display());
+
+    // The worker's listener binding dies with its edge.
+    if who != "org" {
+        let spec = crate::paths::workers_dir().join(&who).join("worker.toml");
+        if let Ok(text) = std::fs::read_to_string(&spec) {
+            if let Some((new_text, platform)) = remove_channel_binding(&text, name) {
+                std::fs::write(&spec, new_text)?;
+                println!("unbound {platform} = \"{name}\" in {}", spec.display());
+            }
+        }
+    }
+
+    let remaining: Vec<String> = toml::from_str::<toml::Value>(&out)
+        .ok()
+        .and_then(|v| {
+            v.get("grant")
+                .and_then(|g| g.as_table())
+                .map(|t| t.keys().cloned().collect())
+        })
+        .unwrap_or_default();
+    if remaining.is_empty() {
+        println!(
+            "no edges left — \"{name}\" stays connected, granted to no one (remove it: roster connection rm {name})"
+        );
+    } else {
+        println!("edges left: {}", remaining.join(", "));
+    }
+    Ok(())
+}
+
+/// Drop a `<platform> = "<credential>"` line from a worker.toml `[channels]`
+/// table. Returns the new text and the platform unbound, or None when the
+/// credential isn't bound there.
+fn remove_channel_binding(text: &str, credential: &str) -> Option<(String, String)> {
+    let parsed: toml::Value = toml::from_str(text).ok()?;
+    let channels = parsed.get("channels")?.as_table()?;
+    let platform = channels
+        .iter()
+        .find(|(_, v)| v.as_str() == Some(credential))
+        .map(|(k, _)| k.clone())?;
+    let needle = platform.to_string();
+    let mut removed = false;
+    let out: String = text
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            let hit = !removed
+                && t.strip_prefix(needle.as_str())
+                    .is_some_and(|r| r.trim_start().starts_with('='))
+                && l.contains(credential);
+            if hit {
+                removed = true;
+            }
+            !hit
+        })
+        .map(|l| format!("{l}\n"))
+        .collect();
+    if !removed || toml::from_str::<toml::Value>(&out).is_err() {
+        return None;
+    }
+    Some((out, platform))
 }
 
 // ── removal ──────────────────────────────────────────────────────────────────
@@ -1415,6 +1967,45 @@ mod tests {
             ("authorization".into(), "Bearer {key}".into())
         );
         assert!(parse_header("Authorization: literal-secret").is_err());
+    }
+
+    #[test]
+    fn legacy_grants_migrate_and_edges_upsert_and_remove() {
+        // workers + [restrict] → per-worker edges carrying the shared scope.
+        let text = "# keep me\nprovider = \"discord\"\nworkers = [\"yuko\", \"kdemo\"]\n\
+                    hosts = [\"discord.com\"]\nenv = \"D\"\n\n[restrict]\nservers = [\"999\"]\n";
+        let migrated = migrate_legacy_grants(text).unwrap().unwrap();
+        assert!(migrated.contains("# keep me"));
+        assert!(!migrated.contains("workers ="));
+        assert!(!migrated.contains("[restrict]"));
+        assert!(migrated.contains("[grant.yuko]\nservers = [\"999\"]"));
+        assert!(migrated.contains("[grant.kdemo]\nservers = [\"999\"]"));
+        // Already-migrated text is a no-op.
+        assert!(migrate_legacy_grants(&migrated).unwrap().is_none());
+
+        // Upsert replaces an edge in place; remove drops it whole.
+        let mut scope = EdgeScope::new();
+        scope.insert("channels".into(), vec!["1".into(), "2".into()]);
+        let (out, replaced) = upsert_grant_edge(&migrated, "yuko", &scope).unwrap();
+        assert!(replaced);
+        assert!(out.contains("[grant.yuko]\nchannels = [\"1\", \"2\"]"));
+        assert!(out.contains("[grant.kdemo]\nservers = [\"999\"]"));
+        let out = remove_grant_edge(&out, "kdemo").unwrap();
+        assert!(!out.contains("[grant.kdemo]"));
+        assert!(out.contains("[grant.yuko]"));
+        assert!(remove_grant_edge(&out, "kdemo").is_err());
+    }
+
+    #[test]
+    fn channel_binding_removal_is_surgical() {
+        let text = "name = \"yuko\"\n\n[channels]\ndiscord = \"discord\"\nslack = \"slack\"\n\n\
+                    [[budget.limit]]\ncurrency = \"model_calls\"\nwindow = \"day\"\nmax = 5000\n";
+        let (out, platform) = remove_channel_binding(text, "discord").unwrap();
+        assert_eq!(platform, "discord");
+        assert!(!out.contains("discord"));
+        assert!(out.contains("slack = \"slack\""));
+        assert!(out.contains("[[budget.limit]]"));
+        assert!(remove_channel_binding(text, "nope").is_none());
     }
 
     #[test]

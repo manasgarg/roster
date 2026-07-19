@@ -14,6 +14,11 @@ pub fn run(name: &str) -> Result<(), Box<dyn std::error::Error>> {
             format!("worker name must be lowercase letters/numbers/hyphens: \"{name}\"").into(),
         );
     }
+    if name == "org" {
+        return Err(
+            "\"org\" is reserved — it names the org scope and the fleet-wide grant edge".into(),
+        );
+    }
 
     let dir = paths::worker_dir(name);
     let path = dir.join("worker.toml");

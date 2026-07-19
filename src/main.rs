@@ -422,9 +422,27 @@ enum RunsCmd {
 async fn main() {
     // Die quietly on a closed pipe (`roster … | head`) instead of panicking:
     // Rust ignores SIGPIPE by default, turning EPIPE into a println panic.
+    //
+    // NEVER for the daemon. `server start` writes into box stdin pipes and
+    // reads box stdout; a box dying mid-turn makes EPIPE routine, and with
+    // SIG_DFL the whole daemon dies of SIGPIPE — which systemd counts as a
+    // CLEAN exit, so even Restart=on-failure won't bring it back. The
+    // daemon keeps Rust's default (EPIPE as an io::Error the session loop
+    // already handles); the CLI keeps the quiet-pipe behavior.
     #[cfg(unix)]
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    {
+        let is_daemon = matches!(
+            (
+                std::env::args().nth(1).as_deref(),
+                std::env::args().nth(2).as_deref()
+            ),
+            (Some("server"), Some("start" | "run"))
+        );
+        if !is_daemon {
+            unsafe {
+                libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            }
+        }
     }
 
     // Old top-level commands point at their new home instead of half-working:

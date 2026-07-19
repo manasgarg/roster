@@ -84,6 +84,31 @@ roster server runs show <run>      # what it did, saw, proposed, cost
 Config is read live — edit, `validate`, and the next read picks it up. Only
 a binary upgrade needs a restart.
 
+For an always-on deployment, run the daemon as a systemd user service
+instead of a shell job — it survives logouts and comes back after a crash:
+
+```ini
+# ~/.config/systemd/user/roster-server.service
+[Unit]
+Description=roster server — gateway, task dispatch, channel listeners
+After=network-online.target
+
+[Service]
+ExecStart=%h/.cargo/bin/roster server start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now roster-server
+loginctl enable-linger $USER      # keep it running when you log out
+journalctl --user -u roster-server -f
+```
+
 ## Connect a service
 
 ```bash

@@ -37,6 +37,15 @@ Both listeners **dial out** — Discord's gateway WebSocket, Slack's Socket
 Mode — so nothing ever listens on the internet. Both reconnect with backoff
 and never take the rest of the daemon down.
 
+**Nothing said while the server was down is lost.** The Discord listener
+keeps a per-channel replay cursor (the newest message id it handled); on
+every fresh connect it fetches what arrived after the cursor over REST and
+runs each message down the exact same path as a live event — same wake
+rules, same history, stamped with Discord's own send time. Channels the
+listener has never seen get baselined on first connect, so only the very
+first message in a brand-new channel during downtime waits for the next
+message there. (The Slack listener does not have catch-up yet.)
+
 ## Scoping the bot to a server or channel
 
 The Discord connection's `[restrict]` table limits where the worker
@@ -135,10 +144,8 @@ proposal always gates, with no trust promotion possible.
 The authenticated admin surface, delivered over the same outbound gateway
 connection and role-checked per command:
 
-- **Trusted+**: `/gates ls|approve|deny`, `/queue ls`, `/purpose show|set`,
-  `/memory show|forget|correct`
-- **Admin**: `/channel trust|untrust|mode|memory|memory-inferred|
-  memory-kinds|memory-retention`, `/identity show`
+- **Trusted+**: `/gates ls|approve|deny`, `/queue ls`, `/purpose show|set`
+- **Admin**: `/channel trust|untrust|mode`, `/identity show`
 
 Slack has no slash commands yet — administer via the CLI, or
 conversationally in trusted channels.
@@ -149,12 +156,11 @@ conversationally in trusted channels.
 model as the platforms above — not a side door. It opens the durable
 channel `term-<user>-<worker>`: trusted automatically (it's the operator's
 own shell, the definition of a sought-out 1:1), history recorded under
-`data/channels/`, a purpose the worker may propose, DM-grade memory recall
-(worker + channel + your user scope), and warm-session turns with the same
-lockdown and governance. The one difference is delivery: there is no send
-tool — the worker's reply text prints directly in your terminal. And like
-every conversation, the knowledge repository is read-only; durable research goes
-through `file_task`.
+`data/channels/`, a purpose the worker may propose, and warm-session turns
+with the same lockdown and governance. The one difference is delivery:
+there is no send tool — the worker's reply text prints directly in your
+terminal. And like every conversation, gated repos are read-only; durable
+repo work goes through `file_task`.
 
 ## History on disk
 

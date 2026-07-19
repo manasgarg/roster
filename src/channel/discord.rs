@@ -150,6 +150,136 @@ fn out_of_scope(credential: &str, guild_id: Option<&str>, channel_id: &str) -> b
     }
 }
 
+/// Durable per-channel replay cursor: the newest message id this listener
+/// has seen, plus the channel's guild (for the scope check at catch-up).
+/// A fresh IDENTIFY replays nothing — Discord only replays into a RESUME,
+/// and a server restart can't resume — so this cursor is what lets a
+/// starting listener fetch what arrived while the server was down.
+fn cursor_path(channel_id: &str) -> PathBuf {
+    crate::paths::channel_dir(channel_id).join("discord-cursor.json")
+}
+
+fn read_cursor(channel_id: &str) -> Option<(String, Option<String>)> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(cursor_path(channel_id)).ok()?)
+        .ok()?;
+    Some((
+        v.get("last_message_id")?.as_str()?.to_string(),
+        v.get("guild_id").and_then(Value::as_str).map(String::from),
+    ))
+}
+
+fn write_cursor(channel_id: &str, message_id: &str, guild_id: Option<&str>) {
+    let path = cursor_path(channel_id);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(
+        &path,
+        json!({ "last_message_id": message_id, "guild_id": guild_id }).to_string(),
+    );
+}
+
+/// Fetch and handle everything that arrived while no listener was connected:
+/// for every channel with a cursor, page through `GET /channels/<id>/messages
+/// ?after=<cursor>` oldest-first and run each message down the exact same
+/// path as a live event. Only channels seen at least once before can be
+/// caught up — a first-ever message in a brand-new channel during downtime
+/// stays missed until someone speaks there again.
+async fn catch_up(worker: &str, token: &str, credential: &str, bot_id: &str) {
+    let client = reqwest::Client::new();
+    let channels: Vec<String> = std::fs::read_dir(crate::paths::channels_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
+    for channel in channels {
+        let cursor = match read_cursor(&channel) {
+            Some(c) => Some(c),
+            // No cursor yet (a channel from before cursors existed): baseline
+            // it from the channel object — guild_id is load-bearing (a guild
+            // message replayed without it would read as a DM, and DMs
+            // auto-trust), and last_message_id marks "caught up to now"
+            // without replaying pre-cursor history. Discord ids are pure
+            // digits; term/slack channel dirs are not.
+            None if !channel.is_empty() && channel.bytes().all(|b| b.is_ascii_digit()) => {
+                let Ok(res) = client
+                    .get(format!("{}/channels/{channel}", base()))
+                    .header("authorization", format!("Bot {token}"))
+                    .send()
+                    .await
+                else {
+                    continue;
+                };
+                if !res.status().is_success() {
+                    continue;
+                }
+                let Ok(v) = res.json::<Value>().await else {
+                    continue;
+                };
+                let guild = v.get("guild_id").and_then(Value::as_str).map(String::from);
+                match v.get("last_message_id").and_then(Value::as_str) {
+                    Some(last) => {
+                        write_cursor(&channel, last, guild.as_deref());
+                        None // baselined; nothing to replay this round
+                    }
+                    None => None,
+                }
+            }
+            None => None,
+        };
+        let Some((mut after, guild)) = cursor else {
+            continue;
+        };
+        if out_of_scope(credential, guild.as_deref(), &channel) {
+            continue;
+        }
+        // Bounded pages per channel: a week of backlog lands; an unbounded
+        // flood doesn't hold the whole catch-up hostage.
+        for _page in 0..3 {
+            let res = client
+                .get(format!(
+                    "{}/channels/{channel}/messages?after={after}&limit=100",
+                    base()
+                ))
+                .header("authorization", format!("Bot {token}"))
+                .send()
+                .await;
+            // Lost access (403/404) or a hiccup: skip this channel, never
+            // the whole pass.
+            let Ok(res) = res else { break };
+            if !res.status().is_success() {
+                break;
+            }
+            let Ok(mut msgs) = res.json::<Vec<Value>>().await else {
+                break;
+            };
+            if msgs.is_empty() {
+                break;
+            }
+            let full_page = msgs.len() == 100;
+            msgs.reverse(); // REST returns newest first; handle oldest first
+            for mut m in msgs {
+                if let Some(g) = &guild {
+                    // REST message objects carry no guild_id (only gateway
+                    // events do); the scope check and DM detection need it.
+                    m["guild_id"] = json!(g);
+                }
+                if let Some(id) = m["id"].as_str() {
+                    after = id.to_string();
+                    write_cursor(&channel, id, guild.as_deref());
+                }
+                // Roles can't be resolved from REST payloads (no member
+                // data); the empty guild map resolves conservatively.
+                handle_message(worker, &m, bot_id, &HashMap::new(), token, credential).await;
+            }
+            if !full_page {
+                break;
+            }
+        }
+    }
+}
+
 pub async fn run_gateway(worker: &str, token: &str, credential: &str) {
     let mut resume: Option<ResumeState> = None;
     loop {
@@ -323,6 +453,19 @@ async fn connect_once(
                             d["user"]["username"].as_str().unwrap_or("?")
                         );
                         register_dm_commands(&app_id, token).await;
+                        // A fresh session replays nothing — go fetch what
+                        // arrived while no listener was connected. Off the
+                        // read loop: catch-up REST calls and session wakes
+                        // must not stall heartbeats.
+                        let (w, t, c, b) = (
+                            worker.to_string(),
+                            token.to_string(),
+                            credential.to_string(),
+                            bot_id.clone(),
+                        );
+                        tokio::spawn(async move {
+                            catch_up(&w, &t, &c, &b).await;
+                        });
                     }
                     "RESUMED" => eprintln!("discord: resumed session (missed events replayed)"),
                     "GUILD_CREATE" => {
@@ -361,6 +504,16 @@ async fn connect_once(
                         guilds.insert(guild_id, g);
                     }
                     "MESSAGE_CREATE" => {
+                        // The replay cursor advances on every in-scope message
+                        // seen live — bot-authored ones included, so catch-up
+                        // never refetches the bot's own replies.
+                        let ch = d["channel_id"].as_str().unwrap_or("");
+                        let gid = d["guild_id"].as_str();
+                        if !ch.is_empty() && !out_of_scope(credential, gid, ch) {
+                            if let Some(id) = d["id"].as_str() {
+                                write_cursor(ch, id, gid);
+                            }
+                        }
                         handle_message(worker, d, &bot_id, &guilds, token, credential).await
                     }
                     "INTERACTION_CREATE" => {
@@ -543,7 +696,9 @@ async fn handle_message(
 
     // Persist to the channel's history and download any attachments.
     let record = json!({
-        "ts": now_rfc3339(),
+        // Discord's own send time, so caught-up messages land in history
+        // with when they were SAID, not when the listener finally saw them.
+        "ts": d["timestamp"].as_str().map(String::from).unwrap_or_else(now_rfc3339),
         "author_id": d["author"]["id"].as_str().unwrap_or(""),
         "author": author, "role": role, "content": content,
         "attachments": d["attachments"].as_array().map(|a| a.iter().filter_map(|x| x["filename"].as_str()).collect::<Vec<_>>()).unwrap_or_default(),
@@ -1160,6 +1315,31 @@ async fn download_attachments(channel_id: &str, attachments: &Value) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn replay_cursor_roundtrips_with_and_without_guild() {
+        let _guard = crate::statefile::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ROSTER_ROOT", dir.path());
+
+        // A guild channel keeps its guild id — the field that stops a
+        // caught-up guild message from reading as an auto-trusted DM.
+        write_cursor("111", "9001", Some("g1"));
+        assert_eq!(
+            read_cursor("111"),
+            Some(("9001".to_string(), Some("g1".to_string())))
+        );
+        // A DM has none, and stays that way.
+        write_cursor("222", "9002", None);
+        assert_eq!(read_cursor("222"), Some(("9002".to_string(), None)));
+        // Advancing overwrites in place.
+        write_cursor("111", "9010", Some("g1"));
+        assert_eq!(read_cursor("111").unwrap().0, "9010");
+        // No cursor file → no catch-up claim.
+        assert_eq!(read_cursor("333"), None);
+    }
 
     /// A minimal Discord REST stand-in: counts typing triggers, answers message
     /// posts with an id. One connection per request (the client is per-call).

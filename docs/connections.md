@@ -74,15 +74,16 @@ Inventory and removal:
 
 ```bash
 roster connection ls [--json]   # every connection, use(s), state
-roster connection rm <name>     # delete the secret; reports what still references it
+roster connection rm <name>     # delete the secret and (on confirm) the connection file
 ```
 
 `ls` states: **active** (secret present, use bound), **DISABLED (no
 secret)** (a reference exists but the vault has nothing — grant and
 exposure omitted, warned loudly, never fail-open), **unbound** (a secret
 nothing references; the natural state mid-setup, named so orphans are
-visible). `rm` never edits config — it deletes the secret and tells you
-exactly which files still reference it.
+visible). `rm` deletes the secret, then offers to delete the connection
+file it scaffolded (each behind its own y/N). It never edits org.toml or
+worker specs — references there are reported for you to remove yourself.
 
 ## Two structural guarantees
 

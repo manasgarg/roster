@@ -1056,12 +1056,13 @@ fn vault_entries() -> Vec<(String, String)> {
 
 // ── removal ──────────────────────────────────────────────────────────────────
 
-/// `roster connection rm <name>` — delete the secret; report every surviving
-/// reference. The references are the admin's files: rm never edits config.
+/// `roster connection rm <name>` — delete the secret, then offer to delete the
+/// connection file `add` scaffolded. References inside org.toml and
+/// worker.toml stay report-only: those are the admin's files, rm never edits
+/// them.
 pub fn rm(name: &str) -> Result<(), BErr> {
     let secret = crate::credential::vault::vault_dir().join(format!("{name}.json"));
-    let refs = references(name);
-    if !secret.exists() && refs.is_empty() {
+    if !secret.exists() && references(name).is_empty() {
         return Err(format!(
             "no connection \"{name}\" — nothing in the vault, nothing referencing it"
         )
@@ -1080,6 +1081,20 @@ pub fn rm(name: &str) -> Result<(), BErr> {
     } else {
         println!("no \"{name}\" secret in the vault (already gone)");
     }
+    let conn = crate::paths::connections_dir().join(format!("{name}.toml"));
+    if conn.exists() {
+        let answer = crate::credential::connect::ask(&format!(
+            "also delete connection file {} (drops the grant and exposure)? [y/N] ",
+            conn.display()
+        ))?;
+        if matches!(answer.trim(), "y" | "Y" | "yes") {
+            std::fs::remove_file(&conn)?;
+            println!("deleted {}", conn.display());
+        } else {
+            println!("kept    {} — the connection stays DISABLED", conn.display());
+        }
+    }
+    let refs = references(name);
     if refs.is_empty() {
         println!("nothing references it — removal complete");
     } else {

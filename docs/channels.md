@@ -24,8 +24,8 @@ The wizard offers to write the binding into the worker's spec (that's what
 ```toml
 # workers/dobby/worker.toml
 [channels]
-discord = "discord"     # the vault secret its bot uses
-slack   = "slack"
+discord = "discord-dobby"   # the vault secret its bot uses — the wizard
+slack   = "slack-dobby"     # names it after the bot itself
 ```
 
 `server start` runs one listener per binding. Validation refuses two workers

@@ -790,7 +790,9 @@ async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, Strin
         .and_then(|v| v.as_str())
         .ok_or("message-user needs a \"text\" field")?;
 
-    if let Some(cred) = crate::credential::vault::get_credential("discord") {
+    if let Some(cred) =
+        crate::credential::vault::get_credential(&channel_credential_name(worker, "discord"))
+    {
         let token = cred.get("token").and_then(|v| v.as_str());
         let owner = cred
             .get("owner_id")
@@ -812,7 +814,9 @@ async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, Strin
         }
     }
 
-    if let Some(cred) = crate::credential::vault::get_credential(&slack_credential_name(worker)) {
+    if let Some(cred) =
+        crate::credential::vault::get_credential(&channel_credential_name(worker, "slack"))
+    {
         let token = cred.get("bot_token").and_then(|v| v.as_str());
         let owner = cred
             .get("owner_id")
@@ -881,7 +885,7 @@ pub async fn deliver_notice(provider: &str, channel: &str, worker: &str, text: &
             None => Err("no discord credential".into()),
         },
         "slack" => {
-            let name = slack_credential_name(worker);
+            let name = channel_credential_name(worker, "slack");
             match crate::credential::vault::get_credential(&name).and_then(|c| {
                 c.get("bot_token")
                     .and_then(|v| v.as_str())
@@ -926,17 +930,20 @@ async fn exec_discord(worker: &str, payload: &Value) -> Result<Value, String> {
 
 /// The worker's Slack credential: its `[channels] slack` binding from live
 /// config, falling back to a credential literally named "slack".
-fn slack_credential_name(worker: &str) -> String {
+/// The vault credential behind this worker's channel binding for a platform
+/// ([channels] in its worker.toml, via the listener plan), falling back to
+/// the platform's default name for deployments with no binding.
+fn channel_credential_name(worker: &str, platform: &str) -> String {
     let short = crate::paths::short_worker(worker).to_string();
     crate::config::snapshot()
         .ok()
         .and_then(|c| {
             c.listeners
                 .iter()
-                .find(|(w, platform, _)| *w == short && platform == "slack")
+                .find(|(w, p, _)| *w == short && *p == platform)
                 .map(|(_, _, credential)| credential.clone())
         })
-        .unwrap_or_else(|| "slack".to_string())
+        .unwrap_or_else(|| platform.to_string())
 }
 
 async fn exec_slack(worker: &str, payload: &Value) -> Result<Value, String> {
@@ -953,7 +960,7 @@ async fn exec_slack(worker: &str, payload: &Value) -> Result<Value, String> {
         .get("thread_ts")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
-    let name = slack_credential_name(worker);
+    let name = channel_credential_name(worker, "slack");
     let cred = crate::credential::vault::get_credential(&name)
         .ok_or_else(|| format!("no \"{name}\" credential — run: roster connection add slack"))?;
     let token = cred
@@ -1182,6 +1189,22 @@ mod tests {
         let mut h = Sha256::new();
         h.update(s.as_bytes());
         format!("{:x}", h.finalize())
+    }
+
+    #[test]
+    fn channel_credential_resolves_the_workers_own_binding() {
+        let _sb = sandbox();
+        std::fs::write(
+            crate::paths::worker_dir("dobby").join("worker.toml"),
+            "name = \"dobby\"\n[channels]\ndiscord = \"discord-dobby\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            channel_credential_name("org/dobby", "discord"),
+            "discord-dobby"
+        );
+        // No binding for the platform: the platform's default name.
+        assert_eq!(channel_credential_name("org/dobby", "slack"), "slack");
     }
 
     #[test]

@@ -91,7 +91,8 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
         }
     }
 
-    let name = alias.unwrap_or_else(|| service.clone());
+    let named_explicitly = alias.is_some();
+    let mut name = alias.unwrap_or_else(|| service.clone());
     // The name and service become bare TOML keys ([name], [service]) and file
     // names; a space/quote/bracket would corrupt providers.toml (whose parse
     // failure silently drops the WHOLE overlay) or write a bad path. Reject up
@@ -262,7 +263,6 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
     // channel listener already consumes keeps its channel-only fields even
     // when this add is for another use (rotation must not break the bot).
     let channel_bound = !channel_binding_refs(&name).is_empty();
-    let rotating = crate::credential::vault::get_credential(&name).is_some();
     let mut login_provider = registered
         .clone()
         .unwrap_or_else(|| serde_json::json!({ "auth": "api_key" }));
@@ -270,6 +270,59 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
     let cred =
         crate::credential::connect::login(&service, &login_provider, channel || channel_bound)
             .await?;
+    // Name the connection after the bot the credential authenticates, when
+    // the platform can say (probed with the fresh secret): each bot lands
+    // under its own name — "discord-looper" — so a second bot never clobbers
+    // the first, and re-adding the same bot naturally rotates in place.
+    // --name overrides. Where no probe exists (or it fails), re-adding a
+    // credential that live listeners consume is ambiguous — rotate this bot,
+    // or connect a second one? — so ask rather than guess.
+    if !named_explicitly {
+        if let Some(bot) = bot_identity_slug(&service, &cred).await {
+            let derived = format!("{service}-{bot}");
+            if derived != name {
+                println!("naming the connection \"{derived}\" after the bot (--name overrides)");
+                name = derived;
+            }
+        } else if crate::credential::vault::get_credential(&name).is_some() {
+            let bound = channel_binding_refs(&name);
+            let interactive = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
+            if !bound.is_empty() && interactive {
+                let listeners: Vec<String> =
+                    bound.iter().map(|(w, p, _)| format!("{w} ({p})")).collect();
+                println!(
+                    "credential \"{name}\" already exists — {} listens with it",
+                    listeners.join(", ")
+                );
+                let answer = crate::credential::connect::ask(
+                    "rotate its secret (same bot), or connect a NEW bot under its own name? [rotate/new]: ",
+                )?;
+                if matches!(answer.trim(), "new" | "n" | "N") {
+                    let suggested = workers.first().map(|w| format!("{service}-{w}"));
+                    let question = match &suggested {
+                        Some(s) => format!("name for the new connection [{s}]: "),
+                        None => format!("name for the new connection (e.g. {service}-<worker>): "),
+                    };
+                    let fresh = crate::credential::connect::ask(&question)?;
+                    let fresh = fresh.trim().to_string();
+                    name = if fresh.is_empty() {
+                        suggested.ok_or("a new connection needs a name")?
+                    } else {
+                        fresh
+                    };
+                    if crate::credential::vault::get_credential(&name).is_some() {
+                        return Err(format!(
+                            "credential \"{name}\" already exists too — pick a fresh name"
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
+    }
+    // A derived or asked-for name re-keys the connection file and rotation.
+    let path = crate::paths::connections_dir().join(format!("{name}.toml"));
+    let rotating = crate::credential::vault::get_credential(&name).is_some();
     crate::credential::connect::store(&name, &cred)?;
     println!(
         "\n{} credential \"{name}\" in the vault",
@@ -525,6 +578,23 @@ fn bind_channel(platform: &str, credential: &str, worker_flags: &[String]) -> Re
     };
     if !known.contains(&worker) {
         return Err(format!("no such worker \"{worker}\" (have: {})", known.join(", ")).into());
+    }
+    // Refuse a binding config validation would reject, BEFORE writing it —
+    // one bot cannot serve two listeners, and a broken spec on disk helps
+    // nobody. The credential is already stored, so point at the way out.
+    let taken: Vec<String> = channel_binding_refs(credential)
+        .into_iter()
+        .filter(|(w, _, _)| w != &worker)
+        .map(|(w, _, _)| w)
+        .collect();
+    if !taken.is_empty() {
+        println!(
+            "NOT bound: {} already listens with credential \"{credential}\" — one bot cannot \
+             serve two listeners.\nfor a second bot, connect it under its own name:\n  \
+             roster connection add {platform} --name {platform}-{worker} --worker {worker}",
+            taken.join(", ")
+        );
+        return Ok(());
     }
     let spec = crate::paths::workers_dir()
         .join(&worker)
@@ -1464,6 +1534,29 @@ pub fn grant(
                     _ => Vec::new(),
                 });
             if !is_model && hosts.is_empty() {
+                // A channel-use credential (smtp, a bot token) is consumed
+                // host-side by its listener or executor — there is no box
+                // egress to grant. Say what the operator actually wants
+                // instead of "connect it first".
+                let uses = crate::credential::registry::provider_uses(entry);
+                if !uses.is_empty() && uses.iter().all(|u| u == "channel") {
+                    let follow_up = if name == "smtp" {
+                        "workers send email through the \"email-send\" action — grant it in org.toml:\n  \
+                         [[action]]\n  scope = \"org/<worker>\"   # or omit for org-wide\n  \
+                         name = \"email-send\"\n  executor = \"email\"\n  trust = \"gate\""
+                            .to_string()
+                    } else {
+                        format!(
+                            "a worker talks through it via its [channels] binding: \
+                             roster connection add {name} --worker <w>"
+                        )
+                    };
+                    return Err(format!(
+                        "\"{name}\" is a channel credential — the host consumes it (listener/executor), \
+                         so there is no box egress to grant.\n{follow_up}"
+                    )
+                    .into());
+                }
                 return Err(format!(
                     "\"{name}\" declares no hosts to grant — connect it first: roster connection add {name}"
                 )
@@ -1760,6 +1853,42 @@ fn references(name: &str) -> Vec<String> {
 
 /// (worker, platform, worker.toml path) for every `[channels]` binding that
 /// names this credential.
+/// The authenticated bot's own name, slugged for use in a connection name —
+/// discord asks `users/@me`, slack asks `auth.test`. None for services with
+/// no identity probe, or when the probe fails (an offline add still works).
+async fn bot_identity_slug(service: &str, cred: &Value) -> Option<String> {
+    let token = |field: &str| {
+        cred.get(field)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+    };
+    let raw = match service {
+        "discord" => crate::channel::discord::bot_username(token("token")?)
+            .await
+            .ok()?,
+        "slack" => crate::channel::slack::bot_username(token("bot_token")?)
+            .await
+            .ok()?,
+        _ => return None,
+    };
+    slug(&raw)
+}
+
+/// A bot name as a bare identifier: lowercased, runs of anything else
+/// collapsed to single dashes ("Looper Bot" → "looper-bot").
+fn slug(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    for c in raw.to_lowercase().chars() {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_end_matches('-').to_string();
+    (!out.is_empty()).then_some(out)
+}
+
 fn channel_binding_refs(name: &str) -> Vec<(String, String, PathBuf)> {
     let mut out = Vec::new();
     for worker in crate::worker::names() {
@@ -2007,6 +2136,16 @@ fn toml_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bot_slugs_are_bare_identifiers() {
+        assert_eq!(slug("looper"), Some("looper".into()));
+        assert_eq!(slug("Looper Bot"), Some("looper-bot".into()));
+        assert_eq!(slug("Zoë's  Bot!"), Some("zo-s-bot".into()));
+        assert_eq!(slug("under_score"), Some("under_score".into()));
+        assert_eq!(slug("---"), None);
+        assert_eq!(slug(""), None);
+    }
 
     #[test]
     fn generic_defaults_are_safe_and_predictable() {

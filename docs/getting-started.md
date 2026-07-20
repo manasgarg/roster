@@ -158,7 +158,7 @@ discord = "discord"
 
 Restart `server start` and the worker shows up, listens, and answers — every
 action still governed. Channels start untrusted (replies gate);
-`roster server channel trust <id>` promotes one. See
+`roster channel trust <id>` promotes one. See
 [channels.md](channels.md).
 
 ## Give it standing work

@@ -87,7 +87,7 @@ plus your channel designations. From most to least:
 Channels start **untrusted**; promotion is explicit:
 
 ```bash
-roster server channel trust 123456789
+roster channel trust 123456789
 ```
 
 Trust changes two things: participants may administer (approve gates, edit
@@ -110,7 +110,7 @@ wakes the worker; in `mention` mode only a DM or @mention does, while ambient
 messages are still recorded as history.
 
 ```bash
-roster server channel set 123456789 mode mention
+roster channel set 123456789 mode mention
 ```
 
 **Responding** is the worker's judgment. A DM, or a channel that's effectively
@@ -185,6 +185,6 @@ the channel directory mounted read-only for anything older — and only *its*
 channel; no run can read another channel's history.
 
 Per-channel memory behavior (whether the worker remembers, which kinds, how
-much it recalls here) is tuned with the `server channel set memory-*` keys —
+much it recalls here) is tuned with the `channel set memory-*` keys —
 see [memory.md](memory.md). Channel settings can only make org policy
 stricter, never looser.

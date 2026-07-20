@@ -5,13 +5,14 @@ every admin operation are subcommands of one executable. The grammar mirrors
 the product thesis — *rented intelligence, owned governance*:
 
 - **`roster server …`** — the owned machinery: the daemon, config validation,
-  the approval desk, channel edges, and the run log (every session, whoever
-  ran it).
+  the approval desk, and the run log (every session, whoever ran it).
 - **`roster connection …`** — the org's relationships with external
   services: one noun for capabilities, channels, and model providers.
 - **`roster worker …`** — the governed identities: lifecycle, trust, memory,
   knowledge, each worker's durable task queue — and running sessions as one,
   directly or interactively.
+- **`roster channel …`** — the conversations the workers serve: trust
+  designation, response mode, per-channel memory policy.
 
 Conventions, everywhere:
 
@@ -32,12 +33,13 @@ server start      [--cap N] [--once] [--no-listen] [--addr HOST:PORT]
 server status     [--json]
 server validate   parse + check all config, print every error
 server approvals  ls [--json] | show <id> | approve <id> [note] | deny <id> [note]
-server channel    ls [--json] | show <id> | trust <id> | untrust <id>
+server runs       ls [--worker W] [--limit N] [--json]
+                  | show <run> | context <run> [--all] | recall <run>
+
+channel           ls [--json] | show <id> | trust <id> | untrust <id>
                   | set <id> <key> <value>
                     keys: mode, memory, memory-inferred, memory-kinds,
                           memory-retention, memory-notes, memory-chars
-server runs       ls [--worker W] [--limit N] [--json]
-                  | show <run> | context <run> [--all] | recall <run>
 
 connection catalog
 connection add    [<service>] [--worker W].. [--org] [--name NAME]
@@ -69,7 +71,7 @@ completions       <shell>   shell completions to stdout (bash, zsh, fish, …)
 
 A bare noun shows its most useful read-only view: `roster server` is
 `server status`; `roster worker`, `roster connection`, `server approvals`,
-`server channel`, `server runs`, and `worker task` are their `ls`.
+`roster channel`, `server runs`, and `worker task` are their `ls`.
 
 ## `roster init`
 
@@ -122,7 +124,8 @@ prints the exact action that would execute (identity and code gates render a
 diff); `approve` executes it idempotently; `deny` records the refusal. Both
 accept an optional note. See [actions-and-trust.md](actions-and-trust.md).
 
-**`server channel`** manages chat-channel designations: `trust`/`untrust`
+**`channel`** manages the conversations workers serve (`server channel`
+still works, as an alias): `trust`/`untrust`
 set whether a channel's participants may administer the worker and whether
 replies send without a gate; `set` tunes response mode and the channel's
 memory policy. See [channels.md](channels.md) and [memory.md](memory.md).

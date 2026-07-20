@@ -2,9 +2,10 @@
 //! boundary is the trust boundary; TS lives only in the box). The command
 //! grammar is the product thesis — rented intelligence, owned governance:
 //!
-//!   roster server …       the owned machinery: daemon, config, desk, channels, run log
+//!   roster server …       the owned machinery: daemon, config, desk, run log
 //!   roster connection …   the org's relationships with external services
 //!   roster worker …       the governed identities: lifecycle, trust, work, sessions
+//!   roster channel …      the conversations the workers serve: trust, settings
 
 mod action;
 mod channel;
@@ -41,7 +42,7 @@ enum Cmd {
     Init,
     /// One-time upgrade to the store/connections worker environment
     Migrate,
-    /// The owned machinery: daemon, config, approval desk, channels, run log (bare: status)
+    /// The owned machinery: daemon, config, approval desk, run log (bare: status)
     #[command(
         after_help = "glossary: a box is the sandboxed container one session runs in; a gate is a \
                       proposed action awaiting your approval; a grant is an egress rule in org.toml; \
@@ -70,6 +71,18 @@ enum Cmd {
     Worker {
         #[command(subcommand)]
         cmd: Option<WorkerCmd>,
+    },
+    /// Conversations the workers serve: trust designation, response mode (bare: ls)
+    #[command(
+        after_help = "glossary: a surface is a platform-native place the worker exists — a Discord \
+                      channel, a Slack DM, your terminal; a channel is the conversation roster \
+                      keeps for it: history, purpose, trust, settings. Trusting a channel lets its \
+                      participants administer (approve gates, edit purpose) and sends replies \
+                      without gating"
+    )]
+    Channel {
+        #[command(subcommand)]
+        cmd: Option<ChannelCmd>,
     },
     /// Talk with a worker right here in the terminal — a trusted chat channel
     Talk {
@@ -121,7 +134,8 @@ enum ServerCmd {
         #[command(subcommand)]
         cmd: Option<ApprovalsCmd>,
     },
-    /// Channel edges: trust designation, response mode (bare: ls)
+    /// The pre-promotion spelling of `roster channel` — same commands
+    #[command(hide = true)]
     Channel {
         #[command(subcommand)]
         cmd: Option<ChannelCmd>,
@@ -172,22 +186,22 @@ enum ChannelCmd {
     },
     /// One channel's settings, readable
     Show {
-        /// Channel id (see: roster server channel ls)
+        /// Channel id (see: roster channel ls)
         channel_id: String,
     },
     /// Trust a channel: its participants may administer; replies need no gate
     Trust {
-        /// Channel id (see: roster server channel ls)
+        /// Channel id (see: roster channel ls)
         channel_id: String,
     },
     /// Untrust a channel: participants are content-only
     Untrust {
-        /// Channel id (see: roster server channel ls)
+        /// Channel id (see: roster channel ls)
         channel_id: String,
     },
     /// Tune a setting (just the id: list keys, allowed values, current values)
     Set {
-        /// Channel id (see: roster server channel ls)
+        /// Channel id (see: roster channel ls)
         channel_id: String,
         /// A settings key (omit to list them all)
         key: Option<String>,
@@ -515,25 +529,7 @@ async fn main() {
                 }
                 Some(ApprovalsCmd::Deny { id, note }) => cli::approvals::deny(&id, note.as_deref()),
             },
-            Some(ServerCmd::Channel { cmd }) => match cmd {
-                None => cli::channel::ls(false),
-                Some(ChannelCmd::Ls { json }) => cli::channel::ls(json),
-                Some(ChannelCmd::Show { channel_id }) => cli::channel::show(&channel_id),
-                Some(ChannelCmd::Trust { channel_id }) => {
-                    cli::channel::set_trust(&channel_id, true)
-                }
-                Some(ChannelCmd::Untrust { channel_id }) => {
-                    cli::channel::set_trust(&channel_id, false)
-                }
-                Some(ChannelCmd::Set {
-                    channel_id,
-                    key,
-                    value,
-                }) => match (key, value) {
-                    (Some(key), Some(value)) => cli::channel::set(&channel_id, &key, &value),
-                    _ => cli::channel::set_help(&channel_id),
-                },
-            },
+            Some(ServerCmd::Channel { cmd }) => run_channel_cmd(cmd),
             Some(ServerCmd::Runs { cmd }) => match cmd {
                 None => cli::runs::ls(None, 20, false),
                 Some(RunsCmd::Ls {
@@ -616,6 +612,7 @@ async fn main() {
                 Err("`roster credential ls` has retired — run: roster connection ls".into())
             }
         },
+        Cmd::Channel { cmd } => run_channel_cmd(cmd),
         Cmd::Talk { name, idle } => match name {
             Some(name) => run::session::talk(&name, idle).await,
             None => talk_bare(idle).await,
@@ -671,6 +668,26 @@ async fn main() {
 /// `roster talk` with no worker named: on a fresh deployment scaffold "elf"
 /// and start talking — the zero-config first conversation. Otherwise show the
 /// talk help and who is available.
+/// One handler for both spellings: `roster channel …` (the noun's home) and
+/// `roster server channel …` (the pre-promotion path, kept as an alias).
+fn run_channel_cmd(cmd: Option<ChannelCmd>) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        None => cli::channel::ls(false),
+        Some(ChannelCmd::Ls { json }) => cli::channel::ls(json),
+        Some(ChannelCmd::Show { channel_id }) => cli::channel::show(&channel_id),
+        Some(ChannelCmd::Trust { channel_id }) => cli::channel::set_trust(&channel_id, true),
+        Some(ChannelCmd::Untrust { channel_id }) => cli::channel::set_trust(&channel_id, false),
+        Some(ChannelCmd::Set {
+            channel_id,
+            key,
+            value,
+        }) => match (key, value) {
+            (Some(key), Some(value)) => cli::channel::set(&channel_id, &key, &value),
+            _ => cli::channel::set_help(&channel_id),
+        },
+    }
+}
+
 async fn talk_bare(idle: u64) -> Result<(), Box<dyn std::error::Error>> {
     let workers = worker::names();
     if workers.is_empty() {
@@ -701,7 +718,6 @@ fn legacy_pointer(first: &str) -> Option<&'static str> {
         "listen" => "roster server start  (listeners start for every worker with a [channels] entry)",
         "deploy" => "roster server validate  (config now loads live — there is no deploy step)",
         "gates" => "roster server approvals <ls|show|approve|deny>",
-        "channel" => "roster server channel <ls|show|trust|untrust|set>",
         "connect" => "roster connection add <provider>",
         "create" => "roster worker init <name>",
         "queue" => "roster worker task <add|relay|ls|show|requeue>",

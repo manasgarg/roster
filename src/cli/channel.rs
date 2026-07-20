@@ -1,4 +1,4 @@
-//! `roster server channel` — manage channel edges. `trust`/`untrust` is the
+//! `roster channel` — manage channels (conversations). `trust`/`untrust` is the
 //! security designation (a trusted channel's non-admin participants may
 //! administer, and the worker replies there without a gate; an untrusted
 //! channel's are content-only). Everything else is tuning, through one uniform
@@ -50,7 +50,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             s.mode,
         );
     }
-    println!("\ndetails: roster server channel show <id>");
+    println!("\ndetails: roster channel show <id>");
     Ok(())
 }
 
@@ -86,7 +86,7 @@ pub fn set_trust(channel_id: &str, trusted: bool) -> Result<(), BErr> {
     if !discord::channel_settings_all().contains_key(channel_id) && describe(channel_id) == "-" {
         eprintln!(
             "warning: no known channel matches \"{channel_id}\" — the designation is recorded \
-             and applies if such a channel appears (known channels: roster server channel ls)"
+             and applies if such a channel appears (known channels: roster channel ls)"
         );
     }
     discord::set_channel_trust(channel_id, trusted)?;
@@ -108,7 +108,7 @@ pub fn set_help(channel_id: &str) -> Result<(), BErr> {
     for (key, values, current) in rows {
         println!("{key:<18}  {values:<34}  {current}");
     }
-    println!("\nset one: roster server channel set {channel_id} <key> <value>");
+    println!("\nset one: roster channel set {channel_id} <key> <value>");
     Ok(())
 }
 

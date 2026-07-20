@@ -783,7 +783,10 @@ async fn provision_box(
         &format!("{}\n", json!({ "subject": subject, "run_id": run_id })),
     )?;
 
-    let proxy_url = format!("http://{token}@host.docker.internal:{}", gateway_port());
+    // The ":x" password is a placebo — the gateway reads only the username
+    // (the run token) — but git refuses a proxy URL whose username has no
+    // password: it tries to prompt for one and dies in the headless box.
+    let proxy_url = format!("http://{token}:x@host.docker.internal:{}", gateway_port());
     let container = container_name(run_id);
     let (uid, gid) = (unsafe { libc_getuid() }, unsafe { libc_getgid() });
 
@@ -1034,6 +1037,18 @@ async fn provision_box(
         "NODE_USE_ENV_PROXY=1".into(),
         "-e".into(),
         "NO_PROXY=".into(),
+    ]);
+    // Git's libcurl waits for a 407 challenge before sending proxy
+    // credentials, but the gateway never challenges (a CONNECT without auth
+    // is a legitimate host-side caller) — so git ran as "org" and matched no
+    // worker grant. Preemptive Basic puts the run token on every CONNECT.
+    args.extend([
+        "-e".into(),
+        "GIT_CONFIG_COUNT=1".into(),
+        "-e".into(),
+        "GIT_CONFIG_KEY_0=http.proxyAuthMethod".into(),
+        "-e".into(),
+        "GIT_CONFIG_VALUE_0=basic".into(),
     ]);
     // Trust for terminated TLS, per ecosystem. NODE_EXTRA_CA_CERTS is additive
     // (Node keeps its built-in roots), so the bare CA suffices; everything else

@@ -187,6 +187,34 @@ redirect_uri = "http://localhost:1455/callback"
 scope = "read write"
 ```
 
+## Plain git to github.com
+
+The `github` preset covers both `api.github.com` — the gh CLI, REST,
+GraphQL — and `github.com`, git's own endpoints: `git clone`, `fetch`, and
+`push` work from a box by default. The registry injects per host from the
+same stored token — `token {key}` on the API, Basic (git's smart-HTTP
+scheme) on `github.com` — so the box still never sees the credential, and
+every request is judged and audited like any other. Narrowing is one line
+in the connection file — drop `github.com` from `hosts` and git is refused
+while the API keeps working:
+
+```toml
+# connections/github.toml
+hosts = ["api.github.com"]   # API only; plain git refused
+```
+
+Weigh what you are choosing. Direct git bypasses the gated-repo lane
+entirely ([repos.md](repos.md)): no validated push, no participant scan,
+no fast-forward-only `main`, no quarantine backstop — and a grant does not
+distinguish run kinds, so a channel session can push exactly as a task run
+can. The token's scope is the blast radius: whatever it can reach, any
+granted worker can now write. A fine-grained PAT scoped to the
+repositories under development, plus branch protection so `main` moves
+only by pull request (workers push branches and open PRs through the API
+they already have), keeps the capability while narrowing what one bad
+push can do. Both lanes coexist: gated host-repos where governance earns
+its keep, direct git where development speed wins.
+
 ## Host connections: directories and repositories
 
 A host path becomes a connection the same way a service does — a file in

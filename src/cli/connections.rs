@@ -434,7 +434,11 @@ async fn verify_connection(name: &str, service: &str) -> Result<(), BErr> {
             }
         }
     }
-    for (k, v) in crate::credential::vault::render_injection(&cred, service) {
+    let verify_host = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(String::from))
+        .unwrap_or_default();
+    for (k, v) in crate::credential::vault::render_injection(&cred, service, &verify_host) {
         req = req.header(k.as_str(), v);
     }
     if let Some(body) = recipe.get("body").and_then(Value::as_str) {

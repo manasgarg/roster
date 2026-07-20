@@ -540,9 +540,10 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
                             vault::render_injection(
                                 &cred,
                                 inj.provider.as_deref().unwrap_or(&inj.credential),
+                                &gr.host,
                             )
                         } else {
-                            vault::render_headers(&cred, &inj.headers)
+                            vault::render_headers(&cred, &inj.headers, &gr.host)
                         };
                         injected_names = Some(inject.iter().map(|(k, _)| k.clone()).collect());
                     }

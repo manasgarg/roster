@@ -53,22 +53,35 @@ fn is_oauth(cred: &Credential) -> bool {
 /// The auth headers to inject, per the provider's registry `inject` spec —
 /// each value is a template (e.g. "Bearer {access}") filled from the
 /// credential. Generalizes over OAuth and api-key providers. A header whose
-/// template references a missing field is skipped.
-pub fn render_injection(cred: &Credential, provider_name: &str) -> Vec<(String, String)> {
+/// template references a missing field is skipped. `host` is the request's
+/// destination: entries listing hosts apply only there, and for one header
+/// name the last matching entry wins.
+pub fn render_injection(
+    cred: &Credential,
+    provider_name: &str,
+    host: &str,
+) -> Vec<(String, String)> {
     let Some(p) = crate::credential::registry::provider(provider_name) else {
         return Vec::new();
     };
-    render_headers(cred, &p.inject)
+    render_headers(cred, &p.inject, host)
 }
 
 pub fn render_headers(
     cred: &Credential,
     headers: &[crate::credential::registry::InjectHeader],
+    host: &str,
 ) -> Vec<(String, String)> {
-    let mut out = Vec::new();
+    let mut out: Vec<(String, String)> = Vec::new();
     for h in headers {
+        if !h.hosts.is_empty() && !h.hosts.iter().any(|x| x == host) {
+            continue;
+        }
         if let Some(value) = substitute(&h.value, cred) {
-            out.push((h.header.clone(), value));
+            match out.iter_mut().find(|(k, _)| *k == h.header) {
+                Some(slot) => slot.1 = value,
+                None => out.push((h.header.clone(), value)),
+            }
         }
     }
     out
@@ -76,14 +89,38 @@ pub fn render_headers(
 
 /// Fill `{field}` placeholders from the credential. Returns None if any
 /// referenced field is missing (so we never inject a half-built value).
+/// `{b64:…}` base64-encodes its (recursively substituted) body — how a
+/// template builds Basic auth, e.g. "Basic {b64:x-access-token:{key}}".
 fn substitute(template: &str, cred: &Credential) -> Option<String> {
+    use base64::Engine as _;
     let mut result = String::new();
     let mut rest = template;
     while let Some(open) = rest.find('{') {
         result.push_str(&rest[..open]);
-        let close = rest[open..].find('}')? + open;
-        let field = &rest[open + 1..close];
-        result.push_str(cred.get(field).and_then(|v| v.as_str())?);
+        // Placeholders may nest inside {b64:…} — take the matching brace.
+        let mut depth = 0usize;
+        let mut close = None;
+        for (i, c) in rest[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close?;
+        let inner = &rest[open + 1..close];
+        match inner.strip_prefix("b64:") {
+            Some(body) => result.push_str(
+                &base64::engine::general_purpose::STANDARD.encode(substitute(body, cred)?),
+            ),
+            None => result.push_str(cred.get(inner).and_then(|v| v.as_str())?),
+        }
         rest = &rest[close + 1..];
     }
     result.push_str(rest);
@@ -215,5 +252,43 @@ mod tests {
         assert_eq!(substitute("{accountId}", &cred), Some("acc".to_string()));
         assert_eq!(substitute("{key}", &cred), Some("sk-1".to_string()));
         assert_eq!(substitute("Bearer {missing}", &cred), None); // referenced field absent
+    }
+
+    #[test]
+    fn substitute_b64_encodes_its_substituted_body() {
+        use base64::Engine as _;
+        let cred = serde_json::json!({"key":"sk-1"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let expect = base64::engine::general_purpose::STANDARD.encode("x-access-token:sk-1");
+        assert_eq!(
+            substitute("Basic {b64:x-access-token:{key}}", &cred),
+            Some(format!("Basic {expect}"))
+        );
+        assert_eq!(substitute("Basic {b64:{missing}}", &cred), None);
+        assert_eq!(substitute("{b64:x-access-token:{key}", &cred), None); // unbalanced braces
+    }
+
+    #[test]
+    fn render_headers_filters_by_host_and_last_match_wins() {
+        let cred = serde_json::json!({"key":"sk-1"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let headers: Vec<crate::credential::registry::InjectHeader> =
+            serde_json::from_value(serde_json::json!([
+                { "header": "authorization", "value": "token {key}" },
+                { "header": "authorization", "value": "Basic {key}", "hosts": ["github.com"] },
+            ]))
+            .unwrap();
+        assert_eq!(
+            render_headers(&cred, &headers, "api.github.com"),
+            vec![("authorization".to_string(), "token sk-1".to_string())]
+        );
+        assert_eq!(
+            render_headers(&cred, &headers, "github.com"),
+            vec![("authorization".to_string(), "Basic sk-1".to_string())]
+        );
     }
 }

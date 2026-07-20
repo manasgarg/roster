@@ -32,6 +32,11 @@ pub struct Provider {
 pub struct InjectHeader {
     pub header: String,
     pub value: String,
+    /// Hosts this entry applies to (exact match); empty = every host the
+    /// grant carries. For one header name the last matching entry wins, so
+    /// a host-scoped scheme (git's Basic) overrides the provider default.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
 }
 
 /// Defaults overlaid with the admin\'s providers.toml (read fresh, so edits

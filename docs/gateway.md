@@ -106,6 +106,12 @@ and writes the real ones — rendered from the provider's header templates
 before forwarding. The decision record notes *which* header names were
 injected; values are never logged.
 
+A template entry may name the `hosts` it applies to, so one credential can
+wear a different scheme per destination (GitHub's API takes `token {key}`;
+its git smart-HTTP endpoints want Basic). For one header name the last
+matching entry wins, and `{b64:…}` base64-encodes its substituted body —
+how a template builds Basic auth: `Basic {b64:x-access-token:{key}}`.
+
 Fail closed, always: if a rule says inject but the credential is missing or
 can't be refreshed, the request is **denied** — the gateway never forwards a
 sentinel to a real host.

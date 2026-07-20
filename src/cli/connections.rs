@@ -369,10 +369,18 @@ pub async fn connect(service: String, options: ConnectOptions) -> Result<(), BEr
                 }
             }
             if channel {
+                let mut listener_bound = false;
                 for (worker, platform, credential) in &c.listeners {
                     if credential == &name {
-                        println!("listening: {platform} for {worker} with \"{name}\"");
+                        println!("listener: {platform} for {worker} with \"{name}\"");
+                        listener_bound = true;
                     }
+                }
+                if listener_bound {
+                    println!(
+                        "note: the server connects listeners at start — restart a running \
+                         server to bring this listener up"
+                    );
                 }
             }
             if model {
@@ -548,7 +556,9 @@ fn bind_channel(platform: &str, credential: &str, worker_flags: &[String]) -> Re
         println!("smtp is consumed host-side by the email executor — no worker binding needed");
         return Ok(());
     }
-    let snippet = format!("  [channels]\n  {platform} = \"{credential}\"");
+    let snippet = format!(
+        "  [channels]\n  {platform} = \"{credential}\"\nthen restart the server (listeners connect at start)"
+    );
     let known = crate::worker::names();
     if known.is_empty() {
         println!(

@@ -51,7 +51,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         return Ok(());
     }
     if names.is_empty() {
-        println!("no workers — scaffold one: roster worker init <name>");
+        println!("no workers — scaffold one: roster worker add <name>");
         return Ok(());
     }
     println!(
@@ -187,7 +187,7 @@ pub fn show(name: &str, json: bool) -> Result<(), BErr> {
             knowledge_head(name).unwrap_or_else(|| "-".into())
         );
     }
-    println!("\ntrust: roster worker trust {name}   work: roster worker task ls");
+    println!("\ntrust: roster worker trust {name}   work: roster worker task ls {name}");
     authoritative(bad_config)
 }
 
@@ -280,98 +280,6 @@ pub fn rm(name: &str, yes: bool) -> Result<(), BErr> {
     Ok(())
 }
 
-/// Per-action trust, read-only: what the worker may propose, the default level,
-/// the owner's ladder rules, and the earned history behind them. Trust is never
-/// set here — it is earned through gate outcomes; grants live in the specs.
-/// `roster migrate` — one-time, idempotent upgrade to the store/connections
-/// worker environment (docs/plans/worker-environment.md). No data moves and
-/// nothing is deleted: stores are provisioned and seeded with a copy of each
-/// worker's memory.jsonl, an initial snapshot is taken, and the knowledge
-/// repo keeps working as the implicit gated connection named "knowledge".
-pub fn migrate() -> Result<(), BErr> {
-    let c = crate::config::snapshot().map_err(|e| format!("config invalid:\n{e}"))?;
-    if c.workers.is_empty() {
-        println!("no workers — nothing to migrate");
-        return Ok(());
-    }
-    for w in &c.workers {
-        let store = crate::worker::store::provision(w)?;
-        let memory = crate::paths::worker_memory_file(w);
-        let seeded = store.join("memory").join("memory.jsonl");
-        if memory.is_file() && !seeded.exists() {
-            std::fs::create_dir_all(seeded.parent().unwrap())?;
-            std::fs::copy(&memory, &seeded)?;
-            println!("{w}: seeded store/memory/memory.jsonl from the host memory file (a copy — the original is untouched)");
-        }
-        let keep = crate::worker::storage::load(w).store.snapshots;
-        match crate::worker::store::snapshot(w, None, keep) {
-            Ok(Some(o)) => println!(
-                "{w}: store ready, first snapshot taken ({} entries)",
-                o.changes
-            ),
-            Ok(None) => println!("{w}: store ready (already snapshotted)"),
-            Err(e) => println!("{w}: store ready, snapshot failed — {e}"),
-        }
-        let knowledge = crate::paths::worker_knowledge_dir(w).join("repo.git");
-        if knowledge.join("HEAD").is_file() {
-            println!(
-                "{w}: knowledge repo stays at {} as the implicit gated connection \"knowledge\"",
-                knowledge.display()
-            );
-        }
-    }
-    // Move pre-worker-layout run dirs under their worker's runs dir, so the
-    // full history shows up in the box mount — not just runs made after the
-    // upgrade. Attribution comes from run.json; unattributed dirs stay put.
-    let mut moved = 0usize;
-    for entry in std::fs::read_dir(crate::paths::runs_dir())
-        .into_iter()
-        .flatten()
-        .flatten()
-    {
-        let path = entry.path();
-        let Some(id) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
-            continue;
-        };
-        let record: Option<serde_json::Value> = std::fs::read_to_string(path.join("run.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok());
-        let Some(worker) = record
-            .as_ref()
-            .and_then(|r| r.get("worker").or_else(|| r.get("imp")))
-            .and_then(|v| v.as_str())
-            .map(crate::paths::short_worker)
-            .filter(|w| c.workers.iter().any(|k| k == w))
-        else {
-            continue;
-        };
-        let dest_dir = crate::paths::worker_runs_dir(worker);
-        std::fs::create_dir_all(&dest_dir)?;
-        let dest = dest_dir.join(&id);
-        if !dest.exists() && std::fs::rename(&path, &dest).is_ok() {
-            moved += 1;
-        }
-    }
-    if moved > 0 {
-        println!("moved {moved} run dir(s) into per-worker run history (state/runs/<worker>/)");
-    }
-    // The box's repo_push tool submits the "repo-push" intent; a deployment
-    // granted only "knowledge-push" should add the new name too.
-    let has_repo_push = c.actions.actions.iter().any(|a| a.name == "repo-push");
-    let has_knowledge_push = c.actions.actions.iter().any(|a| a.name == "knowledge-push");
-    if has_knowledge_push && !has_repo_push {
-        println!(
-            "\nadd this to org.toml so the renamed push tool keeps working (org.toml is yours — roster never edits it):\n\
-             [[action]]\n\
-             name = \"repo-push\"\n\
-             executor = \"knowledge\"\n\
-             trust = \"auto\""
-        );
-    }
-    println!("\ndone — idempotent; safe to run again");
-    Ok(())
-}
-
 /// `roster worker restore <name> [--from <snapshot>] [--list]` — the whole
 /// payoff of the snapshot rotation. Restoring first snapshots the current
 /// state, so a restore is always undoable by another restore.
@@ -411,6 +319,9 @@ pub fn restore(
     Ok(())
 }
 
+/// Per-action trust, read-only: what the worker may propose, the default level,
+/// the owner's ladder rules, and the earned history behind them. Trust is never
+/// set here — it is earned through gate outcomes; grants live in the specs.
 pub fn trust(name: &str, json: bool) -> Result<(), BErr> {
     crate::worker::require_worker(name)?;
     // A broken config makes load_action_policy() return an empty policy, so an

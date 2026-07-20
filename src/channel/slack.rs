@@ -97,6 +97,16 @@ pub async fn post_message(
     Ok(res["ts"].as_str().unwrap_or("").to_string())
 }
 
+/// The bot's own name (`auth.test`) — the connections wizard derives the
+/// connection's name from it ("slack-looper").
+pub async fn bot_username(bot_token: &str) -> Result<String, String> {
+    let me = api(bot_token, "auth.test", json!({})).await?;
+    match me["user"].as_str() {
+        Some(name) if !name.is_empty() => Ok(name.to_string()),
+        _ => Err("auth.test returned no user".into()),
+    }
+}
+
 /// Open (or fetch) a DM with a user. Returns the DM channel id (D…).
 pub async fn open_dm(token: &str, user_id: &str) -> Result<String, String> {
     let res = api(token, "conversations.open", json!({ "users": user_id })).await?;

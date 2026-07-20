@@ -907,6 +907,10 @@ async fn provision_box(
     if let Some(channel) = run_context.channel_id.as_deref() {
         let channel_dir = crate::paths::channel_dir(channel);
         if channel_dir.is_dir() {
+            // The store mounts INSIDE this read-only mount, and docker cannot
+            // create a mountpoint through a ro bind — it must pre-exist in
+            // the record dir on the host.
+            std::fs::create_dir_all(channel_dir.join("store"))?;
             args.extend([
                 "-v".into(),
                 format!("{}:{CHANNEL_MOUNT}:ro", channel_dir.display()),

@@ -140,10 +140,6 @@ pub fn worker_journal_file(worker: &str) -> PathBuf {
     worker_data_dir(worker).join("journal").join("events.jsonl")
 }
 
-pub fn worker_memory_file(worker: &str) -> PathBuf {
-    worker_data_dir(worker).join("memory.jsonl")
-}
-
 /// The worker's durable store — the auto-provisioned rw host-dir connection
 /// every worker gets, mounted at `$HOME/store` in every run.
 pub fn worker_store_dir(worker: &str) -> PathBuf {
@@ -240,7 +236,7 @@ pub fn new_run_dir(worker: &str, run_id: &str) -> PathBuf {
 
 /// Resolve an existing run's dir: the per-worker layout
 /// (`runs/<worker>/<run-id>`), falling back to the pre-2026-07 global
-/// layout (`runs/<run-id>`) for history `roster migrate` hasn't moved.
+/// layout (`runs/<run-id>`) for history predating the per-worker layout.
 pub fn run_dir(run_id: &str) -> PathBuf {
     let root = runs_dir();
     if let Ok(entries) = std::fs::read_dir(&root) {

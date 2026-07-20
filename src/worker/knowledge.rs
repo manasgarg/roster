@@ -1039,7 +1039,7 @@ pub fn repo_path(worker: &str) -> Result<PathBuf, String> {
     let repo = canonical_repo(worker);
     if !repo.exists() {
         return Err(format!(
-            "knowledge repository for {worker} is not initialized; create the worker first: roster worker init {worker}"
+            "knowledge repository for {worker} is not initialized; create the worker first: roster worker add {worker}"
         ));
     }
     Ok(repo)

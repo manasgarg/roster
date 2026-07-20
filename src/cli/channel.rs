@@ -141,6 +141,89 @@ pub fn unlink(surface_id: &str) -> Result<(), BErr> {
     Ok(())
 }
 
+/// `roster channel rm <id>` — delete a channel: the settings entry is
+/// dropped (back to the defaults: untrusted, mode=all), and the channel's
+/// record (history, meta, cursors) and per-worker channel stores are
+/// archived under the data trash, mirroring `worker rm`. A linked id fails
+/// closed — unlink the members first, then remove the pieces.
+pub fn rm(channel_id: &str, yes: bool) -> Result<(), BErr> {
+    use crate::paths;
+    if !crate::channel::links::safe_component(channel_id) {
+        return Err(format!("invalid channel id \"{channel_id}\"").into());
+    }
+    if let Some(name) = crate::channel::links::in_registry(channel_id) {
+        return Err(format!(
+            "\"{channel_id}\" is part of linked channel \"{name}\" — unlink its surfaces first \
+             (roster channel show {name}), then remove them individually"
+        )
+        .into());
+    }
+
+    let record = paths::channel_dir(channel_id);
+    let configured = discord::channel_settings_all().contains_key(channel_id);
+    let store_owners: Vec<String> = crate::worker::names()
+        .into_iter()
+        .filter(|w| paths::worker_channel_store_dir(w, channel_id).is_dir())
+        .collect();
+    if !record.is_dir() && !configured && store_owners.is_empty() {
+        return Err(
+            format!("no channel \"{channel_id}\" (known channels: roster channel ls)").into(),
+        );
+    }
+
+    let stamp: String = crate::util::now_rfc3339()
+        .chars()
+        .take(19)
+        .map(|c| if c == ':' { '-' } else { c })
+        .collect();
+    let trash = paths::data_root()
+        .join("trash")
+        .join(format!("channel-{channel_id}-{stamp}"));
+
+    if !yes {
+        let interactive = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
+        if !interactive {
+            return Err(format!(
+                "removing a channel needs confirmation — re-run with --yes: roster channel rm {channel_id} --yes"
+            )
+            .into());
+        }
+        let described = describe(channel_id);
+        if described != "-" {
+            println!("channel {channel_id}  ({described})");
+        }
+        println!(
+            "this drops the channel's settings and archives its history and stores under:\n  {}",
+            trash.display()
+        );
+        let answer = crate::credential::connect::ask("delete? [y/N] ")?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            return Err("not confirmed — nothing was removed".into());
+        }
+    }
+
+    if discord::remove_channel_settings(channel_id)? {
+        println!("dropped settings for {channel_id} (trust and mode revert to the defaults)");
+    }
+    if record.is_dir() {
+        std::fs::create_dir_all(&trash)?;
+        std::fs::rename(&record, trash.join("record"))?;
+        println!("archived record → {}", trash.join("record").display());
+    }
+    for worker in &store_owners {
+        std::fs::create_dir_all(&trash)?;
+        let dest = trash.join(format!("store-{worker}"));
+        std::fs::rename(paths::worker_channel_store_dir(worker, channel_id), &dest)?;
+        println!("archived {worker}'s channel store → {}", dest.display());
+    }
+    println!("restore: move the directories back; delete for good: remove the trash entry");
+    println!(
+        "note: if a listener still shares this conversation, the channel reappears \
+         (with default settings) on its next message"
+    );
+    Ok(())
+}
+
 /// Bare `channel set <id>`: show every key, its allowed values, and the
 /// channel's current value — the same pattern as `connection add` without a
 /// service.

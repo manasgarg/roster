@@ -13,9 +13,8 @@ auto-provisioned rw host-dir grant — which is why it appears in
 
 ## Interaction memory lives here
 
-`roster migrate` seeds `store/memory/` with a copy of the worker's
-`memory.jsonl`. From there the memory practice belongs to the worker: the
-briefing teaches it to consult its memory when someone rings familiar,
+The memory practice belongs to the worker: the briefing teaches it to
+consult its memory (`store/memory/`) when someone rings familiar,
 record what deserves keeping, and carry person-facts with discretion —
 what someone says in a private conversation isn't material for another
 room. The store mounts read-write in every run, whether or not

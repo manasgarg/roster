@@ -46,7 +46,7 @@ pub async fn login(provider_name: &str, p: &Value, channel_use: bool) -> Result<
     match auth {
         Some("api_key") => connect_api_key(),
         Some("smtp") => connect_smtp(),
-        Some("discord") => connect_discord(),
+        Some("discord") => connect_discord().await,
         Some("slack") => connect_slack(channel_use),
         Some("oauth") => {
             let login = p.get("login").cloned().unwrap_or_else(|| json!({}));
@@ -110,15 +110,38 @@ fn connect_smtp() -> Result<Value, BErr> {
 
 // ── Discord (bot) ─────────────────────────────────────────────────────────────
 
-/// Collect a Discord bot token (for outbound messages) and, optionally, the
-/// owner's user id (so message_user can DM them). The token lands in the vault,
-/// off the box; only the trusted-side executor reads it.
-fn connect_discord() -> Result<Value, BErr> {
+/// Collect a Discord bot token (for outbound messages) and the owner's user
+/// id (so message_user can DM them). The app's owner is looked up with the
+/// token and offered as the default — the operator almost always is the
+/// owner, and shouldn't have to hunt for their own snowflake. The token
+/// lands in the vault, off the box; only the trusted-side executor reads it.
+async fn connect_discord() -> Result<Value, BErr> {
     let token = prompt_hidden("Discord bot token: ")?;
     if token.is_empty() {
         return Err("no token entered".into());
     }
-    let owner_id = prompt("Owner Discord user id (for DMs; optional): ")?;
+    let owner_id = match crate::channel::discord::app_owner(&token).await {
+        Ok((id, name)) => {
+            let label = if name.is_empty() {
+                id.clone()
+            } else {
+                format!("{id} — {name}")
+            };
+            let answer = prompt_default(
+                &format!("Owner user id for DMs [{label}; \"none\" to skip]: "),
+                &id,
+            )?;
+            if answer == "none" {
+                String::new()
+            } else {
+                answer
+            }
+        }
+        Err(e) => {
+            eprintln!("note: could not look up the app owner ({e})");
+            prompt("Owner Discord user id (for DMs; optional): ")?
+        }
+    };
     Ok(json!({ "type": "discord", "token": token, "owner_id": owner_id }))
 }
 

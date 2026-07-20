@@ -70,8 +70,13 @@ roster triggers), stores the secret, and follows through per use:
   Override or add `brief` per provider in providers.toml.
 - **channel** — offers the `[channels]` binding and writes it into the
   chosen worker's spec (`--worker` answers non-interactively; declining
-  prints the snippet). One credential serves one worker's listener —
-  use `--name` for a second bot.
+  prints the snippet). The connection is named after the bot the token
+  authenticates — discord's `users/@me`, slack's `auth.test` — so a bot
+  named "looper" lands as `discord-looper` and a second bot never
+  collides with the first (`--name` overrides; if the identity can't be
+  probed, the wizard falls back to the service name and asks before
+  rotating a credential a listener consumes). One credential serves one
+  worker's listener.
 - **model** — a grant by default: scaffolds a connection file whose hosts
   derive from the provider registry, compiling into an
   allow-and-inject rule for the model API (org-wide unless `--worker`

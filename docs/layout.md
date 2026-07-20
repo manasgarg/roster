@@ -62,11 +62,11 @@ Design notes:
 - **Worker-first data**: a worker's whole footprint is one subtree under
   `data/workers/<name>/` — export is that subtree plus its spec — and its
   runs are one subtree under `state/runs/<name>/` (run ids stay globally
-  unique, so bare-id commands resolve across workers; pre-migration runs at
-  `state/runs/<run-id>` keep working until `roster migrate` moves them).
+  unique, so bare-id commands resolve across workers; legacy runs at
+  `state/runs/<run-id>` keep resolving in place).
 - **Backup story: config + data.** Everything under state can burn.
 - `roster init` creates all three roots (idempotent, never overwrites);
-  `roster worker init <name>` scaffolds a worker into config and initializes
+  `roster worker add <name>` scaffolds a worker into config and initializes
   its knowledge repo in data.
 - Worth doing on day one: `git init ~/.config/roster` — your governance
   config is small, hand-edited, and exactly the kind of thing that deserves

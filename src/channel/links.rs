@@ -15,7 +15,7 @@ struct Registry {
     channels: BTreeMap<String, Vec<String>>,
 }
 
-fn safe_component(value: &str) -> bool {
+pub(crate) fn safe_component(value: &str) -> bool {
     !value.is_empty()
         && value
             .bytes()
@@ -76,9 +76,30 @@ fn one_to_one(surface_id: &str) -> bool {
     if surface_id.starts_with("term-") {
         return true;
     }
-    crate::channel::discord::channel_meta(surface_id)
-        .and_then(|m| m.get("class").and_then(|v| v.as_str()).map(String::from))
-        .is_some_and(|c| c == "dm")
+    let Some(meta) = crate::channel::discord::channel_meta(surface_id) else {
+        return false;
+    };
+    match meta.get("class").and_then(|v| v.as_str()) {
+        Some(class) => class == "dm",
+        // Meta from before surfaces were classified: only the DM path ever
+        // wrote meta without a server; guild channels always carry one. The
+        // listener rewrites the meta with a class on the next message, so
+        // this reading serves only records it hasn't touched since.
+        None => meta.get("server").is_none(),
+    }
+}
+
+/// The linked channel this id appears in — as the channel's own name or as
+/// a member surface. None for ids the registry doesn't mention (singletons).
+pub fn in_registry(id: &str) -> Option<String> {
+    let reg = load();
+    if reg.channels.contains_key(id) {
+        return Some(id.to_string());
+    }
+    reg.channels
+        .iter()
+        .find(|(_, members)| members.iter().any(|m| m == id))
+        .map(|(name, _)| name.clone())
 }
 
 /// Link surfaces into one logical channel, creating it or extending it.
@@ -287,6 +308,21 @@ mod tests {
             &serde_json::json!({ "platform": "discord", "class": "public" }),
         );
         assert!(link("manas", &["800".into()]).unwrap_err().contains("1:1"));
+
+        // Legacy meta (pre-class builds): a DM's record has no server and
+        // links; a guild channel's has one and is refused.
+        crate::channel::discord::write_channel_meta(
+            "700",
+            &serde_json::json!({ "platform": "discord", "name": "DM with jane" }),
+        );
+        crate::channel::discord::write_channel_meta(
+            "600",
+            &serde_json::json!({ "platform": "discord", "server": "acme", "name": "general" }),
+        );
+        link("manas", &["700".into()]).unwrap();
+        assert_eq!(logical_of("700"), "manas");
+        assert!(link("manas", &["600".into()]).unwrap_err().contains("1:1"));
+        assert_eq!(unlink("700").unwrap(), "manas");
         assert!(link("other", &["900".into()])
             .unwrap_err()
             .contains("already linked"));

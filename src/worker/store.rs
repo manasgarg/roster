@@ -25,7 +25,7 @@ pub fn store_dir(worker: &str) -> PathBuf {
 }
 
 /// Ensure the store (and its `.locks/`) exists. Idempotent; called by every
-/// run provision and by `worker init`.
+/// run provision and by `worker add`.
 pub fn provision(worker: &str) -> Result<PathBuf, String> {
     let dir = store_dir(worker);
     std::fs::create_dir_all(dir.join(".locks"))

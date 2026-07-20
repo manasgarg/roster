@@ -79,7 +79,7 @@ pub fn run() -> Result<(), BErr> {
         println!("created {:<15} {}", "org.toml", org.display());
     }
     println!(
-        "\nnext: edit {} (grants, actions, budgets), then\n  roster worker init <name>\n  roster connection add anthropic   (a model credential — workers need one)\n  roster server validate\n  roster server start",
+        "\nnext: edit {} (grants, actions, budgets), then\n  roster worker add <name>\n  roster connection add anthropic   (a model credential — workers need one)\n  roster server validate\n  roster server start",
         org.display()
     );
     println!(

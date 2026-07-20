@@ -602,6 +602,64 @@ async fn connect_once(
     })
 }
 
+/// The bot's own username (`GET /users/@me`) — the connections wizard
+/// derives the connection's name from it ("discord-looper").
+pub async fn bot_username(token: &str) -> Result<String, String> {
+    let res = reqwest::Client::new()
+        .get(format!("{}/users/@me", base()))
+        .header("authorization", format!("Bot {token}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        return Err(format!("users/@me → {}", res.status()));
+    }
+    let v: Value = res.json().await.map_err(|e| e.to_string())?;
+    match v["username"].as_str() {
+        Some(name) if !name.is_empty() => Ok(name.to_string()),
+        _ => Err("users/@me returned no username".into()),
+    }
+}
+
+/// The app's owner (user id, username) via the bot token
+/// (`GET /oauth2/applications/@me`) — the connections wizard's default
+/// recipient for message_user DMs. A team-owned app names the team's
+/// owner instead (its own owner field is a team pseudo-user).
+pub async fn app_owner(token: &str) -> Result<(String, String), String> {
+    let res = reqwest::Client::new()
+        .get(format!("{}/oauth2/applications/@me", base()))
+        .header("authorization", format!("Bot {token}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        return Err(format!("applications/@me → {}", res.status()));
+    }
+    let v: Value = res.json().await.map_err(|e| e.to_string())?;
+    if let Some(team) = v.get("team").filter(|t| !t.is_null()) {
+        let id = team["owner_user_id"].as_str().unwrap_or("");
+        if id.is_empty() {
+            return Err("team-owned app names no owner_user_id".into());
+        }
+        let name = team["members"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|m| m["user"]["id"].as_str() == Some(id))
+            .and_then(|m| m["user"]["username"].as_str())
+            .unwrap_or("")
+            .to_string();
+        return Ok((id.to_string(), name));
+    }
+    match v["owner"]["id"].as_str() {
+        Some(id) if !id.is_empty() => Ok((
+            id.to_string(),
+            v["owner"]["username"].as_str().unwrap_or("").to_string(),
+        )),
+        _ => Err("application object names no owner".into()),
+    }
+}
+
 /// Remember a channel's human identity so the CLI never shows a bare id.
 pub(crate) fn write_channel_meta(channel_id: &str, meta: &Value) {
     let path = crate::paths::channel_meta_file(channel_id);
@@ -1345,6 +1403,16 @@ pub fn set_channel_mode(channel_id: &str, mode: &str) -> Result<(), String> {
 
 pub fn channel_settings_all() -> HashMap<String, ChannelSettings> {
     load_settings()
+}
+
+/// Drop a channel's settings entry (`channel rm`) — the id reverts to the
+/// defaults (untrusted, mode=all). Returns whether an entry existed.
+pub fn remove_channel_settings(channel_id: &str) -> Result<bool, String> {
+    let mut existed = false;
+    mutate_settings(|m| {
+        existed = m.remove(channel_id).is_some();
+    })?;
+    Ok(existed)
 }
 
 /// Fold newly linked surfaces' settings entries into their logical

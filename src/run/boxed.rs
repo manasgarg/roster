@@ -483,6 +483,15 @@ pub async fn run_session(
     let mut first_turn = true;
     let mut clean_exit = false;
     let mut pending: std::collections::VecDeque<SessionMessage> = std::collections::VecDeque::new();
+    // Chat surfaces deliver replies via the send action only — surface a turn
+    // whose text never left the box (below) instead of dropping it silently.
+    let chat_surface = matches!(
+        surface,
+        crate::worker::context::RunSurface::DiscordSession
+            | crate::worker::context::RunSurface::SlackSession
+    );
+    let mut dropped_chars = 0usize;
+    let mut turn_sent = false;
     loop {
         // The sender is gone (stdin EOF, listener shutdown) and nothing is in
         // flight: end the session now instead of sitting out the idle window.
@@ -557,8 +566,27 @@ pub async fn run_session(
                         for text in assistant_text(&line) {
                             let _ = tx.send(text).await;
                         }
+                    } else if chat_surface {
+                        dropped_chars += assistant_text(&line)
+                            .iter()
+                            .map(|t| t.chars().count())
+                            .sum::<usize>();
+                        if line.contains("\"type\":\"tool_execution_start\"")
+                            && ["discord_send", "slack_send", "term_send", "message_user"]
+                                .iter()
+                                .any(|t| line.contains(&format!("\"toolName\":\"{t}\"")))
+                        {
+                            turn_sent = true;
+                        }
                     }
                     if line.contains("\"type\":\"agent_end\"") {
+                        if dropped_chars > 0 && !turn_sent {
+                            eprintln!(
+                                "session {run_id}: turn ended with assistant text ({dropped_chars} chars) but no send action — not delivered to the channel"
+                            );
+                        }
+                        dropped_chars = 0;
+                        turn_sent = false;
                         busy = false; // turn complete
                         turn_started = None;
                     }

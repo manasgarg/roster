@@ -857,14 +857,15 @@ async fn handle_message(
     } else {
         " [group chat; you were not directly addressed — reply only if useful]"
     };
-    // In a linked channel the reply goes where the person spoke THIS time —
-    // the host names the surface per turn, so the worker experiences one
-    // conversation and just addresses each reply as directed. Singleton
-    // channels keep today's turn bytes exactly.
+    // The host names the reply surface on EVERY turn — in a linked channel
+    // because the reply goes where the person spoke THIS time, and in a
+    // singleton channel because a model that only saw the instruction in the
+    // system block sometimes answers in plain text, which a chat session
+    // silently drops (reply_tx is None; the reply must be the send action).
     let routing = if channel_id != surface_id {
         format!(" [arrived via Discord — reply with discord_send to channel id {surface_id}]")
     } else {
-        String::new()
+        format!(" [reply via discord_send to channel id {surface_id}]")
     };
     let text = format!("{content}{hint}{routing}");
     let context = crate::worker::memory::RunContext {

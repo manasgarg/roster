@@ -478,13 +478,17 @@ async fn handle_message(
     } else {
         " [group chat; you were not directly addressed — reply only if useful]"
     };
-    // In a linked channel the reply goes where the person spoke THIS time.
+    // The host names the reply surface on EVERY turn — in a linked channel
+    // because the reply goes where the person spoke THIS time, and in a
+    // singleton channel because a model that only saw the instruction in the
+    // system block sometimes answers in plain text, which a chat session
+    // silently drops (see discord.rs).
     let routing = if channel_id != surface_id {
         format!(
             " [arrived via Slack — reply with slack_send to channel id {surface_id}, in mrkdwn]"
         )
     } else {
-        String::new()
+        format!(" [reply via slack_send to channel id {surface_id}, in mrkdwn]")
     };
     let context = crate::worker::memory::RunContext {
         provider: "slack".into(),

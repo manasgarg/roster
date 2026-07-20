@@ -62,7 +62,7 @@ else is still default-deny.
 ## Scaffold a worker
 
 ```bash
-roster worker init dobby
+roster worker add dobby
 ```
 
 Creates `workers/dobby/` in config (its spec and `identity.md`) and its

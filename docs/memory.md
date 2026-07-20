@@ -41,8 +41,3 @@ Runs still record **provenance** — which provider, channel, and user a
 run served (`run-context.json` in the run dir). That record is the input
 to the clean-room rule and the participant scan ([repos.md](repos.md));
 it is attribution, not memory.
-
-Deployments upgraded from the host-memory era: `roster migrate` seeds
-`store/memory/memory.jsonl` with a copy of the old host-owned
-`memory.jsonl`, which otherwise stays untouched on disk as an inert
-historical file.

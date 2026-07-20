@@ -1347,6 +1347,16 @@ pub fn channel_settings_all() -> HashMap<String, ChannelSettings> {
     load_settings()
 }
 
+/// Drop a channel's settings entry (`channel rm`) — the id reverts to the
+/// defaults (untrusted, mode=all). Returns whether an entry existed.
+pub fn remove_channel_settings(channel_id: &str) -> Result<bool, String> {
+    let mut existed = false;
+    mutate_settings(|m| {
+        existed = m.remove(channel_id).is_some();
+    })?;
+    Ok(existed)
+}
+
 /// Fold newly linked surfaces' settings entries into their logical
 /// channel's (channel link): member entries are removed — reads resolve to
 /// the channel from here on — the strictest wake mode survives, and the

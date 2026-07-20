@@ -671,7 +671,7 @@ fn read_identity(worker: &str) -> Result<Option<(String, String)>, String> {
         ))
     } else {
         Err(format!(
-            "unknown worker {worker}; create it with: roster worker init {worker}"
+            "unknown worker {worker}; create it with: roster worker add {worker}"
         ))
     }
 }

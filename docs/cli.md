@@ -38,7 +38,7 @@ server runs       ls [--worker W] [--limit N] [--json]
 
 channel           ls [--json] | show <id> | trust <id> | untrust <id>
                   | link <name> <surface>.. | unlink <surface>
-                  | set <id> <key> <value>
+                  | rm <id> [--yes] | set <id> <key> <value>
                     keys: mode, memory, memory-inferred, memory-kinds,
                           memory-retention, memory-notes, memory-chars
 
@@ -51,7 +51,7 @@ connection revoke <name> <worker>|--org
 connection ls     [--json]
 connection rm     <name>
 
-worker init       <name>
+worker add        <name>
 worker ls         [--json]
 worker show       <name> [--json]
 worker trust      <name> [--json]
@@ -61,7 +61,7 @@ worker chat       <name> [--idle SECS]
 worker task       add <worker> [--ceiling M] [--proactive]
                       [--repo P --base R] "<prompt>"
                   | relay <worker> [--from WHO] "<message>"
-                  | ls [--json] | show <id> | requeue <id>
+                  | ls [worker] [--json] | show <id> | requeue <id>
 worker memory     ls <worker> [--scope S] [--scope-id ID] | show <worker> <id>
                   | correct <worker> <id> "<replacement>"
                   | rm|pin|unpin|disable|enable <worker> <id> | compact <worker>
@@ -160,7 +160,7 @@ live service so a bad token fails at paste time, not later inside a run
 
 ## `roster worker`
 
-**`worker init <name>`** scaffolds a worker: its spec (`worker.toml`), its identity
+**`worker add <name>`** scaffolds a worker: its spec (`worker.toml`), its identity
 file, and its knowledge repository.
 
 **`worker ls` / `worker show`** list workers and inspect one — spec, budgets and
@@ -191,7 +191,8 @@ much quiet (default 20).
   in a git worktree of that repo (`--base` defaults to `main`).
 - `relay` files an inbound message as a task with untrusted-content framing;
   `--from` records the sender label.
-- `ls`, `show`, `requeue` — inspect and re-run.
+- `ls`, `show`, `requeue` — inspect and re-run; `ls <worker>` scopes the
+  listing to that worker.
 
 See [work.md](work.md) for task states and dispatch.
 

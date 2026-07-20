@@ -154,19 +154,29 @@ pub fn show(id: &str) -> Result<(), BErr> {
     Ok(())
 }
 
-pub fn ls(json: bool) -> Result<(), BErr> {
+pub fn ls(worker: Option<&str>, json: bool) -> Result<(), BErr> {
+    // A typo'd name must not read as "no tasks".
+    if let Some(w) = worker {
+        crate::worker::require_worker(w)?;
+    }
+    let scoped = |w: &str| worker.map(|name| name == w).unwrap_or(true);
     let mut tasks = tms::list_all();
+    tasks.retain(|t| scoped(&t.worker));
     tasks.sort_by(|a, b| {
         b.updated_at
             .cmp(&a.updated_at)
             .then_with(|| b.created_at.cmp(&a.created_at))
     });
-    let recurring = tms::list_recurring();
+    let mut recurring = tms::list_recurring();
+    recurring.retain(|r| scoped(&r.worker));
     // Recently finished/failed work stays in view — a task must never simply
     // vanish from the listing when its run ends. (Requeued ids are live again;
-    // skip their stale journal records.)
-    let recent: Vec<(String, tms::Task)> = tms::journal_recent(8)
+    // skip their stale journal records.) Scoped listings read further back:
+    // one worker's outcomes shouldn't drown in the others'.
+    let window = if worker.is_some() { 40 } else { 8 };
+    let recent: Vec<(String, tms::Task)> = tms::journal_recent(window)
         .into_iter()
+        .filter(|(_, t)| scoped(&t.worker))
         .filter(|(_, t)| !tasks.iter().any(|live| live.id == t.id))
         .take(5)
         .collect();
@@ -185,7 +195,11 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         return Ok(());
     }
     if tasks.is_empty() && recurring.is_empty() && recent.is_empty() {
-        println!("no tasks — file one: roster worker task add <worker> \"<prompt>\"");
+        let name = worker.unwrap_or("<worker>");
+        println!(
+            "no tasks{} — file one: roster worker task add {name} \"<prompt>\"",
+            worker.map(|w| format!(" for {w}")).unwrap_or_default()
+        );
         return Ok(());
     }
     if !tasks.is_empty() {

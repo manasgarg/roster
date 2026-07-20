@@ -1,4 +1,4 @@
-//! `roster worker init <name>` — scaffold a minimal worker spec.
+//! `roster worker add <name>` — scaffold a minimal worker spec.
 
 use crate::paths;
 use std::fs;
@@ -72,7 +72,7 @@ pub fn run(name: &str) -> Result<(), Box<dyn std::error::Error>> {
         let knowledge_commit = crate::worker::knowledge::initialize(name).map_err(|error| {
             format!(
                 "worker files are in place, but its knowledge repository could not be initialized \
-                 (re-run `roster worker init {name}` after fixing): {error}"
+                 (re-run `roster worker add {name}` after fixing): {error}"
             )
         })?;
         println!("initialized knowledge at {knowledge_commit}");

@@ -222,3 +222,18 @@ Per-channel memory behavior (whether the worker remembers, which kinds, how
 much it recalls here) is tuned with the `channel set memory-*` keys —
 see [memory.md](memory.md). Channel settings can only make org policy
 stricter, never looser.
+
+## Deleting a channel
+
+```bash
+roster channel rm 1451951375079
+```
+
+Drops the channel's settings entry (trust and mode revert to the
+defaults: untrusted, mode=all) and archives its record — history, meta,
+cursors — and each worker's channel store into the data trash
+(`data/trash/channel-<id>-<stamp>/`); restore by moving the directories
+back, delete for good by removing the trash entry. A linked id is
+refused — unlink the surfaces first. Deleting is a local act: if a
+listener still shares the conversation, the channel reappears with
+default settings on its next message.

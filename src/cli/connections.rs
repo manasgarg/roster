@@ -499,7 +499,7 @@ fn bind_channel(platform: &str, credential: &str, worker_flags: &[String]) -> Re
     let known = crate::worker::names();
     if known.is_empty() {
         println!(
-            "no workers yet — after `roster worker init <name>`, bind it in the worker's spec:\n{snippet}"
+            "no workers yet — after `roster worker add <name>`, bind it in the worker's spec:\n{snippet}"
         );
         return Ok(());
     }

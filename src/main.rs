@@ -40,8 +40,6 @@ struct Cli {
 enum Cmd {
     /// Initialize the deployment: config, data, and state roots (XDG)
     Init,
-    /// One-time upgrade to the store/connections worker environment
-    Migrate,
     /// The owned machinery: daemon, config, approval desk, run log (bare: status)
     #[command(
         after_help = "glossary: a box is the sandboxed container one session runs in; a gate is a \
@@ -223,6 +221,14 @@ enum ChannelCmd {
         /// The surface id to unlink
         surface_id: String,
     },
+    /// Delete a channel: drop its settings, archive its history and stores
+    Rm {
+        /// Channel id (see: roster channel ls)
+        channel_id: String,
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -324,7 +330,8 @@ enum CredentialCmd {
 #[derive(Subcommand)]
 enum WorkerCmd {
     /// Scaffold a worker: spec, identity, knowledge repo
-    Init {
+    #[command(alias = "init")]
+    Add {
         /// The new worker's name (lowercase letters/numbers/hyphens)
         name: String,
     },
@@ -432,6 +439,8 @@ enum TaskCmd {
     },
     /// List tasks — queued, recurring, and recent outcomes
     Ls {
+        /// Only this worker's tasks (omit for all workers)
+        worker: Option<String>,
         /// Machine-readable JSON
         #[arg(long)]
         json: bool,
@@ -527,7 +536,6 @@ async fn main() {
     }
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
         Cmd::Init => cli::init::run(),
-        Cmd::Migrate => cli::worker::migrate(),
         Cmd::Server { cmd } => match cmd {
             None => cli::server::status(false).await,
             Some(ServerCmd::Start {
@@ -642,7 +650,7 @@ async fn main() {
         }
         Cmd::Worker { cmd } => match cmd {
             None => cli::worker::ls(false),
-            Some(WorkerCmd::Init { name }) => cli::create::run(&name),
+            Some(WorkerCmd::Add { name }) => cli::create::run(&name),
             Some(WorkerCmd::Ls { json }) => cli::worker::ls(json),
             Some(WorkerCmd::Show { name, json }) => cli::worker::show(&name, json),
             Some(WorkerCmd::Trust { name, json }) => cli::worker::trust(&name, json),
@@ -654,7 +662,7 @@ async fn main() {
             Some(WorkerCmd::Rm { name, yes }) => cli::worker::rm(&name, yes),
             Some(WorkerCmd::Chat { name, idle }) => run::session::chat(&name, idle).await,
             Some(WorkerCmd::Task { cmd }) => match cmd {
-                None => cli::task::ls(false),
+                None => cli::task::ls(None, false),
                 Some(TaskCmd::Add {
                     worker,
                     ceiling,
@@ -666,7 +674,7 @@ async fn main() {
                     from,
                     message,
                 }) => channel::relay::run(&worker, from.as_deref(), message.join(" ")),
-                Some(TaskCmd::Ls { json }) => cli::task::ls(json),
+                Some(TaskCmd::Ls { worker, json }) => cli::task::ls(worker.as_deref(), json),
                 Some(TaskCmd::Show { id }) => cli::task::show(&id),
                 Some(TaskCmd::Requeue { id }) => cli::task::requeue(&id),
             },
@@ -708,6 +716,7 @@ fn run_channel_cmd(cmd: Option<ChannelCmd>) -> Result<(), Box<dyn std::error::Er
         },
         Some(ChannelCmd::Link { name, surfaces }) => cli::channel::link(&name, &surfaces),
         Some(ChannelCmd::Unlink { surface_id }) => cli::channel::unlink(&surface_id),
+        Some(ChannelCmd::Rm { channel_id, yes }) => cli::channel::rm(&channel_id, yes),
     }
 }
 
@@ -735,14 +744,14 @@ async fn talk_bare(idle: u64) -> Result<(), Box<dyn std::error::Error>> {
 /// Where each pre-clap command lives now. Kept until the muscle memory fades.
 fn legacy_pointer(first: &str) -> Option<&'static str> {
     Some(match first {
-        "imp" => "roster worker <init|ls|show|trust|run|chat|task|knowledge>  (imps are now workers)",
+        "imp" => "roster worker <add|ls|show|trust|run|chat|task|knowledge>  (imps are now workers)",
         "serve" => "roster server start",
         "supervise" => "roster server start  (the daemons merged; --cap and --once moved there)",
         "listen" => "roster server start  (listeners start for every worker with a [channels] entry)",
         "deploy" => "roster server validate  (config now loads live — there is no deploy step)",
         "gates" => "roster server approvals <ls|show|approve|deny>",
         "connect" => "roster connection add <provider>",
-        "create" => "roster worker init <name>",
+        "create" => "roster worker add <name>",
         "queue" => "roster worker task <add|relay|ls|show|requeue>",
         "relay" => "roster worker task relay <worker> \"<message>\"",
         "knowledge" => "roster worker knowledge <name>",

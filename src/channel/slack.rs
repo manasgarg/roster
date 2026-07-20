@@ -124,8 +124,8 @@ fn cursor_path(channel_id: &str) -> std::path::PathBuf {
 }
 
 fn read_cursor(channel_id: &str) -> Option<String> {
-    let v: Value = serde_json::from_str(&std::fs::read_to_string(cursor_path(channel_id)).ok()?)
-        .ok()?;
+    let v: Value =
+        serde_json::from_str(&std::fs::read_to_string(cursor_path(channel_id)).ok()?).ok()?;
     Some(v.get("last_ts")?.as_str()?.to_string())
 }
 
@@ -143,7 +143,9 @@ fn write_cursor(channel_id: &str, ts: &str) {
 fn is_slack_channel_id(id: &str) -> bool {
     matches!(id.as_bytes().first(), Some(b'C' | b'D' | b'G'))
         && id.len() > 1
-        && id.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
 }
 
 /// Fetch and handle everything that arrived while no socket was connected:
@@ -347,8 +349,7 @@ async fn connect_once(worker: &str, bot_token: &str, app_token: &str) -> Result<
                     // The replay cursor advances on every message seen live —
                     // bot-authored ones included, so catch-up never refetches
                     // the bot's own replies.
-                    if let (Some(ch), Some(ts)) =
-                        (event["channel"].as_str(), event["ts"].as_str())
+                    if let (Some(ch), Some(ts)) = (event["channel"].as_str(), event["ts"].as_str())
                     {
                         write_cursor(ch, ts);
                     }
@@ -490,7 +491,10 @@ fn rfc3339_from_slack_ts(ts: &str) -> String {
         .next()
         .and_then(|s| s.parse::<i64>().ok())
         .and_then(|secs| time::OffsetDateTime::from_unix_timestamp(secs).ok())
-        .and_then(|t| t.format(&time::format_description::well_known::Rfc3339).ok())
+        .and_then(|t| {
+            t.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
         .unwrap_or_else(now_rfc3339)
 }
 

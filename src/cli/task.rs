@@ -9,7 +9,11 @@ pub fn add(worker: &str, ceiling: f64, proactive: bool, prompt: String) -> Resul
     if prompt.trim().is_empty() {
         return Err("task add needs a prompt".into());
     }
-    let kind = if proactive { "proactive" } else { "owner-filed" };
+    let kind = if proactive {
+        "proactive"
+    } else {
+        "owner-filed"
+    };
     let t = tms::add(
         worker,
         tms::Draft {

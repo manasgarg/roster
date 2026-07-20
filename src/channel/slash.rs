@@ -4,10 +4,7 @@
 //! surfaces cannot drift. Discord's registration (`discord::command_defs`)
 //! mirrors the grammar table below.
 
-use super::discord::{
-    purpose_path, set_channel_mode,
-    set_channel_trust,
-};
+use super::discord::{purpose_path, set_channel_mode, set_channel_trust};
 use crate::worker::memory::RunContext;
 use std::collections::HashMap;
 

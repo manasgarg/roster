@@ -693,22 +693,23 @@ fn exec_file_update(worker: &str, payload: &Value) -> Result<Value, String> {
         .get("content")
         .and_then(Value::as_str)
         .ok_or("file_update needs \"content\" (the full new file)")?;
-    let real = match rel {
-        "config/worker.toml" => crate::paths::worker_dir(short).join("worker.toml"),
-        "config/identity.md" => {
-            return Err(
+    let real =
+        match rel {
+            "config/worker.toml" => crate::paths::worker_dir(short).join("worker.toml"),
+            "config/identity.md" => return Err(
                 "identity.md is not written this way — propose the identity action; it waits for \
                  your lead's approval"
                     .into(),
-            )
-        }
-        "schedule.json" => return Err("the schedule is written with set_tasks, not file_update".into()),
-        other => {
-            return Err(format!(
-                "\"{other}\" is not worker-editable — editable: config/worker.toml"
-            ))
-        }
-    };
+            ),
+            "schedule.json" => {
+                return Err("the schedule is written with set_tasks, not file_update".into())
+            }
+            other => {
+                return Err(format!(
+                    "\"{other}\" is not worker-editable — editable: config/worker.toml"
+                ))
+            }
+        };
     let _lock = crate::statefile::FileLock::acquire(&format!("selfedit-{short}"))
         .map_err(|e| format!("lock: {e}"))?;
     let current = crate::statefile::read_if_present(&real)
@@ -1088,7 +1089,6 @@ fn write_atomic(path: &std::path::Path, content: &str) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
     Ok(())
 }
-
 
 /// A current-vs-proposed unified diff of a file (for `gates show` on an
 /// identity/purpose gate — the reviewer sees exactly what would change).

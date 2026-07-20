@@ -160,7 +160,6 @@ pub fn show(id: &str) -> Result<(), BErr> {
         }
     }
 
-
     let contexts = context_compiler::trace_events(&run.id);
     if !contexts.is_empty() {
         println!(
@@ -279,7 +278,6 @@ pub fn context(id: &str, all: bool) -> Result<(), BErr> {
     }
     Ok(())
 }
-
 
 fn short_time(value: &str) -> String {
     if value.len() >= 16 {

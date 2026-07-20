@@ -40,10 +40,7 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         println!("until configured, every channel defaults to untrusted, mode=all");
         return Ok(());
     }
-    println!(
-        "{:<22}  {:<28}  {:<9}  MODE",
-        "CHANNEL", "WHERE", "TRUST"
-    );
+    println!("{:<22}  {:<28}  {:<9}  MODE", "CHANNEL", "WHERE", "TRUST");
     for (id, s) in map {
         println!(
             "{:<22}  {:<28}  {:<9}  {}",
@@ -138,10 +135,7 @@ fn current_settings(channel_id: &str) -> ChannelSettings {
         .unwrap_or_default()
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
 }

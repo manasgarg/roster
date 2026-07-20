@@ -524,10 +524,7 @@ mod tests {
             paths::run_dir("2026-07-19-10-00-00-aaaa"),
             paths::worker_runs_dir("dobby").join("2026-07-19-10-00-00-aaaa")
         );
-        assert_eq!(
-            load("2026-07-19-10-00-00-aaaa").unwrap().worker,
-            "dobby"
-        );
+        assert_eq!(load("2026-07-19-10-00-00-aaaa").unwrap().worker, "dobby");
 
         // A pre-migration global run dir still resolves and lists.
         let legacy = paths::runs_dir().join("2026-07-01-00-00-00-bbbb");
@@ -544,8 +541,14 @@ mod tests {
         assert_eq!(paths::run_dir("2026-07-01-00-00-00-bbbb"), legacy);
 
         let ids: Vec<String> = list().into_iter().map(|r| r.id).collect();
-        assert!(ids.contains(&"2026-07-19-10-00-00-aaaa".to_string()), "{ids:?}");
-        assert!(ids.contains(&"2026-07-01-00-00-00-bbbb".to_string()), "{ids:?}");
+        assert!(
+            ids.contains(&"2026-07-19-10-00-00-aaaa".to_string()),
+            "{ids:?}"
+        );
+        assert!(
+            ids.contains(&"2026-07-01-00-00-00-bbbb".to_string()),
+            "{ids:?}"
+        );
     }
 
     #[test]

@@ -194,7 +194,6 @@ pub struct CompiledContextPolicy {
     pub workers: HashMap<String, ContextPolicy>,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 struct BriefingItem {
     kind: String,
@@ -1282,7 +1281,13 @@ mod tests {
             text: "the waking message".into(),
         });
         req.history = (0..40)
-            .map(|i| history_record(&format!("2026-07-19T10:{i:02}:00Z"), "manas", &format!("msg {i}")))
+            .map(|i| {
+                history_record(
+                    &format!("2026-07-19T10:{i:02}:00Z"),
+                    "manas",
+                    &format!("msg {i}"),
+                )
+            })
             .collect();
 
         let policy = ContextPolicy {
@@ -1383,7 +1388,11 @@ mod tests {
         let config = dir.path().join("config");
         std::fs::create_dir_all(config.join("connections")).unwrap();
         std::fs::create_dir_all(config.join("workers/dobby")).unwrap();
-        std::fs::write(config.join("workers/dobby/worker.toml"), "name = \"dobby\"\n").unwrap();
+        std::fs::write(
+            config.join("workers/dobby/worker.toml"),
+            "name = \"dobby\"\n",
+        )
+        .unwrap();
         std::fs::write(
             config.join("workers/dobby/identity.md"),
             "You are dobby, a test worker.\n",
@@ -1406,7 +1415,7 @@ mod tests {
         assert_eq!(dobby.len(), 1);
         assert_eq!(dobby[0].name, "github");
         assert_eq!(dobby[0].methods, vec!["*"]); // compile default
-                                                // The registry's brief rides along for the shipped provider.
+                                                 // The registry's brief rides along for the shipped provider.
         assert!(dobby[0].usage.as_deref().unwrap().contains("gh CLI"));
         // Scoped to dobby — another worker gets no brief (and no block).
         assert!(worker_connections("other").is_empty());

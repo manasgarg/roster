@@ -190,10 +190,7 @@ fn prune(worker: &str, keep: usize) {
 /// Restore the store from a snapshot (the newest when `from` is None). The
 /// current state is snapshotted first — a restore is always undoable by
 /// another restore. Returns (restored-from, undo-snapshot-if-any).
-pub fn restore(
-    worker: &str,
-    from: Option<&str>,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+pub fn restore(worker: &str, from: Option<&str>) -> Result<(PathBuf, Option<PathBuf>), String> {
     let snaps = list_snapshots(worker);
     let pick = match from {
         Some(name) => snaps
@@ -202,7 +199,11 @@ pub fn restore(
             .ok_or_else(|| {
                 format!(
                     "no snapshot \"{name}\" — have: {}",
-                    if snaps.is_empty() { "none".into() } else { snaps.join(", ") }
+                    if snaps.is_empty() {
+                        "none".into()
+                    } else {
+                        snaps.join(", ")
+                    }
                 )
             })?
             .clone(),
@@ -282,7 +283,9 @@ mod tests {
         // granularity — the standard backup trade-off) must see the change
         // even when the test runs sub-second.
         std::fs::write(store.join("notes.md"), "v2 with more text").unwrap();
-        let second = snapshot("dobby", None, 5).unwrap().expect("second snapshot");
+        let second = snapshot("dobby", None, 5)
+            .unwrap()
+            .expect("second snapshot");
         assert_eq!(second.changes, 1);
         assert_eq!(list_snapshots("dobby").len(), 2);
 

@@ -110,7 +110,9 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: Option<&str>) ->
         tokio::spawn(async {
             loop {
                 tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
-                let Ok(c) = crate::config::snapshot() else { continue };
+                let Ok(c) = crate::config::snapshot() else {
+                    continue;
+                };
                 for w in &c.workers {
                     let keep = crate::worker::storage::load(w).store.snapshots;
                     match crate::worker::store::snapshot(w, None, keep) {

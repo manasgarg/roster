@@ -305,7 +305,10 @@ pub fn migrate() -> Result<(), BErr> {
         }
         let keep = crate::worker::storage::load(w).store.snapshots;
         match crate::worker::store::snapshot(w, None, keep) {
-            Ok(Some(o)) => println!("{w}: store ready, first snapshot taken ({} entries)", o.changes),
+            Ok(Some(o)) => println!(
+                "{w}: store ready, first snapshot taken ({} entries)",
+                o.changes
+            ),
             Ok(None) => println!("{w}: store ready (already snapshotted)"),
             Err(e) => println!("{w}: store ready, snapshot failed — {e}"),
         }
@@ -396,7 +399,9 @@ pub fn restore(name: &str, from: Option<&str>, list: bool) -> Result<(), BErr> {
             "the pre-restore state was kept as {} — another restore undoes this one",
             u.file_name().unwrap_or_default().to_string_lossy()
         ),
-        None => println!("(the store already matched its newest snapshot — nothing was overwritten)"),
+        None => {
+            println!("(the store already matched its newest snapshot — nothing was overwritten)")
+        }
     }
     Ok(())
 }

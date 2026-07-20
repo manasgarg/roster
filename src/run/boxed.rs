@@ -296,14 +296,7 @@ async fn run_box(
         run_dir,
         engine,
         mut storage,
-    } = provision_box(
-        worker,
-        run_id,
-        task_id,
-        spec.run_context,
-        Some(ceiling_min),
-    )
-    .await?;
+    } = provision_box(worker, run_id, task_id, spec.run_context, Some(ceiling_min)).await?;
     args.extend(pi_prefix(&engine, "json", &session_dir)?);
     append_cache_session_id(&mut args, &compiled.cache.route_key);
     if !compiled.system_prompt.is_empty() {
@@ -882,7 +875,10 @@ async fn provision_box(
     if journal.is_file() {
         args.extend([
             "-v".into(),
-            format!("{}:{SELF_MOUNT}/journal/journal.jsonl:ro", journal.display()),
+            format!(
+                "{}:{SELF_MOUNT}/journal/journal.jsonl:ro",
+                journal.display()
+            ),
         ]);
     }
     // Gated repos: each checkout mounts at mnt/<connection> (rw when the run
@@ -899,11 +895,7 @@ async fn provision_box(
                 checkout.knowledge_mount()
             ),
             "-v".into(),
-            format!(
-                "{}:{}:ro",
-                checkout.bare.display(),
-                checkout.origin_mount()
-            ),
+            format!("{}:{}:ro", checkout.bare.display(), checkout.origin_mount()),
         ]);
     }
     // The active channel — the ONLY per-channel mount, and the only thing
@@ -1021,7 +1013,11 @@ async fn provision_box(
             args.extend(["-e".into(), format!("ANTHROPIC_API_KEY={key}")]);
         }
     }
-    args.extend(["-w".into(), WORKSPACE_MOUNT.into(), config.box_image.clone()]);
+    args.extend([
+        "-w".into(),
+        WORKSPACE_MOUNT.into(),
+        config.box_image.clone(),
+    ]);
 
     Ok(Provisioned {
         args,

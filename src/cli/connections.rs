@@ -948,9 +948,14 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             Some(l) => l.join(","),
         };
         let (kind, access) = match &m.kind {
-            crate::config::HostMountKind::Dir { rw } => {
-                ("host-dir", if *rw { "rw".to_string() } else { "ro".to_string() })
-            }
+            crate::config::HostMountKind::Dir { rw } => (
+                "host-dir",
+                if *rw {
+                    "rw".to_string()
+                } else {
+                    "ro".to_string()
+                },
+            ),
             crate::config::HostMountKind::Repo {
                 gated,
                 branch,
@@ -1084,9 +1089,7 @@ fn resolve_edge_who(worker: Option<String>, org: bool) -> Result<String, BErr> {
             }
             let known = crate::worker::names();
             if !known.contains(&w) {
-                return Err(
-                    format!("no such worker \"{w}\" (have: {})", known.join(", ")).into(),
-                );
+                return Err(format!("no such worker \"{w}\" (have: {})", known.join(", ")).into());
             }
             Ok(w)
         }
@@ -1118,6 +1121,13 @@ fn parse_restrict_flags(flags: &[String], provider: &str) -> Result<EdgeScope, B
             );
         };
         let dim = dim.trim();
+        // The pre-rename name of the surfaces dim still parses; the file is
+        // written in the current vocabulary.
+        let dim = if dim == "channels" && dims.iter().any(|d| d == "surfaces") {
+            "surfaces"
+        } else {
+            dim
+        };
         if !dims.iter().any(|d| d == dim) {
             let declared = if dims.is_empty() {
                 "it declares none".to_string()
@@ -1129,8 +1139,33 @@ fn parse_restrict_flags(flags: &[String], provider: &str) -> Result<EdgeScope, B
             )
             .into());
         }
+        let classes: Vec<String> = registry
+            .get(provider)
+            .and_then(|p| p.get("surface_classes"))
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
         let entry = scope.entry(dim.to_string()).or_default();
         for id in ids.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if crate::config::SurfaceClass::parse(id).is_some() {
+                if dim != "surfaces" {
+                    return Err(format!(
+                        "\"{id}\" is a surface class — it belongs in --restrict surfaces={id}"
+                    )
+                    .into());
+                }
+                if !classes.iter().any(|c| c == id) {
+                    return Err(format!(
+                        "provider \"{provider}\" does not classify \"{id}\" surfaces"
+                    )
+                    .into());
+                }
+            }
             if !entry.iter().any(|e| e == id) {
                 entry.push(id.to_string());
             }
@@ -1217,9 +1252,10 @@ fn migrate_legacy_grants(text: &str) -> Result<Option<String>, String> {
     let mut drop: Vec<bool> = vec![false; lines.len()];
     for (i, l) in lines.iter().enumerate() {
         let t = l.trim_start();
-        let legacy_key = ["workers", "imps", "scope"]
-            .iter()
-            .any(|k| t.strip_prefix(k).is_some_and(|r| r.trim_start().starts_with('=')));
+        let legacy_key = ["workers", "imps", "scope"].iter().any(|k| {
+            t.strip_prefix(k)
+                .is_some_and(|r| r.trim_start().starts_with('='))
+        });
         if legacy_key {
             if (t.starts_with("workers") || t.starts_with("imps")) && !l.contains(']') {
                 return Err(
@@ -1232,7 +1268,9 @@ fn migrate_legacy_grants(text: &str) -> Result<Option<String>, String> {
     }
     if has_restrict {
         let Some((start, end)) = section_span(&lines, "[restrict]") else {
-            return Err("has a [restrict] layout this tool cannot edit — migrate it by hand".into());
+            return Err(
+                "has a [restrict] layout this tool cannot edit — migrate it by hand".into(),
+            );
         };
         for d in drop.iter_mut().take(end).skip(start) {
             *d = true;
@@ -1264,10 +1302,7 @@ fn migrate_legacy_grants(text: &str) -> Result<Option<String>, String> {
 fn upsert_grant_edge(text: &str, who: &str, scope: &EdgeScope) -> Result<(String, bool), String> {
     let parsed: toml::Value =
         toml::from_str(text).map_err(|e| format!("connection file is invalid: {e}"))?;
-    let exists = parsed
-        .get("grant")
-        .and_then(|g| g.get(who))
-        .is_some();
+    let exists = parsed.get("grant").and_then(|g| g.get(who)).is_some();
     let lines: Vec<&str> = text.lines().collect();
     let section = grant_section(who, scope);
     let out = if exists {
@@ -1493,14 +1528,21 @@ pub fn grant(
                 .map(|(w, platform, _)| format!("{platform} for {w}"))
                 .collect();
             if !listeners.is_empty() {
-                println!("listening: {} — the edge scopes the listener too", listeners.join(", "));
+                println!(
+                    "listening: {} — the edge scopes the listener too",
+                    listeners.join(", ")
+                );
             }
         }
         Err(errors) => {
             for e in &errors {
                 eprintln!("config: {e}");
             }
-            return Err(format!("{} config error(s) — fix before the grant is live", errors.len()).into());
+            return Err(format!(
+                "{} config error(s) — fix before the grant is live",
+                errors.len()
+            )
+            .into());
         }
     }
     Ok(())
@@ -1524,7 +1566,11 @@ pub fn revoke(name: &str, worker: Option<String>, org: bool) -> Result<(), BErr>
     let parsed = toml::from_str::<toml::Value>(&out).ok();
     let no_edges_left = parsed
         .as_ref()
-        .and_then(|v| v.get("grant").and_then(|g| g.as_table()).map(|t| t.is_empty()))
+        .and_then(|v| {
+            v.get("grant")
+                .and_then(|g| g.as_table())
+                .map(|t| t.is_empty())
+        })
         .unwrap_or(true);
     let is_mount = parsed
         .as_ref()

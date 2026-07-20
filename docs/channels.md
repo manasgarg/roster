@@ -51,13 +51,16 @@ recovered.
 ## Scoping the bot to a server or channel
 
 The worker's `[grant.<worker>]` edge on the Discord connection limits
-where it exists: list `servers` (guild ids) and/or `channels` (channel
-ids) — `roster connection grant discord dobby --restrict servers=…` writes
-it — and the listener treats everything outside the scope as if it didn't
-exist: not answered, not persisted, no commands registered there — while
-the gateway restricts API calls to the same scope
-([connections.md](connections.md) has the format and the enforcement
-details). Either dimension admits a surface; DMs always pass. The edit is
+where it exists: list `servers` (guild ids) and/or `surfaces` (channel
+ids and/or the classes `public` / `private` / `dm`) — `roster connection
+grant discord dobby --restrict servers=…` or `--restrict
+surfaces=public,dm` writes it — and the listener treats everything
+outside the scope as if it didn't exist: not answered, not persisted, no
+commands registered there — while the gateway restricts API calls to the
+same scope where it can ([connections.md](connections.md) has the format
+and the enforcement details). Every entry admits a surface. DMs are
+admitted by default; a scope that names classes is exhaustive, so
+`surfaces = ["public"]` is how a worker opts out of DMs. The edit is
 live: scope changes apply without a listener restart.
 
 ## Who can do what

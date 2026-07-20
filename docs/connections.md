@@ -235,10 +235,10 @@ hosts    = ["discord.com"]
 
 [grant.dobby]
 servers  = ["1015381923845"]      # a guild id
-channels = ["1451951375079"]      # and/or specific channel ids
+surfaces = ["1451951375079"]      # and/or specific channel ids
 
 [grant.kdemo]
-channels = ["1521178264683"]      # kdemo's own, narrower slice
+surfaces = ["public", "dm"]       # classes: where kdemo exists, by shape
 ```
 
 `[grant.org]` is the fleet-wide edge; a worker's own edge wins over it.
@@ -247,17 +247,32 @@ The CLI writes these for you (`roster connection grant discord dobby
 edge gets nothing: the listener drops its guild traffic and no rules
 compile. (The pre-edge form — `workers = [..]`/`scope = "org"` with one
 shared `[restrict]` — still parses as identical edges, and `grant`
-migrates such a file the first time it touches one.)
+migrates such a file the first time it touches one. `channels =` is the
+pre-rename spelling of `surfaces =` and still parses.)
 
-Discord declares `servers` and `channels` (the provider registry's
-`scope_dims`); either dimension admits a surface — a listed channel works
-even when its server isn't listed, a listed server admits all its
-channels. DMs are a different trust surface (1:1, sought-out, dynamically
-created ids) and always pass. On the gateway side, a channels restriction
-compiles to path predicates on the Discord API (allow the scoped
-channels, deny the rest); a servers-only restriction is enforced fully at
-the listener and on guild endpoints — Discord channel endpoints don't
-carry the guild id, so there the attachment rule is the enforcement.
+Discord declares `servers` and `surfaces` (the provider registry's
+`scope_dims`). The surfaces list mixes **ids** and **classes** —
+`public`, `private`, `dm`, validated against the registry's
+`surface_classes` — and every entry admits: a listed channel works even
+when its server isn't listed, a listed server admits all its channels, a
+listed class admits every surface the listener classifies as that class
+(Discord: a guild channel whose permission overwrites hide it from
+@everyone is `private`, the rest are `public`).
+
+**DMs are admitted by default** (1:1, sought-out, dynamically created ids
+that could never be pre-listed). A scope that names classes is
+exhaustive: `surfaces = ["public"]` means no DMs — the first way to say
+"this worker does not do DMs" — while an id-only or servers-only scope
+keeps the default.
+
+On the gateway side, a surface-id restriction compiles to path predicates
+on the Discord API (allow the scoped channels, deny the rest). Classes
+can't compile statically — a URL doesn't reveal a channel's class — so
+they are enforced at the listener, and while a class is in scope the
+gateway stays broad on the `/channels` family; a servers-only restriction
+has the same shape (Discord channel endpoints don't carry the guild id).
+Stated honestly: for class scopes, "can speak there" is enforced at
+attachment and "can act there" is not yet narrowed at the gateway.
 
 There is no universal scope language: a provider declares its dimensions
 in the registry, and they compile down to the two enforcement points that

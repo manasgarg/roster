@@ -130,25 +130,45 @@ struct GwError {
 /// messages are dropped in the gap; stops on fatal ones (bad token / intent).
 /// This worker's grant edge on the connection this listener runs under,
 /// looked up live so a grant edit applies without a listener restart.
-/// Guild-space only: DMs are a different trust surface (1:1, sought-out,
-/// dynamically created ids that could never be pre-listed) and always pass.
-/// Broken config fails closed, like dispatch does — and so does a connection
-/// file that grants this worker nothing.
+/// DMs are admitted by default (1:1, sought-out, dynamically created ids
+/// that could never be pre-listed) — a scope that names classes and leaves
+/// "dm" out is the one way to refuse them. Broken config fails closed,
+/// like dispatch does — and so does a connection file that grants this
+/// worker nothing.
 fn out_of_scope(worker: &str, credential: &str, guild_id: Option<&str>, channel_id: &str) -> bool {
-    let Some(gid) = guild_id else { return false };
     let cfg = match crate::config::snapshot() {
         Ok(c) => c,
         Err(_) => {
-            eprintln!("discord: config invalid — dropping guild traffic until it parses");
+            eprintln!("discord: config invalid — dropping traffic until it parses");
             return true;
         }
     };
     match cfg.connections.iter().find(|c| c.name == credential) {
-        Some(c) => !c.allows_surface(worker, Some(gid), channel_id),
+        Some(c) => {
+            let class = match guild_id {
+                None => crate::config::SurfaceClass::Dm,
+                Some(_) => channel_class(channel_id),
+            };
+            !c.allows_surface(worker, guild_id, channel_id, class)
+        }
         // No connection file for this credential (legacy [channels]-only
         // binding) = unrestricted, exactly as before scoping existed.
         None => false,
     }
+}
+
+/// The listener's classification of a guild channel, from the meta recorded
+/// at GUILD_CREATE. A channel never classified is Unknown — it never
+/// matches a class entry in a scope (fail closed), though ids and servers
+/// still admit it.
+fn channel_class(channel_id: &str) -> crate::config::SurfaceClass {
+    channel_meta(channel_id)
+        .and_then(|m| {
+            m.get("class")
+                .and_then(|v| v.as_str())
+                .and_then(crate::config::SurfaceClass::parse)
+        })
+        .unwrap_or(crate::config::SurfaceClass::Unknown)
 }
 
 /// Durable per-channel replay cursor: the newest message id this listener
@@ -161,8 +181,8 @@ fn cursor_path(channel_id: &str) -> PathBuf {
 }
 
 fn read_cursor(channel_id: &str) -> Option<(String, Option<String>)> {
-    let v: Value = serde_json::from_str(&std::fs::read_to_string(cursor_path(channel_id)).ok()?)
-        .ok()?;
+    let v: Value =
+        serde_json::from_str(&std::fs::read_to_string(cursor_path(channel_id)).ok()?).ok()?;
     Some((
         v.get("last_message_id")?.as_str()?.to_string(),
         v.get("guild_id").and_then(Value::as_str).map(String::from),
@@ -483,26 +503,39 @@ async fn connect_once(
                         // name resolution in logs.
                         let guild_admitted = match crate::config::snapshot() {
                             Err(_) => false,
-                            Ok(cfg) => match cfg.connections.iter().find(|c| c.name == credential) {
-                                None => true,
-                                Some(c) => match c.grant_for(worker) {
-                                    // A file that grants this worker nothing
-                                    // admits nothing.
-                                    None => false,
-                                    Some(r) if r.is_empty() => true,
-                                    Some(_) => {
-                                        c.allows_surface(worker, Some(&guild_id), "")
-                                            || d["channels"]
+                            Ok(cfg) => {
+                                match cfg.connections.iter().find(|c| c.name == credential) {
+                                    None => true,
+                                    Some(c) => match c.grant_for(worker) {
+                                        // A file that grants this worker nothing
+                                        // admits nothing.
+                                        None => false,
+                                        Some(r) if r.is_empty() => true,
+                                        Some(_) => {
+                                            c.allows_surface(
+                                                worker,
+                                                Some(&guild_id),
+                                                "",
+                                                crate::config::SurfaceClass::Unknown,
+                                            ) || d["channels"]
                                                 .as_array()
                                                 .map(|chs| {
                                                     chs.iter()
                                                         .filter_map(|ch| ch["id"].as_str())
-                                                        .any(|id| c.allows_surface(worker, None, id))
+                                                        .any(|id| {
+                                                            c.allows_surface(
+                                                                worker,
+                                                                None,
+                                                                id,
+                                                                channel_class(id),
+                                                            )
+                                                        })
                                                 })
                                                 .unwrap_or(false)
-                                    }
-                                },
-                            },
+                                        }
+                                    },
+                                }
+                            }
                         };
                         if guild_admitted {
                             register_commands(&app_id, &guild_id, token).await;
@@ -602,19 +635,36 @@ fn ingest_guild(d: &Value) -> Guild {
         }
     }
     // GUILD_CREATE carries every channel's name — persist them so `channel
-    // ls/show` can say "#general @ rototo" instead of a snowflake id.
+    // ls/show` can say "#general @ rototo" instead of a snowflake id — and
+    // its permission overwrites, from which the listener classifies the
+    // surface: a channel whose overwrites deny VIEW_CHANNEL to @everyone
+    // (role id == guild id) is "private", the rest are "public". Scope
+    // evaluation consults this classification.
     let guild_name = d["name"].as_str().unwrap_or("");
     if let Some(channels) = d["channels"].as_array() {
         for c in channels {
             let (Some(id), Some(name)) = (c["id"].as_str(), c["name"].as_str()) else {
                 continue;
             };
+            const VIEW_CHANNEL: u64 = 1 << 10;
+            let hidden_from_everyone = c["permission_overwrites"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|o| {
+                    o["id"].as_str() == Some(guild_id)
+                        && o["deny"]
+                            .as_str()
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .is_some_and(|deny| deny & VIEW_CHANNEL != 0)
+                });
             write_channel_meta(
                 id,
                 &serde_json::json!({
                     "platform": "discord",
                     "server": guild_name,
                     "name": name,
+                    "class": if hidden_from_everyone { "private" } else { "public" },
                 }),
             );
         }
@@ -694,6 +744,7 @@ async fn handle_message(
             &json!({
                 "platform": "discord",
                 "name": format!("DM with {}", d["author"]["username"].as_str().unwrap_or("?")),
+                "class": "dm",
             }),
         );
     }

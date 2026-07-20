@@ -64,23 +64,47 @@ impl Connection {
         self.grant_for(worker).is_some()
     }
 
-    /// The channel/server restriction a listener must enforce for this
-    /// worker. No edge = nothing admitted; an empty edge = unrestricted.
-    /// Ids are Discord snowflakes as strings.
-    pub fn allows_surface(&self, worker: &str, server_id: Option<&str>, channel_id: &str) -> bool {
+    /// The surface restriction a listener must enforce for this worker. No
+    /// edge = nothing admitted; an empty edge = unrestricted. Union
+    /// semantics: every scope entry admits surfaces — a listed id is
+    /// reachable even when its server isn't listed, a listed server admits
+    /// all its channels, a listed class admits surfaces of that class. DMs
+    /// are admitted by default; a scope that names classes is exhaustive,
+    /// so `surfaces = ["public"]` means no DMs. An Unknown class never
+    /// matches a class entry (fail closed) — only ids and servers admit it.
+    pub fn allows_surface(
+        &self,
+        worker: &str,
+        server_id: Option<&str>,
+        channel_id: &str,
+        class: SurfaceClass,
+    ) -> bool {
         let Some(restrict) = self.grant_for(worker) else {
             return false;
         };
         let servers = restrict.get("servers");
-        let channels = restrict.get("channels");
-        if servers.is_none() && channels.is_none() {
+        let surfaces = restrict.get("surfaces");
+        let classes: Vec<&str> = surfaces
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .filter(|s| SurfaceClass::parse(s).is_some())
+            .collect();
+        if let Some(list) = surfaces {
+            if list.iter().any(|c| c == channel_id) {
+                return true;
+            }
+        }
+        if class == SurfaceClass::Dm {
+            // A DM is 1:1 and sought-out: admitted unless the scope names
+            // classes and leaves "dm" out.
+            return classes.is_empty() || classes.contains(&"dm");
+        }
+        if servers.is_none() && surfaces.is_none() {
             return true;
         }
-        // A surface is in scope if EITHER dimension admits it: a listed
-        // channel is reachable even when its server isn't listed, and a
-        // listed server admits all its channels.
-        if let Some(list) = channels {
-            if list.iter().any(|c| c == channel_id) {
+        if let Some(word) = class.word() {
+            if classes.contains(&word) {
                 return true;
             }
         }
@@ -90,6 +114,40 @@ impl Connection {
             }
         }
         false
+    }
+}
+
+/// What kind of surface a message arrived on — the listener's
+/// classification, recorded in channel meta and consulted by scope
+/// evaluation. `Unknown` is a surface the listener has never classified;
+/// it never matches a class entry in a scope (fail closed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurfaceClass {
+    Public,
+    Private,
+    Dm,
+    Unknown,
+}
+
+impl SurfaceClass {
+    /// The scope vocabulary: a scope entry that is one of these words is a
+    /// class, everything else is an id.
+    pub fn parse(s: &str) -> Option<SurfaceClass> {
+        match s {
+            "public" => Some(SurfaceClass::Public),
+            "private" => Some(SurfaceClass::Private),
+            "dm" => Some(SurfaceClass::Dm),
+            _ => None,
+        }
+    }
+
+    pub fn word(&self) -> Option<&'static str> {
+        match self {
+            SurfaceClass::Public => Some("public"),
+            SurfaceClass::Private => Some("private"),
+            SurfaceClass::Dm => Some("dm"),
+            SurfaceClass::Unknown => None,
+        }
     }
 }
 
@@ -554,6 +612,18 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                     })
                     .unwrap_or_default()
             },
+            |p| {
+                registry
+                    .get(p)
+                    .and_then(|entry| entry.get("surface_classes").and_then(Value::as_array))
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            },
         ) {
             Ok((connection, rules, connection_exposes, warning)) => {
                 connection_rules.extend(rules);
@@ -638,6 +708,7 @@ fn compile_connection(
     secret_exists: impl Fn(&str) -> bool,
     model_hosts_of: impl Fn(&str) -> Option<Vec<String>>,
     scope_dims_of: impl Fn(&str) -> Vec<String>,
+    surface_classes_of: impl Fn(&str) -> Vec<String>,
 ) -> Result<CompiledConnection, Vec<String>> {
     let mut errors = Vec::new();
     let ctx = format!("connection \"{name}\"");
@@ -685,6 +756,7 @@ fn compile_connection(
     // Accept the pre-rename key so upgraded deployments keep parsing.
     let workers = strings("workers").or_else(|| strings("imps"));
     let dims = scope_dims_of(&provider);
+    let surface_classes = surface_classes_of(&provider);
 
     // Availability edges. New form: `[grant.<worker>]` tables, each with its
     // own provider-dim scope. Legacy form: `workers = [..]` / `scope = "org"`
@@ -715,6 +787,7 @@ fn compile_connection(
                                 &format!("{ctx}: grant.{who}"),
                                 &provider,
                                 &dims,
+                                &surface_classes,
                                 &mut errors,
                             );
                             grants.insert(who.clone(), scope);
@@ -737,6 +810,7 @@ fn compile_connection(
                     &format!("{ctx}: restrict"),
                     &provider,
                     &dims,
+                    &surface_classes,
                     &mut errors,
                 ),
                 None => {
@@ -857,7 +931,23 @@ fn compile_connection(
         // is the enforcement and the gateway stays broad. A channels
         // restriction IS fully enforced here.
         if provider == "discord" && !restrict.is_empty() {
-            for id in restrict.get("channels").into_iter().flatten() {
+            // Class entries (public/private/dm) can't compile to static path
+            // predicates — a URL doesn't reveal a channel's class — so they
+            // are listener-enforced and the gateway stays broad for the
+            // /channels family whenever a class is in scope (same known
+            // limit as servers-only restrictions).
+            let surface_ids: Vec<&String> = restrict
+                .get("surfaces")
+                .into_iter()
+                .flatten()
+                .filter(|s| SurfaceClass::parse(s).is_none())
+                .collect();
+            let has_classes = restrict
+                .get("surfaces")
+                .into_iter()
+                .flatten()
+                .any(|s| SurfaceClass::parse(s).is_some());
+            for id in &surface_ids {
                 rules.push(json!({
                     "scope": scope,
                     "name": format!("connection:{name}:channel:{id}"),
@@ -877,7 +967,7 @@ fn compile_connection(
                     "inject": inject,
                 }));
             }
-            if restrict.contains_key("channels") && !restrict.contains_key("servers") {
+            if !surface_ids.is_empty() && !has_classes && !restrict.contains_key("servers") {
                 rules.push(json!({
                     "scope": scope,
                     "name": format!("connection:{name}:deny-unscoped-channels"),
@@ -926,11 +1016,19 @@ fn parse_edge_scope(
     ctx: &str,
     provider: &str,
     dims: &[String],
+    surface_classes: &[String],
     errors: &mut Vec<String>,
 ) -> std::collections::BTreeMap<String, Vec<String>> {
     let mut out = std::collections::BTreeMap::new();
     for (dim, val) in table {
-        if !dims.iter().any(|d| d == dim) {
+        // "channels" is the pre-rename name of the surfaces dim; normalize
+        // so compiled scopes speak one vocabulary.
+        let dim = if dim == "channels" && dims.iter().any(|d| d == "surfaces") {
+            "surfaces".to_string()
+        } else {
+            dim.clone()
+        };
+        if !dims.iter().any(|d| *d == dim) {
             let declared = if dims.is_empty() {
                 "it declares none".to_string()
             } else {
@@ -954,7 +1052,22 @@ fn parse_edge_scope(
             errors.push(format!("{ctx}.{dim} needs a non-empty list of id strings"));
             continue;
         }
-        out.insert(dim.clone(), ids);
+        // Class words are legal only in the surfaces dim, and only when the
+        // provider declares it classifies them.
+        for entry in &ids {
+            if crate::config::SurfaceClass::parse(entry).is_some() {
+                if dim != "surfaces" {
+                    errors.push(format!(
+                        "{ctx}.{dim}: \"{entry}\" is a surface class — it belongs in surfaces = [..]"
+                    ));
+                } else if !surface_classes.iter().any(|c| c == entry) {
+                    errors.push(format!(
+                        "{ctx}.{dim}: provider \"{provider}\" does not classify \"{entry}\" surfaces"
+                    ));
+                }
+            }
+        }
+        out.insert(dim, ids);
     }
     out
 }
@@ -1470,6 +1583,7 @@ mod tests {
             |_| true,
             |_| None,
             |_| Vec::new(),
+            |_| Vec::new(),
         )
         .unwrap();
         assert!(c.enabled);
@@ -1508,6 +1622,7 @@ mod tests {
             |_| true,
             |_| None,
             |_| Vec::new(),
+            |_| Vec::new(),
         )
         .unwrap();
         assert_eq!(rules[0]["inject"]["provider"], "acme");
@@ -1531,6 +1646,7 @@ mod tests {
             |_| true,
             |_| true,
             |p| (p == "anthropic").then(|| vec!["api.anthropic.com".to_string()]),
+            |_| Vec::new(),
             |_| Vec::new(),
         )
         .unwrap();
@@ -1558,7 +1674,18 @@ mod tests {
         );
         let dims = |p: &str| {
             if p == "discord" {
-                vec!["servers".to_string(), "channels".to_string()]
+                vec!["servers".to_string(), "surfaces".to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        let classes = |p: &str| {
+            if p == "discord" {
+                vec![
+                    "public".to_string(),
+                    "private".to_string(),
+                    "dm".to_string(),
+                ]
             } else {
                 Vec::new()
             }
@@ -1571,12 +1698,13 @@ mod tests {
             |_| true,
             |_| None,
             dims,
+            classes,
         )
         .unwrap();
-        assert!(c.allows_surface("dobby", None, "111"));
-        assert!(!c.allows_surface("dobby", None, "333"));
+        assert!(c.allows_surface("dobby", None, "111", SurfaceClass::Public));
+        assert!(!c.allows_surface("dobby", None, "333", SurfaceClass::Public));
         // No edge for kdemo: nothing is admitted, not everything.
-        assert!(!c.allows_surface("kdemo", None, "111"));
+        assert!(!c.allows_surface("kdemo", None, "111", SurfaceClass::Public));
         // allow 111, allow 222, deny unscoped channels, deny guilds, broad allow
         assert_eq!(rules.len(), 5);
         assert_eq!(rules[0]["match"]["pathPrefix"], "/api/v10/channels/111");
@@ -1603,10 +1731,11 @@ mod tests {
             |_| true,
             |_| None,
             dims,
+            classes,
         )
         .unwrap();
-        assert!(c.allows_surface("dobby", Some("999"), "any-channel"));
-        assert!(!c.allows_surface("dobby", Some("998"), "any-channel"));
+        assert!(c.allows_surface("dobby", Some("999"), "any-channel", SurfaceClass::Public));
+        assert!(!c.allows_surface("dobby", Some("998"), "any-channel", SurfaceClass::Public));
         assert!(rules
             .iter()
             .all(|r| r["name"] != "connection:discord:deny-unscoped-channels"));
@@ -1616,7 +1745,18 @@ mod tests {
     fn grant_tables_carry_per_worker_scopes() {
         let dims = |p: &str| {
             if p == "discord" {
-                vec!["servers".to_string(), "channels".to_string()]
+                vec!["servers".to_string(), "surfaces".to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        let classes = |p: &str| {
+            if p == "discord" {
+                vec![
+                    "public".to_string(),
+                    "private".to_string(),
+                    "dm".to_string(),
+                ]
             } else {
                 Vec::new()
             }
@@ -1640,13 +1780,14 @@ mod tests {
             |_| true,
             |_| None,
             dims,
+            classes,
         )
         .unwrap();
         // Each worker's edge is its own scope — no bleed between them.
-        assert!(c.allows_surface("dobby", Some("999"), "x"));
-        assert!(!c.allows_surface("kdemo", Some("999"), "x"));
-        assert!(c.allows_surface("kdemo", None, "111"));
-        assert!(!c.allows_surface("dobby", None, "111"));
+        assert!(c.allows_surface("dobby", Some("999"), "x", SurfaceClass::Public));
+        assert!(!c.allows_surface("kdemo", Some("999"), "x", SurfaceClass::Public));
+        assert!(c.allows_surface("kdemo", None, "111", SurfaceClass::Public));
+        assert!(!c.allows_surface("dobby", None, "111", SurfaceClass::Public));
         // Rules and exposures land per edge, in the worker's scope.
         assert!(rules.iter().any(
             |r| r["scope"] == "org/dobby" && r["match"]["pathPrefix"] == "/api/v10/guilds/999"
@@ -1667,10 +1808,19 @@ mod tests {
             servers = ["999"]
         "#,
         );
-        let (c, rules, _, _) =
-            compile_connection("discord", &v, &[], |_| true, |_| true, |_| None, dims).unwrap();
+        let (c, rules, _, _) = compile_connection(
+            "discord",
+            &v,
+            &[],
+            |_| true,
+            |_| true,
+            |_| None,
+            dims,
+            classes,
+        )
+        .unwrap();
         assert!(c.applies_to("anyone"));
-        assert!(c.allows_surface("anyone", Some("999"), "x"));
+        assert!(c.allows_surface("anyone", Some("999"), "x", SurfaceClass::Public));
         assert!(rules.iter().any(|r| r["scope"] == "org"));
 
         // Identity-only: connected, granted to no one — legal, compiles to
@@ -1682,8 +1832,17 @@ mod tests {
             env = "DISCORD_TOKEN"
         "#,
         );
-        let (c, rules, exposes, _) =
-            compile_connection("discord", &v, &[], |_| true, |_| true, |_| None, dims).unwrap();
+        let (c, rules, exposes, _) = compile_connection(
+            "discord",
+            &v,
+            &[],
+            |_| true,
+            |_| true,
+            |_| None,
+            dims,
+            classes,
+        )
+        .unwrap();
         assert!(c.grants.is_empty() && rules.is_empty() && exposes.is_empty());
         assert!(!c.applies_to("dobby"));
 
@@ -1706,6 +1865,7 @@ mod tests {
             |_| true,
             |_| None,
             dims,
+            classes,
         )
         .unwrap_err();
         assert!(errors.iter().any(|e| e.contains("not both")));
@@ -1718,8 +1878,17 @@ mod tests {
             servers = ["999"]
         "#,
         );
-        let errors =
-            compile_connection("discord", &v, &[], |_| true, |_| true, |_| None, dims).unwrap_err();
+        let errors = compile_connection(
+            "discord",
+            &v,
+            &[],
+            |_| true,
+            |_| true,
+            |_| None,
+            dims,
+            classes,
+        )
+        .unwrap_err();
         assert!(errors
             .iter()
             .any(|e| e.contains("no such worker \"ghost\"")));
@@ -1744,6 +1913,7 @@ mod tests {
             |_| true,
             |_| true,
             |_| None,
+            |_| Vec::new(),
             |_| Vec::new(),
         )
         .unwrap_err();
@@ -1836,6 +2006,129 @@ mod tests {
     }
 
     #[test]
+    fn surface_classes_scope_and_the_dm_default() {
+        let dims = |p: &str| {
+            if p == "discord" {
+                vec!["servers".to_string(), "surfaces".to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        let classes = |p: &str| {
+            if p == "discord" {
+                vec![
+                    "public".to_string(),
+                    "private".to_string(),
+                    "dm".to_string(),
+                ]
+            } else {
+                Vec::new()
+            }
+        };
+        let compile = |body: &str| {
+            let v = toml(body);
+            compile_connection(
+                "discord",
+                &v,
+                &[],
+                |_| true,
+                |_| true,
+                |_| None,
+                dims,
+                classes,
+            )
+        };
+
+        // Classes admit their class; naming classes is exhaustive for DMs.
+        let (c, rules, _, _) = compile(
+            r#"
+            provider = "discord"
+            hosts = ["discord.com"]
+            env = "DISCORD_TOKEN"
+            [grant.org]
+            surfaces = ["public", "111"]
+        "#,
+        )
+        .unwrap();
+        assert!(c.allows_surface("w", Some("999"), "x", SurfaceClass::Public));
+        assert!(!c.allows_surface("w", Some("999"), "x", SurfaceClass::Private));
+        assert!(c.allows_surface("w", Some("999"), "111", SurfaceClass::Private)); // id admits
+        assert!(!c.allows_surface("w", None, "d1", SurfaceClass::Dm)); // classes named, dm absent
+        assert!(c.allows_surface("w", None, "111", SurfaceClass::Dm)); // a listed DM id admits
+                                                                       // Unknown never matches a class entry.
+        assert!(!c.allows_surface("w", Some("999"), "x", SurfaceClass::Unknown));
+        // Classes can't compile to static path predicates: no per-id allow
+        // for "public", no broad /channels deny while a class is in scope.
+        assert!(rules
+            .iter()
+            .any(|r| r["name"] == "connection:discord:channel:111"));
+        assert!(!rules
+            .iter()
+            .any(|r| r["name"].as_str().unwrap_or("").contains("public")));
+        assert!(rules
+            .iter()
+            .all(|r| r["name"] != "connection:discord:deny-unscoped-channels"));
+
+        // An id-only scope keeps today's semantics: DMs pass by default.
+        let (c, rules, _, _) = compile(
+            r#"
+            provider = "discord"
+            hosts = ["discord.com"]
+            env = "DISCORD_TOKEN"
+            [grant.org]
+            surfaces = ["111"]
+        "#,
+        )
+        .unwrap();
+        assert!(c.allows_surface("w", None, "d1", SurfaceClass::Dm));
+        assert!(!c.allows_surface("w", Some("999"), "x", SurfaceClass::Public));
+        assert!(rules
+            .iter()
+            .any(|r| r["name"] == "connection:discord:deny-unscoped-channels"));
+
+        // A dm-only scope: the worker exists nowhere in guild-space.
+        let (c, _, _, _) = compile(
+            r#"
+            provider = "discord"
+            hosts = ["discord.com"]
+            env = "DISCORD_TOKEN"
+            [grant.org]
+            surfaces = ["dm"]
+        "#,
+        )
+        .unwrap();
+        assert!(c.allows_surface("w", None, "d1", SurfaceClass::Dm));
+        assert!(!c.allows_surface("w", Some("999"), "x", SurfaceClass::Public));
+
+        // Servers-only: DMs still pass (no classes named).
+        let (c, _, _, _) = compile(
+            r#"
+            provider = "discord"
+            hosts = ["discord.com"]
+            env = "DISCORD_TOKEN"
+            [grant.org]
+            servers = ["999"]
+        "#,
+        )
+        .unwrap();
+        assert!(c.allows_surface("w", None, "d1", SurfaceClass::Dm));
+
+        // A class in the wrong dim, or one the provider doesn't classify,
+        // is a loud config error.
+        let errors = compile(
+            r#"
+            provider = "discord"
+            hosts = ["discord.com"]
+            env = "DISCORD_TOKEN"
+            [grant.org]
+            servers = ["dm"]
+        "#,
+        )
+        .unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("belongs in surfaces")));
+    }
+
+    #[test]
     fn host_mount_names_must_be_path_safe() {
         let dir = tempfile::tempdir().unwrap();
         let v = toml(&format!(
@@ -1870,6 +2163,7 @@ mod tests {
             |_| false,
             |_| None,
             |_| Vec::new(),
+            |_| Vec::new(),
         )
         .unwrap();
         assert!(!c.enabled);
@@ -1893,6 +2187,7 @@ mod tests {
             |p| p == "github",
             |_| true,
             |_| None,
+            |_| Vec::new(),
             |_| Vec::new(),
         )
         .unwrap_err();

@@ -249,7 +249,9 @@ enum ConnectionCmd {
         /// Fleet-wide edge: every current and future worker
         #[arg(long)]
         org: bool,
-        /// Scope this edge to provider dimensions, e.g. servers=111,222 (repeatable)
+        /// Scope this edge to provider dimensions, e.g. servers=111,222 or
+        /// surfaces=public,dm — ids and classes mix; naming classes is
+        /// exhaustive, so surfaces=public means no DMs (repeatable)
         #[arg(long, value_name = "DIM=IDS")]
         restrict: Vec<String>,
     },
